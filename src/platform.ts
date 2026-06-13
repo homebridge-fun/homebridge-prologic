@@ -6,8 +6,8 @@ import { SidecarClient } from './sidecarClient';
 import { PLATFORM_NAME, PLUGIN_NAME, CIRCUITS, type Circuit, type PlatformConfig as ProLogicConfig } from './settings';
 
 export class ProLogicPlatform implements DynamicPlatformPlugin {
-  public readonly Service = this.api.hap.Service;
-  public readonly Characteristic = this.api.hap.Characteristic;
+  public readonly Service: typeof this.api.hap.Service;
+  public readonly Characteristic: typeof this.api.hap.Characteristic;
   public readonly sidecar: SidecarClient;
 
   private readonly cfg: ProLogicConfig;
@@ -23,6 +23,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     config: PlatformConfig,
     public readonly api: API,
   ) {
+    this.Service = this.api.hap.Service;
+    this.Characteristic = this.api.hap.Characteristic;
+
     this.cfg = {
       name: config['name'] ?? 'ProLogic',
       sidecarHost: config['sidecarHost'] ?? '127.0.0.1',

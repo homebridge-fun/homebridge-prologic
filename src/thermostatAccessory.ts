@@ -31,7 +31,7 @@ export class ThermostatAccessory {
     this.service.getCharacteristic(C.CurrentTemperature)
       .onGet(() => this.currentTempC);
 
-    // Target temperature — writable, sends setpoint to controller
+    // Target temperature — display-only (controller exposes no set-point control)
     this.service.getCharacteristic(C.TargetTemperature)
       .setProps({ minValue: MIN_TEMP_C, maxValue: MAX_TEMP_C, minStep: 0.5 })
       .onGet(() => this.targetTempC)
@@ -51,18 +51,17 @@ export class ThermostatAccessory {
       .setValue(1); // Fahrenheit display (HomeKit still uses Celsius internally)
   }
 
-  async handleSetTarget(value: CharacteristicValue): Promise<void> {
+  handleSetTarget(value: CharacteristicValue): void {
+    // The AquaPlus/aqualogic stack exposes no way to read or set the heater
+    // target temperature, so this value is kept local for display only. Adjust
+    // the real set-point at the physical panel.
     const c = value as number;
-    this.targetTempC = c;
     const f = Math.round(celsiusToFahrenheit(c));
-    try {
-      await this.platform.sidecar.setHeaterSetpoint(f);
-    } catch (err) {
-      this.platform.log.error('[Thermostat] setpoint failed:', err);
-      throw new this.platform.api.hap.HapStatusError(
-        this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
-      );
-    }
+    this.targetTempC = c;
+    this.platform.log.warn(
+      `[Thermostat] Target temperature (${f}°F) is display-only — the controller ` +
+      'does not support remote set-point changes. Adjust it at the panel.',
+    );
   }
 
   async handleSetMode(value: CharacteristicValue): Promise<void> {

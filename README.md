@@ -90,14 +90,39 @@ Available circuits: `POOL`, `SPA`, `FILTER`, `LIGHTS`, `SPILLOVER`, `AUX_1`, `AU
 
 | Accessory | Type | Notes |
 |---|---|---|
-| Pool | Switch | POOL circuit |
-| Spa | Switch | SPA circuit |
+| Pool | Switch | POOL circuit (shares the POOL/SPA toggle) |
+| Spa | Switch | SPA circuit (shares the POOL/SPA toggle) |
 | Filter | Switch | FILTER pump |
 | Lights | Switch | LIGHTS circuit |
-| Heater | Switch | HEATER_1 on/off |
-| Pool Heater | Thermostat | Current temp + setpoint (Heat/Off only) |
+| Aux 1 / Aux 2 | Switch | AUX_1 / AUX_2 circuits |
+| Heater | Switch | Toggles heater auto-mode (see limitations) |
+| Pool Heater | Thermostat | Current temp + heating state; on/off via auto-mode |
 | Pool Temperature | Temperature Sensor | Read-only, °F→°C converted |
 | Air Temperature | Temperature Sensor | Read-only, °F→°C converted |
+
+## Capabilities & Limitations
+
+These reflect what the `aqualogic` library actually exposes (verified against
+the library source), which is narrower than some third-party docs suggest:
+
+**Works:**
+- Reading pool/air/spa temperature, salt level, chlorinator output %, pump speed,
+  and the on/off state of every circuit.
+- Turning POOL, SPA, FILTER, LIGHTS, AUX_1 and AUX_2 on/off.
+- Turning the heater on/off — routed through the heater **auto-mode** toggle,
+  which is the only heater control the protocol exposes.
+
+**Not supported by the hardware/library (these fail honestly rather than
+silently doing nothing):**
+- **Heater set-point** — the controller exposes no way to read *or* set the
+  target temperature remotely. The Thermostat's target is display-only; change
+  the real set-point at the physical panel.
+- **Chlorinator output %** is read-only — there is no setter.
+- **Super-chlorinate** and **Spillover** have no corresponding keypad key, so
+  they cannot be toggled remotely.
+
+Rare configuration changes (set-point, freeze protection, timers, relay config)
+are handled at the physical panel at the equipment pad.
 
 ## References
 
