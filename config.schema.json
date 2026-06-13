@@ -1,0 +1,61 @@
+{
+  "pluginAlias": "ProLogic",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaPlus pool controllers via RS-485 WiFi serial bridge. Requires the Python sidecar service — see sidecar/install.sh.",
+  "footerDisplay": "See the [README](https://github.com/homebridge-fun/homebridge-prologic) for wiring and setup instructions.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "ProLogic",
+        "required": true
+      },
+      "sidecarHost": {
+        "title": "Sidecar Host",
+        "type": "string",
+        "default": "127.0.0.1",
+        "description": "Host where the Python sidecar service is running (usually localhost on the same Pi)."
+      },
+      "sidecarPort": {
+        "title": "Sidecar Port",
+        "type": "integer",
+        "default": 5757,
+        "description": "Port for the Python sidecar REST API."
+      },
+      "pollInterval": {
+        "title": "Poll Interval (ms)",
+        "type": "integer",
+        "default": 5000,
+        "minimum": 1000,
+        "description": "How often to poll the sidecar for state updates."
+      },
+      "circuits": {
+        "title": "Circuits to expose",
+        "type": "array",
+        "items": {
+          "title": "Circuit",
+          "type": "string",
+          "enum": ["POOL", "SPA", "FILTER", "LIGHTS", "SPILLOVER", "AUX_1", "AUX_2", "HEATER_1", "SUPER_CHLORINATE"]
+        },
+        "default": ["POOL", "SPA", "FILTER", "LIGHTS", "HEATER_1"],
+        "description": "Which circuits to expose as HomeKit switches."
+      },
+      "enablePoolHeaterThermostat": {
+        "title": "Pool Heater Thermostat",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose a Thermostat accessory for the pool heater with setpoint control."
+      },
+      "enableTemperatureSensors": {
+        "title": "Temperature Sensors",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose read-only air and pool temperature sensors."
+      }
+    },
+    "required": ["name"]
+  }
+}

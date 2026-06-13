@@ -1,0 +1,2 @@
+aqualogic>=2.4.0
+flask>=3.0.0

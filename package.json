@@ -1,0 +1,41 @@
+{
+  "name": "homebridge-prologic",
+  "version": "1.0.0",
+  "description": "Homebridge platform plugin for Hayward ProLogic/AquaPlus pool controllers via RS-485 serial bridge",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "lint": "eslint src/",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "hayward",
+    "prologic",
+    "aquaplus",
+    "aqualogic",
+    "pool",
+    "rs485",
+    "homekit"
+  ],
+  "engines": {
+    "node": ">=18.0.0",
+    "homebridge": ">=2.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.0.0",
+    "homebridge": "^2.0.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "homebridge": ">=2.0.0"
+  }
+}
