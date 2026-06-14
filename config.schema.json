@@ -33,7 +33,7 @@
         "description": "How often to poll the sidecar for state updates."
       },
       "circuits": {
-        "title": "Circuits to expose",
+        "title": "Circuit switches to expose",
         "type": "array",
         "items": {
           "title": "Circuit",
@@ -41,13 +41,30 @@
           "enum": ["POOL", "SPA", "FILTER", "LIGHTS", "SPILLOVER", "AUX_1", "AUX_2", "HEATER_1", "SUPER_CHLORINATE"]
         },
         "default": ["POOL", "SPA", "FILTER", "LIGHTS", "HEATER_1"],
-        "description": "Which circuits to expose as HomeKit switches."
+        "description": "Which circuits to expose as HomeKit switches. AUX_2 and VALVE_3 are hidden by default (unused on this system)."
+      },
+      "activeBodies": {
+        "title": "Active pool bodies",
+        "type": "array",
+        "items": {
+          "title": "Body",
+          "type": "string",
+          "enum": ["pool", "spa", "spillover"]
+        },
+        "default": ["pool", "spa"],
+        "description": "Which bodies your panel is configured for. Controls the POOL/SPA mode-selection cycle and which heater setpoints are active. This system: pool + spa only (no spillover)."
       },
       "enablePoolHeaterThermostat": {
         "title": "Pool Heater Thermostat",
         "type": "boolean",
         "default": true,
-        "description": "Expose a Thermostat accessory for the pool heater with setpoint control."
+        "description": "Expose the mode-following thermostat (Accessory A) that mirrors whichever heater setpoint is active for the current valve mode."
+      },
+      "enableSpaHeaterThermostat": {
+        "title": "Spa Heater Thermostat (fixed)",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose a dedicated Spa Heat thermostat (Accessory C) always showing the spa setpoint regardless of current mode."
       },
       "enableTemperatureSensors": {
         "title": "Temperature Sensors",
