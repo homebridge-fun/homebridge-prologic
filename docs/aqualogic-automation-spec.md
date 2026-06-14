@@ -32,19 +32,25 @@ AquaConnect web box, exposed to HomeKit as heater + VSP control.
 
 Each on-screen button fires `WebsProcessKey("NN")`:
 
-| Button | Code |
-|---|---|
-| RIGHT (`>`) | `01` |
-| MENU | `02` |
-| LEFT (`<`) | `03` |
-| MINUS (`−`) | `05` |
-| PLUS (`+`) | `06` |
-| POOL / SPA / SPILLOVER | `07` |
-| VALVE3 | `11` |
-| HEATER1 | `13` |
-| (blank pads) | `00` |
+| Button | Code | Notes |
+|---|---|---|
+| RIGHT (`>`) | `01` | navigation |
+| MENU | `02` | navigation |
+| LEFT (`<`) | `03` | navigation |
+| MINUS (`−`) | `05` | value down |
+| PLUS (`+`) | `06` | value up / enter inline submenu |
+| POOL | `07` | body/mode select |
+| SPA | `07` | body/mode select |
+| SPILLOVER | `07` | body/mode select |
+| FILTER | `08` | pump on/off (used in VSP activation cycle, §6.2) |
+| LIGHTS | `09` | toggle |
+| AUX1 | `0A` | toggle |
+| AUX2 | `0B` | toggle (unused/inert on this system) |
+| VALVE3 | `11` | toggle |
+| HEATER1 | `13` | heater enable toggle: `Manual Off` ↔ `Auto Control` |
+| (blank pads) | `00` | no-op |
 
-**FILTER button key code: NOT captured — see §9 [PENDING].** Required for the VSP activation cycle.
+Codes appear to be hex byte values. **POOL / SPA / SPILLOVER all share `07`** — it is a single body/mode-select key; the web UI exposes three buttons that emit the same code, so selecting a specific mode means pressing `07` and reading the resulting mode off the LCD (it cycles), not addressing a mode directly.
 
 > These are AquaConnect *web* key codes. Whether they map 1:1 to raw RS-485 keypad frame codes must be cross-checked against the AQ-CO-SERIAL protocol and the `swilson/aqualogic` reference implementation.
 
@@ -171,7 +177,7 @@ Everything outside the permitted branches the owner handles manually.
 
 All confirmable without changing a value or cycling the filter:
 
-1. **FILTER button key code** — scan the AquaConnect DOM for the `WebsProcessKey("NN")` on the FILTER cell. Required for §6 activation.
+1. ~~**FILTER button key code**~~ — **DONE**: `FILTER = 08` (§2).
 2. **VSP submenu** — exact LCD strings, layout, and how to reach/read **slot 4** (one PLUS to enter, then navigation).
 3. **Post-filter-cycle window** — exact display text during the limited selection window, how the slot increments with PLUS/MINUS, and the window duration.
 4. **Forced-off → writable timing** — whether a heater setpoint becomes writable the instant the heater leaves forced-off, or with lag (determines the §5.2 write rule: activate-then-write vs. reject/queue).
@@ -213,3 +219,119 @@ One physical heater with two mode-driven setpoints is exposed as **three thermos
 - Canonical anchor routine: `MENU` until line 1 == `Settings Menu`.
 - All setpoint reads/writes go through the §5 paths; all VSP through §6; all gated by §7 guards and the §8 scope.
 - Resolve every `[PENDING]` item (read-only) before enabling write paths that depend on it.
+
+---
+
+## 12. Live menu examples & behavior `[VERIFIED]`
+
+Captured live with single PLUS / single MINUS (revert) probes. Use these as the canonical
+before/after examples for each value type.
+
+### 12.1 Editing model (general)
+- **No "enter"/"exit" key.** PLUS on a `+ to enter` item expands its sub-items **inline** into the ring; you then walk them with RIGHT/LEFT like any other item, and leaving is just continuing past them (or pressing MENU, which drops to the next Settings item). Confirmed: walking past the last VSP sub-item (`Spa Speed`) lands on `Super Chlorinate`, the next main-ring item.
+- **Numeric step size = 5%** for chlorinator and pump-speed items (observed 30→35, 50→55).
+- **A change takes effect immediately** as you press +/-; there is no separate commit.
+
+### 12.2 Temperature (heater) — NON-symmetric, special revert
+`Pool Heater1` (and `Spa Heater1`) display `Manual Off` when the heater is force-off via the HEATER1 button.
+
+| Action | LCD line 1 | LCD line 2 |
+|---|---|---|
+| start | `Pool Heater1` | `Manual Off` |
+| PLUS ×1 | `Pool Heater1` | `87°F` |
+
+- **PLUS does NOT increment a temperature ladder from "Manual Off."** It clears the force-off and reveals the **stored setpoint** (here 87°F), i.e. it effectively enables the heater. A single MINUS does **not** undo this (it would give 86°F).
+- **To restore `Manual Off`:** toggle the **HEATER1 button (code `13`)**. HEATER1 is a 2-state toggle: `Auto Control` ↔ `Manual Off`. From the PLUS-enabled state it took **two** HEATER1 presses to return to `Manual Off` (→ `Heater1 / Auto Control` → `Heater1 / Manual Off`).
+- **Implication for automation:** never probe a force-off heater with +/- expecting a reversible nudge. To set a temperature you must first bring the heater out of force-off (HEATER1), then +/- adjusts °F normally; to disable, HEATER1 back to `Manual Off`. This is the concrete form of the §5.2 heater-active precondition.
+
+### 12.3 Chlorinator — symmetric, fully reversible
+| Action | LCD line 1 | LCD line 2 |
+|---|---|---|
+| start | `Pool Chlorinator` | `30%` |
+| PLUS ×1 | `Pool Chlorinator` | `35%` |
+| MINUS ×1 | `Pool Chlorinator` | `30%` |
+
+Clean 5% ladder; up-once-back fully restores. (`Spa Chlorinator` observed at `1%`, same control type.)
+
+### 12.4 VSP Speed Settings — inline sub-items
+PLUS on `VSP Speed Settings / + to enter` expands these, walked with RIGHT:
+
+| Order | LCD line 1 | LCD line 2 (current) | Notes |
+|---|---|---|---|
+| 1 | `Filter Speed1` | `95%` | **scheduled — do not change** |
+| 2 | `Filter Speed2` | `60%` | **scheduled — do not change** |
+| 3 | `Filter Speed3` | `50%` | **scheduled — do not change** |
+| 4 | `Filter Speed4` | `50%` | **override lane — Claude may write this only** |
+| 5 | `Spa Speed` | `80%` | not a filter slot; do not change |
+| → | (`Super Chlorinate` …) | | RIGHT past `Spa Speed` exits to main ring |
+
+Slot-4 probe (the only writable slot): `Filter Speed4 50%` → PLUS → `55%` → MINUS → `50%`. Symmetric 5% step, reversible. **Slots 1–3 and Spa Speed were navigated read-only.**
+
+### 12.5 Default-screen indicators (for closed-loop reads)
+While idle/cycling, the Default menu surfaces live state used by the guards:
+- `Filter Speed / Off` — current pump speed/mode (here Off; pump not running).
+- `Heater1 / Auto Control` or `Heater1 / Manual Off` — current heater enable state.
+- POOL button highlighted = pool mode active (drives which heater setpoint is live, §5.3).
+
+### 12.6 Status of prior [PENDING] items (§9)
+- **#2 VSP submenu strings — RESOLVED** (§12.4): Filter Speed1–4 + Spa Speed; PLUS to enter; 5% step.
+- **#4 forced-off→writable — PARTIALLY RESOLVED**: setpoint is revealed/writable the instant the heater leaves force-off; the enable/disable itself is the HEATER1 toggle, not a setpoint key (§12.2).
+- **#1 FILTER key code — RESOLVED**: `FILTER = 08` (full button map in §2).
+- **#3 post-filter-cycle slot-selection window — STILL PENDING** (not exercised; requires a filter cycle, deferred).
+
+---
+
+## 13. Menu exit & state management `[OWNER]`
+
+### 13.1 Fast menu exit (return to Default display)
+To leave the menu quickly when done:
+- **MENU until `Default Menu`, then RIGHT once.** Drops straight to the idle/cycling Default display. **Non-mutating** (no equipment state changes). This is the exit method to use.
+
+(Idle timeout also auto-returns to Default after ~2 min, but don't rely on the wait.)
+
+> Note: toggling an equipment button does **not** exit the menu — it briefly flashes that output's status on the LCD, then the display returns to the menu. Do not use a toggle as an exit.
+
+### 13.2 Maintain a cached state model (do not rely on bus refresh)
+The controller is only observable through the **slow RS-485/LCD bus**, and values appear only as the Default screen cycles. The navigator must **continuously read the bus and cache the full current state** (heater enable + setpoints, pump speed/mode, chlorinator %, valve mode, etc.) so it always knows the complete current state **without waiting for the next refresh**. Update the cache whenever a value scrolls by or a change is made.
+
+### 13.3 Restore-to-prior-state requirement (critical)
+Before any change, **snapshot the relevant prior state**; after the operation, **return the system to that exact state**. Several settings have *coupled* state that a single value write does not capture.
+
+**Heater is the canonical case** (couples enable-state + setpoint — see §12.2). If the heater is **Off** and the user sets a target:
+1. **Cache** that the heater was Off (`Manual Off`).
+2. **Enable** the heater so the setpoint is adjustable (HEATER1 toggle; PLUS in the setpoint item reveals/engages the stored °F).
+3. Navigate to the setpoint and set the target with `+`/`-`.
+4. **Toggle HEATER1 back to `Manual Off`** to restore the original disabled state.
+
+Without the cached "was Off" fact, the navigator would leave the heater **enabled** — a real, unintended change to the pool. The cached snapshot is what tells it to re-disable. Apply the same snapshot→change→restore discipline to any coupled or mode-dependent setting.
+
+---
+
+## 14. Plugin configuration `[OWNER]`
+
+The plugin must be configurable to match the panel's actual setup and the user's preferences, rather than assuming a fixed layout.
+
+### 14.1 Active bodies / modes (POOL / SPA / SPILLOVER)
+POOL, SPA, and SPILLOVER are **one cycling button** (shared key `07`, §2): each press advances to the next body, wrapping. The cycle only includes the bodies the **panel** is configured for.
+
+- **Config item:** which bodies are active (`pool`, `spa`, `spillover`). **This system: `pool` + `spa` only** (no spillover).
+- **Behavior driven by it:**
+  - Mode selection by key `07` must expect/produce only the active bodies (here pool↔spa, a 2-state cycle), reading the LCD to confirm the landed mode — never blind-counting.
+  - The mode-driven active-setpoint logic (§5.3) keys off this set: with spillover disabled, the live heater setpoint is simply Pool (pool mode) or Spa (spa mode).
+  - HomeKit accessory A's mode label (§10.1) only ever shows configured modes.
+
+### 14.2 Hideable toggles / accessories
+The user can choose which equipment toggles are exposed (as HomeKit accessories and/or as automation targets). Hiding is a **plugin-presentation choice only** — it does not change the panel; the button still exists on the panel/web UI and may still be driven internally if needed.
+
+- **Config item:** per-toggle visibility for `FILTER`, `LIGHTS`, `AUX1`, `AUX2`, `VALVE3` (and the body button group).
+- **This system — hide: `AUX2` (`0B`) and `VALVE3` (`11`)**, both unused. In use / exposed: `POOL`/`SPA` (mode), `FILTER` (`08`), `HEATER1` (`13`); `LIGHTS`/`AUX1` per user preference.
+- **Behavior:** hidden toggles are omitted from the HomeKit bridge and from any UI lists. Guards still apply to anything the plugin does drive internally (e.g. FILTER for the VSP activation cycle stays functional even if not surfaced as a user toggle).
+
+### 14.3 Bridge address (connection)
+The AquaConnect bridge's network address must be a **user setting**, not hardcoded.
+
+- **Config item:** bridge host/IP (and port if non-default). **This system: `192.168.50.100`** — use as the default but keep it user-editable.
+- Used as the base for the AquaConnect web/local interface (`http://<host>/`) and for reaching the controller over the bus via that box.
+- The plugin should fail gracefully / surface a clear connection error if the bridge is unreachable, rather than silently stalling on the slow bus.
+
+> Default the config to this system's values (pool+spa active; AUX2 + VALVE3 hidden; bridge `192.168.50.100`) but keep every item user-overridable so the plugin ports to other AquaLogic/ProLogic setups.
