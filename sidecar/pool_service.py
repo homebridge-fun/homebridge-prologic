@@ -184,6 +184,7 @@ def panel_thread(host: str, port: int) -> None:
     smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
 
     def on_change(aq) -> None:
+        l1, l2 = lcd.lines()
         with state_lock:
             state.connected = True
             state.last_update = time.time()
@@ -198,6 +199,11 @@ def panel_thread(host: str, port: int) -> None:
                     state.circuits[name] = bool(aq.get_state(s))
                 except Exception:
                     pass
+            # Parse valve mode from default cycling display (§10)
+            if 'Pool Mode' in l2:
+                state.valve_mode = 'pool'
+            elif 'Spa Mode' in l2:
+                state.valve_mode = 'spa'
 
     while True:
         try:
@@ -255,9 +261,17 @@ class SimPanel:
         self._spa_chlor = 1
         self._super_chlor = False
         self._mode = 'pool'               # 'pool' | 'spa'
+        # VSP activation window (§6.2/§6.4): FILTER off→on triggers a
+        # ~5-10s slot-selection window.  In simulation it stays open until
+        # another key exits it (matches the real panel UX).
+        self._filter_window = False
+        self._active_slot = 1             # currently-running VSP slot (1-5)
         self._push_lcd()
 
     def _render(self) -> Tuple[str, str]:
+        # §6.4: slot-selection window overrides all other display states.
+        if self._filter_window:
+            return f'Filter On:Spd{self._active_slot}', '+/- to change'
         s = self._ms
         if s == 'default':
             return 'Pool 82\xb0F  Air 75\xb0F', f'Filter Speed / Off  {self._mode.title()} Mode'
@@ -293,6 +307,21 @@ class SimPanel:
         lcd.text_updated(f'{l1}\n{l2}')
 
     def send_key(self, name: str) -> None:
+        # §6.4: while the slot-selection window is open, only PLUS/MINUS cycle
+        # slots; any other key (except another FILTER toggle) closes the window.
+        if self._filter_window:
+            if name == 'PLUS':
+                self._active_slot = (self._active_slot % 5) + 1
+                self._push_lcd()
+                return
+            elif name == 'MINUS':
+                self._active_slot = ((self._active_slot - 2) % 5) + 1
+                self._push_lcd()
+                return
+            elif name != 'FILTER':
+                self._filter_window = False
+                # fall through to normal key handling for the received key
+
         s = self._ms
         if name == 'MENU':
             self._in_vsp = False
@@ -366,7 +395,13 @@ class SimPanel:
             self._mode = modes[(modes.index(self._mode) + 1) % len(modes)]
         elif name == 'FILTER':
             with state_lock:
-                state.circuits['FILTER'] = not state.circuits.get('FILTER', False)
+                was_on = state.circuits.get('FILTER', False)
+                state.circuits['FILTER'] = not was_on
+            if not was_on:
+                # Filter just turned ON → enter slot-selection window (§6.2)
+                self._filter_window = True
+            else:
+                self._filter_window = False
         self._push_lcd()
 
     def set_circuit(self, name: str, on: bool) -> bool:
@@ -396,6 +431,7 @@ def simulate_thread() -> None:
         state.salt_level = 3200.0
         state.chlorinator_percent = 30.0
         state.pump_speed = 0
+        state.valve_mode = 'pool'
         for name in CIRCUIT_NAMES:
             state.circuits[name] = False
         state.circuits['POOL'] = True
@@ -602,6 +638,55 @@ class MenuNavigator:
             self.fast_exit()
 
 
+    def activate_vsp_slot4(self) -> dict:
+        """
+        Make slot 4 the running VSP slot by cycling FILTER off→on to open the
+        slot-selection window (§6.2), then using +/- to reach slot 4 (§6.4).
+
+        Gate contract (§6.4 / §11): every +/- press verifies 'Filter On:' is
+        still in l1 before proceeding; if the window closed early an error is
+        raised without further action.
+
+        Does NOT navigate the Settings menu; holds _nav_lock the full time to
+        prevent any concurrent keypad use during the activation window.
+        """
+        _SLOT_MAX_STEPS = 8   # 5 slots × up to 1 wrap = 5; 8 is generous
+        try:
+            with _nav_lock:
+                # Ensure filter is off first so the next FILTER press turns it on.
+                with state_lock:
+                    filter_on = state.circuits.get('FILTER', False)
+                if filter_on:
+                    self._send('FILTER')   # turn off
+                    l1, _ = self._lcd.lines()
+                    # Confirm off (default display or normal menu - no 'Filter On:')
+                    if 'Filter On:' in l1:
+                        raise RuntimeError(f'FILTER off did not clear window: {l1!r}')
+
+                # Turn filter on → opens slot-selection window
+                l1, l2 = self._send('FILTER')
+                if 'Filter On:' not in l1:
+                    raise RuntimeError(
+                        f'Expected slot-selection window after FILTER on, got: {l1!r}')
+
+                # Cycle +/- until we see Spd4 in l1.
+                for step in range(_SLOT_MAX_STEPS):
+                    if 'Spd4' in l1:
+                        break
+                    l1, l2 = self._send('PLUS')
+                    if 'Filter On:' not in l1:
+                        raise RuntimeError(
+                            f'Slot-selection window closed early at step {step}: {l1!r}')
+                else:
+                    raise RuntimeError('Could not find slot 4 in slot-selection window')
+
+                with state_lock:
+                    state.circuits['FILTER'] = True
+                return {'activated_slot': 4, 'line1': l1, 'line2': l2}
+        except Exception:
+            raise
+
+
 def _get_panel():
     with panel_lock:
         return panel
@@ -782,6 +867,25 @@ def set_vsp_slot4() -> Response:
         return jsonify(result)
     except Exception as e:
         log.error(f'set_vsp_slot4: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/vsp/slot4/activate', methods=['POST'])
+def activate_vsp_slot4() -> Response:
+    """
+    Activate slot 4 as the running VSP slot by cycling FILTER off→on (§6.2).
+    No body required.  The filter is left ON after the call.
+    Combine with POST /vsp/slot4 to set the speed value first, then activate.
+    """
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        result = nav.activate_vsp_slot4()
+        log.info(f'VSP slot4 activated (filter on)')
+        return jsonify(result)
+    except Exception as e:
+        log.error(f'activate_vsp_slot4: {e}')
         return jsonify({'error': str(e)}), 500
 
 

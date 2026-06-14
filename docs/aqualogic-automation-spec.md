@@ -1,5 +1,4 @@
 # AquaLogic / AquaConnect Automation Spec
-
 Target: RS-485 navigation of a Hayward AquaLogic/ProLogic PS controller, fronted by an
 AquaConnect web box, exposed to HomeKit as heater + VSP control.
 
@@ -126,23 +125,35 @@ One physical heater obeys one setpoint at a time, selected by valve mode:
 
 ---
 
-## 6. VSP speed override `[OWNER]` / `[PENDING]`
+## 6. VSP speed override `[OWNER]` / `[VERIFIED]`
 
 VSP speeds 1–3 are the owner's **scheduled** modes. The active speed/mode is reported on the Default cycling screen.
 
 ### 6.1 Hard rule: slot 4 only
 **Any speed change Claude makes goes to slot 4. Never write slots 1–3.** Slot 4 is the designated override lane so automation never disturbs the schedule.
 
-### 6.2 Activation procedure
+### 6.2 Activation procedure `[VERIFIED]`
 A new slot-4 speed does **not** take effect on its own. Full sequence:
-1. Enter `VSP Speed Settings` (PLUS `06` to descend).
-2. Set the desired speed on **slot 4**. `[PENDING exact submenu strings/layout]`
-3. Back out of the submenu.
-4. Cycle **FILTER off → FILTER on**. `[PENDING FILTER key code — §9]`
-5. Immediately, within a **limited time window** after the filter cycle, the display shows the default/current speed state; press **PLUS/MINUS to select the speed slot (1–4)** and choose **slot 4**. `[PENDING exact window text, slot-increment behavior, window duration]`
+1. Enter `VSP Speed Settings` (PLUS `06`), navigate RIGHT to `Filter Speed4`, set the speed with `+`/`-` (5% steps).
+2. Cycle **FILTER (`08`) off → on**. After pressing off, wait for the pump to fully stop (LCD shows `Filter / Off`) before pressing on.
+3. On FILTER-on, the **slot-selection window** appears (see §6.4): `Filter On:SpdN` / `+/- to change`.
+4. While that window is showing, press `+`/`-` to land on **`Spd4`**, then **do nothing** — let it time out. At timeout the displayed slot is committed and the pump runs at that slot's speed.
 
 ### 6.3 Conditional / verify
-The temporary slot-4 override only engages **in limited situations**. Do **not** fire-and-forget: after the sequence, verify via the Default cycling screen that the pump actually landed on the new speed.
+The temporary slot-4 override only engages **in limited situations**. Do **not** fire-and-forget: after the sequence, verify via the Default cycling screen (`Filter Speed / NN% SpeedN`) that the pump actually landed on the intended slot/speed.
+
+### 6.4 Slot-selection window `[VERIFIED]`
+Observed verbatim after a FILTER off→on cycle:
+```
+Line 1:  Filter On:SpdN      (N = selected slot, shown highlighted/inverted)
+Line 2:  +/- to change
+```
+- **`+`/`-` cycle the slot NUMBER** (`Spd1…Spd4`), not a percentage. Confirmed `+` : `Spd3 → Spd4`; `-` decrements. (Format is `SpdN`, so it is slot selection, not value editing.)
+- **Default pre-selection = the last-committed slot**, NOT necessarily the scheduled one. Observed: first cycle defaulted to `Spd3` (the running slot); after `Spd4` was committed, the next cycle defaulted to `Spd4`. So to re-trigger a slot-4 override that's already active, the window may already show `Spd4`; otherwise step to it with `+`/`-`.
+- **Timeout: persistent for at least ~5 s** (observed still open at 1 s, 3 s, and 5 s after FILTER-on), then closes on its own. Treat the window as open for roughly 5–10 s; do not assume it's brief. Exact value not pinned (slow bus), but it is comfortably long enough to read the LCD and send one slot key.
+- **After timeout the displayed slot is committed** and the pump runs at it.
+
+> ⚠️ **Post-timeout hazard (critical for the navigator).** When the window times out, the display returns to **whatever menu item was parked underneath** — which, in this flow, is the `Filter Speed4` *value* item. Any `+`/`-` sent *after* the window has closed will then edit **that speed value**, not the slot. (Observed live: a `-` meant for the slot instead changed `Filter Speed4 50% → 45%`.) The window (`Filter On:SpdN`) and the speed-value item (`Filter SpeedN  NN%`) look superficially similar but are different contexts. **Rule:** gate every slot-select `+`/`-` on the LCD line 1 actually reading `Filter On:` — if it doesn't, the window is gone and `+`/`-` must not be sent.
 
 ---
 
@@ -173,14 +184,14 @@ Everything outside the permitted branches the owner handles manually.
 
 ---
 
-## 9. Pending live confirmations (read-only)
+## 9. Pending live confirmations
 
-All confirmable without changing a value or cycling the filter:
+All items resolved. No remaining `[PENDING]` items.
 
 1. ~~**FILTER button key code**~~ — **DONE**: `FILTER = 08` (§2).
-2. **VSP submenu** — exact LCD strings, layout, and how to reach/read **slot 4** (one PLUS to enter, then navigation).
-3. **Post-filter-cycle window** — exact display text during the limited selection window, how the slot increments with PLUS/MINUS, and the window duration.
-4. **Forced-off → writable timing** — whether a heater setpoint becomes writable the instant the heater leaves forced-off, or with lag (determines the §5.2 write rule: activate-then-write vs. reject/queue).
+2. ~~**VSP submenu**~~ — **DONE** (§12.4): Filter Speed1–4 + Spa Speed; PLUS to enter; 5% steps.
+3. ~~**Post-filter-cycle window**~~ — **DONE** (§6.4): text `Filter On:SpdN` / `+/- to change`; slot-number cycling; defaults to last-committed slot; open ~5–10 s; post-timeout +/- hazard documented.
+4. ~~**Forced-off → writable timing**~~ — **DONE** (§12.2): setpoint is revealed/writable the instant the heater leaves force-off (PLUS reveals stored °F immediately); enable/disable is the HEATER1 toggle, not a setpoint key. No remaining lag question.
 
 ---
 
@@ -218,7 +229,7 @@ One physical heater with two mode-driven setpoints is exposed as **three thermos
 - Build a **closed-loop state machine**: send key → read both LCD lines → decide next key from text. Never blind-count past the first two Settings items.
 - Canonical anchor routine: `MENU` until line 1 == `Settings Menu`.
 - All setpoint reads/writes go through the §5 paths; all VSP through §6; all gated by §7 guards and the §8 scope.
-- Resolve every `[PENDING]` item (read-only) before enabling write paths that depend on it.
+- VSP activation: gate every slot-select `+`/`-` on LCD line 1 reading `Filter On:` (§6.4 post-timeout hazard).
 
 ---
 
@@ -274,10 +285,7 @@ While idle/cycling, the Default menu surfaces live state used by the guards:
 - POOL button highlighted = pool mode active (drives which heater setpoint is live, §5.3).
 
 ### 12.6 Status of prior [PENDING] items (§9)
-- **#2 VSP submenu strings — RESOLVED** (§12.4): Filter Speed1–4 + Spa Speed; PLUS to enter; 5% step.
-- **#4 forced-off→writable — PARTIALLY RESOLVED**: setpoint is revealed/writable the instant the heater leaves force-off; the enable/disable itself is the HEATER1 toggle, not a setpoint key (§12.2).
-- **#1 FILTER key code — RESOLVED**: `FILTER = 08` (full button map in §2).
-- **#3 post-filter-cycle slot-selection window — STILL PENDING** (not exercised; requires a filter cycle, deferred).
+All resolved. See §9.
 
 ---
 
