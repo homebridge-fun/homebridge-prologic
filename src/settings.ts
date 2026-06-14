@@ -17,11 +17,21 @@ export type Circuit = typeof CIRCUITS[number];
 
 export interface PoolStatus {
   circuits: Record<Circuit, boolean>;
-  pool_temp: number | null;       // °F from controller
-  air_temp: number | null;        // °F from controller
-  heater_setpoint: number | null; // °F
-  salt_level: number | null;      // ppm
+  pool_temp: number | null;
+  air_temp: number | null;
+  spa_temp: number | null;
+  salt_level: number | null;
   chlorinator_percent: number | null;
+  pump_speed: number | null;
+  // populated by menu navigator reads; null = not yet read
+  pool_setpoint_f: number | null;
+  spa_setpoint_f: number | null;
+  pool_heater_enabled: boolean | null;
+  spa_heater_enabled: boolean | null;
+  valve_mode: 'pool' | 'spa' | null;
+  vsp_slot4_pct: number | null;
+  connected: boolean;
+  last_update: number;
 }
 
 export interface PlatformConfig {
@@ -30,7 +40,9 @@ export interface PlatformConfig {
   sidecarPort: number;
   pollInterval: number;
   circuits: Circuit[];
+  activeBodies: ('pool' | 'spa' | 'spillover')[];
   enablePoolHeaterThermostat: boolean;
+  enableSpaHeaterThermostat: boolean;
   enableTemperatureSensors: boolean;
 }
 
