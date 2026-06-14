@@ -8,6 +8,7 @@ local REST API that the Homebridge plugin polls.
 
 Usage:
     python3 pool_service.py --host 192.168.50.XXX --port 8899 --api-port 5757
+    python3 pool_service.py --simulate          # fake data, no bridge needed
 
 NOTE ON CAPABILITIES (verified against swilson/aqualogic):
   * Reads available: pool/air/spa temp, salt, chlorinator %, pump speed, and the
@@ -20,18 +21,23 @@ NOTE ON CAPABILITIES (verified against swilson/aqualogic):
   * The library exposes NO heater set-point (neither read nor write) and NO
     chlorinator-percent setter, and there is no key for SUPER_CHLORINATE or
     SPILLOVER. Those write endpoints return 501/422 rather than silently lying.
+
+SIMULATION MODE (--simulate):
+  Skips the RS-485/aqualogic connection entirely and serves realistic fake data
+  so the full Homebridge -> HomeKit stack can be exercised without any hardware.
+  Circuit toggles are honored locally; temps drift gently over time. The
+  aqualogic library is NOT required in this mode (only flask).
 """
 
 import argparse
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 from flask import Flask, jsonify, request, Response
-from aqualogic.core import AquaLogic
-from aqualogic.states import States
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +47,7 @@ log = logging.getLogger('pool_service')
 
 
 # ---------------------------------------------------------------------------
-# State container shared between the aqualogic thread and Flask handlers
+# State container shared between the worker thread and Flask handlers
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -58,28 +64,18 @@ class PoolState:
 
 state = PoolState()
 state_lock = threading.Lock()
-panel: Optional[AquaLogic] = None
+
+# The "panel" is whatever object can service writes — a live AquaLogic in real
+# mode, or a SimPanel in simulation. Both expose set_circuit(name, on) -> bool.
+panel = None
 panel_lock = threading.Lock()
 
-
-# ---------------------------------------------------------------------------
-# Circuit name -> aqualogic States enum.
-#
-# These are the states we READ. Writes are handled separately because not every
-# state is writable (see set_circuit / SETTABLE_VIA_AUTO_MODE below).
-# ---------------------------------------------------------------------------
-
-CIRCUIT_MAP = {
-    'POOL':             States.POOL,
-    'SPA':              States.SPA,
-    'FILTER':           States.FILTER,
-    'LIGHTS':           States.LIGHTS,
-    'SPILLOVER':        States.SPILLOVER,
-    'AUX_1':            States.AUX_1,
-    'AUX_2':            States.AUX_2,
-    'HEATER_1':         States.HEATER_1,
-    'SUPER_CHLORINATE': States.SUPER_CHLORINATE,
-}
+# Circuit names the sidecar tracks/serves. These map 1:1 to aqualogic States
+# of the same name when the library is present.
+CIRCUIT_NAMES = [
+    'POOL', 'SPA', 'FILTER', 'LIGHTS',
+    'SPILLOVER', 'AUX_1', 'AUX_2', 'HEATER_1', 'SUPER_CHLORINATE',
+]
 
 
 def _read_property(aq, name, default=None):
@@ -91,13 +87,38 @@ def _read_property(aq, name, default=None):
 
 
 # ---------------------------------------------------------------------------
-# aqualogic connection thread
+# Real aqualogic connection thread
 # ---------------------------------------------------------------------------
+
+class RealPanel:
+    """Adapter around a live AquaLogic so the REST layer is mode-agnostic."""
+
+    def __init__(self, aq, States):
+        self._aq = aq
+        self._States = States
+        self._map = {name: getattr(States, name) for name in CIRCUIT_NAMES}
+
+    def set_circuit(self, name: str, on: bool) -> bool:
+        States = self._States
+        state_enum = self._map.get(name)
+        if state_enum is None:
+            raise KeyError(name)
+        # The heater cannot be driven via HEATER_1 (set_state returns False).
+        # The only library-supported heater control is HEATER_AUTO_MODE.
+        if state_enum == States.HEATER_1:
+            state_enum = States.HEATER_AUTO_MODE
+        return bool(self._aq.set_state(state_enum, on))
+
 
 def panel_thread(host: str, port: int) -> None:
     global panel
 
-    def on_state_change(aq: AquaLogic) -> None:
+    from aqualogic.core import AquaLogic
+    from aqualogic.states import States
+
+    state_map = {name: getattr(States, name) for name in CIRCUIT_NAMES}
+
+    def on_state_change(aq) -> None:
         with state_lock:
             state.connected = True
             state.last_update = time.time()
@@ -107,7 +128,7 @@ def panel_thread(host: str, port: int) -> None:
             state.salt_level = _read_property(aq, 'salt_level')
             state.chlorinator_percent = _read_property(aq, 'pool_chlorinator')
             state.pump_speed = _read_property(aq, 'pump_speed')
-            for name, s in CIRCUIT_MAP.items():
+            for name, s in state_map.items():
                 try:
                     state.circuits[name] = bool(aq.get_state(s))
                 except Exception:
@@ -119,7 +140,7 @@ def panel_thread(host: str, port: int) -> None:
             aq = AquaLogic()
             aq.connect(host, port)
             with panel_lock:
-                panel = aq
+                panel = RealPanel(aq, States)
             # process() requires the data-changed callback and blocks until EOF.
             aq.process(on_state_change)
         except Exception as e:
@@ -131,6 +152,69 @@ def panel_thread(host: str, port: int) -> None:
                 state.connected = False
         log.info('Reconnecting in 5 seconds...')
         time.sleep(5)
+
+
+# ---------------------------------------------------------------------------
+# Simulation thread — realistic fake data, no hardware/aqualogic required
+# ---------------------------------------------------------------------------
+
+class SimPanel:
+    """Honors circuit writes by mutating the shared state in place."""
+
+    # POOL and SPA share one physical toggle and are mutually exclusive.
+    def set_circuit(self, name: str, on: bool) -> bool:
+        if name not in CIRCUIT_NAMES:
+            raise KeyError(name)
+        # Match the real controller's honest failures so HomeKit behaves the
+        # same in sim as it will against hardware.
+        if name in ('SUPER_CHLORINATE', 'SPILLOVER'):
+            return False
+        with state_lock:
+            state.circuits[name] = on
+            if name == 'POOL' and on:
+                state.circuits['SPA'] = False
+            elif name == 'SPA' and on:
+                state.circuits['POOL'] = False
+            state.last_update = time.time()
+        return True
+
+
+def simulate_thread() -> None:
+    global panel
+
+    with state_lock:
+        state.connected = True
+        state.last_update = time.time()
+        state.pool_temp = 82.0
+        state.air_temp = 75.0
+        state.spa_temp = 80.0
+        state.salt_level = 3200.0
+        state.chlorinator_percent = 60.0
+        state.pump_speed = 2400
+        for name in CIRCUIT_NAMES:
+            state.circuits[name] = False
+        state.circuits['FILTER'] = True
+        state.circuits['POOL'] = True
+
+    with panel_lock:
+        panel = SimPanel()
+
+    log.info('SIMULATION mode — serving fake pool data (no bridge connected).')
+
+    # Gently drift the readings so HomeKit shows live-looking numbers.
+    while True:
+        time.sleep(5)
+        with state_lock:
+            state.pool_temp = round(_clamp(state.pool_temp + random.uniform(-0.3, 0.3), 70, 92), 1)
+            state.air_temp = round(_clamp(state.air_temp + random.uniform(-0.5, 0.5), 50, 100), 1)
+            state.spa_temp = round(_clamp(state.spa_temp + random.uniform(-0.2, 0.2), 70, 104), 1)
+            state.salt_level = round(_clamp(state.salt_level + random.uniform(-20, 20), 2800, 3600))
+            state.pump_speed = int(_clamp(state.pump_speed + random.choice([-50, 0, 50]), 1500, 3450))
+            state.last_update = time.time()
+
+
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
 
 
 # ---------------------------------------------------------------------------
@@ -170,21 +254,15 @@ def set_circuit(name: str) -> Response:
     on: bool = bool(body.get('on', False))
     key = name.upper()
 
-    state_enum = CIRCUIT_MAP.get(key)
-    if state_enum is None:
+    if key not in CIRCUIT_NAMES:
         return jsonify({'error': f'Unknown circuit: {name}'}), 400
-
-    # The heater cannot be driven via HEATER_1 (set_state returns False).
-    # The only library-supported heater control is HEATER_AUTO_MODE.
-    if state_enum == States.HEATER_1:
-        state_enum = States.HEATER_AUTO_MODE
 
     aq = _get_panel()
     if aq is None:
         return jsonify({'error': 'Not connected'}), 503
 
     try:
-        ok = aq.set_state(state_enum, on)
+        ok = aq.set_circuit(key, on)
         if not ok:
             log.warning(f'Circuit {key} is not controllable on this system')
             return jsonify({
@@ -230,7 +308,7 @@ def set_super_chlorinate() -> Response:
         return jsonify({'error': 'Not connected'}), 503
 
     try:
-        ok = aq.set_state(States.SUPER_CHLORINATE, on)
+        ok = aq.set_circuit('SUPER_CHLORINATE', on)
         if not ok:
             return jsonify({
                 'error': 'Super-chlorinate cannot be toggled on this controller '
@@ -258,13 +336,20 @@ def health() -> Response:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='AquaPlus/ProLogic RS-485 sidecar service')
-    parser.add_argument('--host', required=True, help='IP address of the WiFi serial bridge')
+    parser.add_argument('--host', help='IP address of the WiFi serial bridge (required unless --simulate)')
     parser.add_argument('--port', type=int, default=8899, help='TCP port of the serial bridge')
     parser.add_argument('--api-port', type=int, default=5757, help='Port for the local REST API')
     parser.add_argument('--api-host', default='127.0.0.1', help='Bind address for REST API')
+    parser.add_argument('--simulate', action='store_true',
+                        help='Serve realistic fake data without connecting to any hardware')
     args = parser.parse_args()
 
-    t = threading.Thread(target=panel_thread, args=(args.host, args.port), daemon=True, name='aqualogic')
+    if args.simulate:
+        t = threading.Thread(target=simulate_thread, daemon=True, name='simulate')
+    else:
+        if not args.host:
+            parser.error('--host is required unless --simulate is given')
+        t = threading.Thread(target=panel_thread, args=(args.host, args.port), daemon=True, name='aqualogic')
     t.start()
 
     log.info(f'REST API listening on {args.api_host}:{args.api_port}')
