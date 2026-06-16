@@ -213,6 +213,24 @@ def panel_thread(host: str, port: int) -> None:
             aq.connect(host, port)
             with panel_lock:
                 panel = RealPanel(aq, States, Keys)
+            # Temporary: patch process() to log raw frame types
+            _orig_process = aq.process
+            _frame_log: set = set()
+            _orig_read = aq._read
+            _frame_buf = bytearray()
+            def _patched_read():
+                b = _orig_read()
+                _frame_buf.append(b if isinstance(b, int) else ord(b))
+                if len(_frame_buf) >= 4:
+                    # look for DLE STX in last 4 bytes to log frame type
+                    fb = bytes(_frame_buf[-4:])
+                    if fb[0] == 0x10 and fb[1] == 0x02:
+                        ft = fb[2:4]
+                        if ft not in _frame_log:
+                            log.info(f'[DEBUG] frame type seen: {ft.hex()}')
+                            _frame_log.add(ft)
+                return b
+            aq._read = _patched_read
             aq.process(on_change)       # blocks until connection drops
         except Exception as e:
             log.error(f'Connection lost: {e}')
