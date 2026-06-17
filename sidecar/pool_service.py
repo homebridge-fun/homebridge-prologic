@@ -498,7 +498,12 @@ class MenuNavigator:
     # ── Heater setpoints ─────────────────────────────────────────────────────
 
     def read_heater(self, which: str) -> dict:
-        """Navigate to a heater item and read its state without changing anything."""
+        """Navigate to a heater item and read its state without changing anything.
+
+        When the heater is 'Manual Off' the panel shows no temperature.  We
+        press PLUS to reveal the stored setpoint, record it, then re-disable
+        via HEATER_1 toggle so the state is unchanged on exit.
+        """
         if which not in ('pool', 'spa'):
             raise ValueError(f'which must be "pool" or "spa"')
         try:
@@ -508,13 +513,30 @@ class MenuNavigator:
                 for _ in range(presses):
                     self._send('RIGHT')
                 l1, l2 = self._lcd.lines()
-                enabled = l2.strip() != 'Manual Off'
+                was_off = l2.strip() == 'Manual Off'
+                enabled = not was_off
                 setpoint_f = None
-                if enabled:
-                    try:
-                        setpoint_f = int(l2.replace('\xb0F', '').replace('°F', '').strip())
-                    except ValueError:
-                        pass
+
+                if was_off:
+                    # PLUS from Manual Off reveals the stored °F without a
+                    # visible confirmation step — panel immediately shows temp.
+                    l1, l2 = self._send('PLUS')
+
+                try:
+                    setpoint_f = int(l2.replace('\xb0F', '').replace('°F', '').strip())
+                except ValueError:
+                    pass
+
+                if was_off:
+                    # Restore Manual Off: navigate back to this item and toggle
+                    # HEATER_1 (same path as set_heater §13.3 restore).
+                    self._send('RIGHT')   # lock in (move off item)
+                    self._send('LEFT')    # return to item
+                    for _ in range(3):
+                        l1, l2 = self._send('HEATER_1')
+                        if 'Manual Off' in l2:
+                            break
+
                 with state_lock:
                     if which == 'pool':
                         state.pool_heater_enabled = enabled
