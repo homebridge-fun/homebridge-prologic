@@ -119,7 +119,6 @@ KEY_MAX_RETRIES = 3
 def _install_key_burst(AquaLogic) -> None:
     """Monkeypatch AquaLogic._send_frame to burst-write key frames."""
     import binascii
-    from threading import Timer
 
     def _send_frame_burst(self) -> None:
         if self._send_queue.empty():
@@ -131,17 +130,11 @@ def _install_key_burst(AquaLogic) -> None:
             self._write(frame)
             time.sleep(KEY_GAP_MS / 1000.0)
         log.info('Sent (x%d): %s', KEY_BURST, binascii.hexlify(frame).decode())
-        # Verify the toggle landed, but only after the bus settles (see
-        # KEY_VERIFY_DELAY_S). _check_state re-queues the frame if the circuit
-        # state still hasn't changed — a genuine miss — and stops once it has,
-        # so we don't double-toggle. Cap retries to KEY_MAX_RETRIES.
-        try:
-            if data.get('desired_states') is not None:
-                data['retries'] = min(data.get('retries', KEY_MAX_RETRIES),
-                                      KEY_MAX_RETRIES)
-                Timer(KEY_VERIFY_DELAY_S, self._check_state, [data]).start()
-        except (KeyError, AttributeError):
-            pass
+        # No async _check_state requeue here. Circuit toggles are verified and
+        # retried synchronously in RealPanel.set_circuit under _nav_lock, which
+        # also serializes them against the menu navigator so keypresses never
+        # interleave on the shared bus. The library's async requeue couldn't
+        # coordinate with that lock and would double-toggle.
 
     AquaLogic._send_frame = _send_frame_burst
     log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms',
@@ -236,9 +229,25 @@ class RealPanel:
         # (it never sends a key). The keypad HEATER_1 button toggles Auto vs
         # Manual Off, which the lib models as HEATER_AUTO_MODE — that path
         # actually sends Keys.HEATER_1. Route the heater enable through it.
-        if s == self._States.HEATER_1:
-            return bool(self._aq.set_state(self._States.HEATER_AUTO_MODE, on))
-        return bool(self._aq.set_state(s, on))
+        target = self._States.HEATER_AUTO_MODE if s == self._States.HEATER_1 else s
+
+        # Serialize against the menu navigator (heater refresher) under
+        # _nav_lock: both feed the same RS-485 send queue, and interleaved
+        # keypresses corrupt each other (Bad CRC) and lose the toggle. Verify
+        # and retry synchronously here — each set_state queues exactly one burst
+        # press; we then poll the cached circuit state, which a clean LEDs frame
+        # refreshes once the bus is quiet, and only re-press on a genuine miss.
+        with _nav_lock:
+            for _ in range(max(1, KEY_MAX_RETRIES)):
+                if bool(self._aq.get_state(target)) == on:
+                    return True  # already in / reached desired state
+                self._aq.set_state(target, on)  # queue one burst toggle
+                deadline = time.time() + KEY_VERIFY_DELAY_S
+                while time.time() < deadline:
+                    time.sleep(0.4)
+                    if bool(self._aq.get_state(target)) == on:
+                        return True
+            return bool(self._aq.get_state(target)) == on
 
     def send_key(self, name: str) -> None:
         k = getattr(self._Keys, name, None)
