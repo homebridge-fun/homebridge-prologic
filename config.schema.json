@@ -54,14 +54,20 @@
         "default": ["pool", "spa"],
         "description": "Which bodies your panel is configured for. Controls the POOL/SPA mode-selection cycle and which heater setpoints are active. This system: pool + spa only (no spillover)."
       },
-      "enablePoolHeaterThermostat": {
-        "title": "Pool Heater Thermostat",
+      "enableActiveHeaterThermostat": {
+        "title": "Active Heat Thermostat (mode-following)",
         "type": "boolean",
         "default": true,
-        "description": "Expose the mode-following thermostat (Accessory A) that mirrors whichever heater setpoint is active for the current valve mode."
+        "description": "Expose the mode-following thermostat (Accessory A) that mirrors whichever heater setpoint is active for the current valve mode. Name shows 'Heat — Pool' or 'Heat — Spa'."
+      },
+      "enablePoolHeaterThermostat": {
+        "title": "Pool Heat Thermostat (fixed)",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose a dedicated Pool Heat thermostat (Accessory B) always showing the pool setpoint regardless of current mode."
       },
       "enableSpaHeaterThermostat": {
-        "title": "Spa Heater Thermostat (fixed)",
+        "title": "Spa Heat Thermostat (fixed)",
         "type": "boolean",
         "default": true,
         "description": "Expose a dedicated Spa Heat thermostat (Accessory C) always showing the spa setpoint regardless of current mode."

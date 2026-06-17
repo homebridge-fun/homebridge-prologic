@@ -15,36 +15,47 @@ export interface ThermostatState {
   valveMode: 'pool' | 'spa' | null;
 }
 
+export type ThermostatBody = 'auto' | 'pool' | 'spa';
+
 /**
- * §10 HomeKit thermostat accessories:
- *   body = 'auto'  → Accessory A: mode-following mirror.  Shows whichever
- *                    setpoint is active for the current valve mode.
- *   body = 'spa'   → Accessory C: dedicated spa setpoint regardless of mode.
+ * §10 HomeKit thermostat accessories. One physical heater, two mode-driven
+ * setpoints, exposed as three thermostats:
+ *
+ *   body = 'auto' → Accessory A: mode-following mirror. Points at whichever
+ *                   setpoint is active for the current valve mode. Dynamic
+ *                   name: "Heat — Pool" / "Heat — Spa".
+ *   body = 'pool' → Accessory B: always the Pool setpoint. Name carries its
+ *                   state: "Pool Heat — Heating/Standby/Off".
+ *   body = 'spa'  → Accessory C: always the Spa setpoint. Same naming scheme.
  *
  * handleSetTarget writes the setpoint via menu navigation (§13.3).
- * handleSetMode toggles HEATER_1 (auto) or logs a note (spa, requires spa mode).
+ * handleSetMode toggles HEATER_1 (the single physical heater enable).
  */
 export class ThermostatAccessory {
   private readonly service: Service;
   private currentTempC = fahrenheitToCelsius(70);
   private targetTempC = fahrenheitToCelsius(80);
   private heatingActive = false;
+  private currentName = '';
 
   constructor(
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
-    private readonly body: 'auto' | 'spa',
+    private readonly body: ThermostatBody,
   ) {
+    const serials: Record<ThermostatBody, string> = {
+      auto: 'heater-auto', pool: 'heater-pool', spa: 'heater-spa',
+    };
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Hayward')
       .setCharacteristic(this.platform.Characteristic.Model, 'ProLogic/AquaPlus')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber,
-        body === 'spa' ? 'heater-spa' : 'heater-auto');
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, serials[this.body]);
 
     this.service = this.accessory.getService(this.platform.Service.Thermostat)
       ?? this.accessory.addService(this.platform.Service.Thermostat);
 
-    this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.displayName);
+    this.currentName = accessory.displayName;
+    this.service.setCharacteristic(this.platform.Characteristic.Name, this.currentName);
 
     const { Characteristic: C } = this.platform;
 
@@ -68,9 +79,10 @@ export class ThermostatAccessory {
     this.service.getCharacteristic(C.TemperatureDisplayUnits).setValue(1);
   }
 
-  private activeBody(valveMode: 'pool' | 'spa' | null): 'pool' | 'spa' {
-    if (this.body === 'spa') return 'spa';
-    return valveMode ?? 'pool';   // default to pool if mode unknown
+  /** Which physical body's setpoint this accessory currently reflects. */
+  private targetBody(valveMode: 'pool' | 'spa' | null): 'pool' | 'spa' {
+    if (this.body === 'auto') return valveMode ?? 'pool';
+    return this.body;
   }
 
   async handleSetTarget(value: CharacteristicValue): Promise<void> {
@@ -78,7 +90,7 @@ export class ThermostatAccessory {
     const f = Math.round(celsiusToFahrenheit(c));
     this.targetTempC = c;
 
-    const which = this.activeBody(this.platform.currentValveMode);
+    const which = this.targetBody(this.platform.currentValveMode);
     this.platform.log.info(`[Thermostat ${this.body}] setpoint → ${f}°F (body: ${which})`);
     try {
       await this.platform.sidecar.setHeaterSetpoint(which, f);
@@ -92,12 +104,10 @@ export class ThermostatAccessory {
 
   async handleSetMode(value: CharacteristicValue): Promise<void> {
     const on = (value as number) !== 0;
-    if (this.body === 'spa') {
-      this.platform.log.info(
-        `[Thermostat spa] mode → ${on ? 'Heat' : 'Off'} ` +
-        '(HEATER_1 controls the active body; ensure Spa mode is selected first)',
-      );
-    }
+    this.platform.log.info(
+      `[Thermostat ${this.body}] mode → ${on ? 'Heat' : 'Off'} ` +
+      '(HEATER_1 is the single physical heater enable for the active body)',
+    );
     try {
       await this.platform.sidecar.setCircuit('HEATER_1', on);
     } catch (err) {
@@ -108,11 +118,22 @@ export class ThermostatAccessory {
     }
   }
 
+  /** Compose the role-clear dynamic name (§10.1 / §10.2). */
+  private composeName(s: ThermostatState, which: 'pool' | 'spa', enabled: boolean): string {
+    const isCurrentMode = s.valveMode === which;
+    if (this.body === 'auto') {
+      return which === 'spa' ? 'Heat — Spa' : 'Heat — Pool';
+    }
+    const base = this.body === 'spa' ? 'Spa Heat' : 'Pool Heat';
+    if (!enabled) return `${base} — Off`;
+    return isCurrentMode ? `${base} — Heating` : `${base} — Standby`;
+  }
+
   updateState(s: ThermostatState): void {
     const { Characteristic: C } = this.platform;
-    const which = this.activeBody(s.valveMode);
+    const which = this.targetBody(s.valveMode);
 
-    // Current temperature: use the appropriate sensor for this body
+    // Current temperature: the sensor for the body this accessory reflects
     const tempF = which === 'spa' ? s.spaTempF : s.poolTempF;
     if (tempF !== null) {
       const c = fahrenheitToCelsius(tempF);
@@ -132,12 +153,28 @@ export class ThermostatAccessory {
       }
     }
 
-    // Heating active: whether the appropriate heater is enabled
+    // Heating enabled for the reflected body
     const enabled = (which === 'spa' ? s.spaHeaterEnabled : s.poolHeaterEnabled) ?? false;
-    if (this.heatingActive !== enabled) {
-      this.heatingActive = enabled;
-      this.service.updateCharacteristic(C.CurrentHeatingCoolingState, enabled ? 1 : 0);
-      this.service.updateCharacteristic(C.TargetHeatingCoolingState, enabled ? 1 : 0);
+
+    // HomeKit has no "standby"; the current-heating-state field is HEAT only
+    // when enabled AND this body is the active valve mode (§10.2). Otherwise OFF.
+    const isActiveNow = enabled && (s.valveMode === which || this.body === 'auto');
+    if (this.heatingActive !== isActiveNow) {
+      this.heatingActive = isActiveNow;
+      this.service.updateCharacteristic(C.CurrentHeatingCoolingState, isActiveNow ? 1 : 0);
+    }
+    // Target state mirrors the heater enable (user-facing on/off)
+    this.service.updateCharacteristic(C.TargetHeatingCoolingState, enabled ? 1 : 0);
+
+    // Dynamic, role-clear name (§10.1 / §10.2)
+    const name = this.composeName(s, which, enabled);
+    if (name !== this.currentName) {
+      this.currentName = name;
+      this.service.updateCharacteristic(C.Name, name);
+      const cn = (C as { ConfiguredName?: unknown }).ConfiguredName;
+      if (cn) {
+        this.service.updateCharacteristic(cn as Parameters<typeof this.service.updateCharacteristic>[0], name);
+      }
     }
   }
 }
