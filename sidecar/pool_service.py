@@ -105,11 +105,21 @@ panel_lock = threading.Lock()
 KEY_BURST = 5
 KEY_PREDELAY_MS = 50.0
 KEY_GAP_MS = 10.0
+# Seconds to wait after a burst before checking whether the toggle landed.
+# Must be long enough for the bus to fall quiet and a clean LEDs frame to
+# refresh the library's cached circuit states — our burst causes Bad CRC on
+# surrounding frames, so checking too soon reads stale state and re-presses a
+# toggle that already worked (flip-flop). 4s leaves a comfortable clean window.
+KEY_VERIFY_DELAY_S = 4.0
+# Cap re-presses on a genuine miss. The stock library retries 10x; with a 4s
+# settle that would be ~40s of flip risk, so we cap to a few honest attempts.
+KEY_MAX_RETRIES = 3
 
 
 def _install_key_burst(AquaLogic) -> None:
     """Monkeypatch AquaLogic._send_frame to burst-write key frames."""
     import binascii
+    from threading import Timer
 
     def _send_frame_burst(self) -> None:
         if self._send_queue.empty():
@@ -121,14 +131,17 @@ def _install_key_burst(AquaLogic) -> None:
             self._write(frame)
             time.sleep(KEY_GAP_MS / 1000.0)
         log.info('Sent (x%d): %s', KEY_BURST, binascii.hexlify(frame).decode())
-        # Deliberately do NOT schedule _check_state here. Every keypad key is a
-        # *toggle*, and _check_state re-queues the same frame if it doesn't
-        # observe the new state within 2s — but the panel's broadcast of the
-        # updated circuit state lags that window, so the requeue fires a second
-        # press and flips the circuit back. The 5x burst already lands the press
-        # reliably in one valid window, so we send exactly once and trust it.
-        # If a press is ever genuinely missed, the user simply taps again; that
-        # is far safer than a requeue storm double-toggling the light.
+        # Verify the toggle landed, but only after the bus settles (see
+        # KEY_VERIFY_DELAY_S). _check_state re-queues the frame if the circuit
+        # state still hasn't changed — a genuine miss — and stops once it has,
+        # so we don't double-toggle. Cap retries to KEY_MAX_RETRIES.
+        try:
+            if data.get('desired_states') is not None:
+                data['retries'] = min(data.get('retries', KEY_MAX_RETRIES),
+                                      KEY_MAX_RETRIES)
+                Timer(KEY_VERIFY_DELAY_S, self._check_state, [data]).start()
+        except (KeyError, AttributeError):
+            pass
 
     AquaLogic._send_frame = _send_frame_burst
     log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms',
