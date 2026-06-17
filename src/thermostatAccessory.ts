@@ -109,9 +109,12 @@ export class ThermostatAccessory {
       `[Thermostat ${this.body}] mode → ${on ? 'Heat' : 'Off'} ` +
       '(HEATER_1 is the single physical heater enable for the active body)',
     );
+    // Optimistically update so onGet returns the new value before the poll confirms.
+    this.heaterEnabled = on;
     try {
       await this.platform.sidecar.setCircuit('HEATER_1', on);
     } catch (err) {
+      this.heaterEnabled = !on; // revert on failure
       this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);
       throw new this.platform.api.hap.HapStatusError(
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,

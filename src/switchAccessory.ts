@@ -32,6 +32,7 @@ export class SwitchAccessory {
 
   async handleSet(value: CharacteristicValue): Promise<void> {
     const on = value as boolean;
+    this.currentState = on; // optimistic update so onGet returns new value immediately
     try {
       if (this.circuit === 'SUPER_CHLORINATE') {
         await this.platform.sidecar.setSuperChlorinate(on);
@@ -39,6 +40,7 @@ export class SwitchAccessory {
         await this.platform.sidecar.setCircuit(this.circuit, on);
       }
     } catch (err) {
+      this.currentState = !on; // revert on failure
       this.platform.log.error(`[${this.circuit}] set failed:`, err);
       throw new this.platform.api.hap.HapStatusError(
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
