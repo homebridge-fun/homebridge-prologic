@@ -238,6 +238,49 @@ def panel_thread(host: str, port: int) -> None:
 # the automation spec) so the full navigator code path is exercisable without
 # any hardware.  Values and menu strings match what was observed live.
 # ---------------------------------------------------------------------------
+# Chlorinator step helpers
+#
+# Below 10%: 1% increments.  At 10% and above: 5% increments.
+# Valid positions: 0–9 (1% steps) then 10, 15, 20 … 100 (5% steps).
+# ---------------------------------------------------------------------------
+
+def _chlor_step_up(pct: int) -> int:
+    if pct < 10:
+        return pct + 1
+    return min(100, (pct // 5 + 1) * 5)
+
+
+def _chlor_step_down(pct: int) -> int:
+    if pct <= 10:
+        return max(0, pct - 1)
+    return max(10, (pct - 1) // 5 * 5)
+
+
+def _chlor_snap(pct: int) -> int:
+    """Snap an arbitrary % to the nearest valid chlorinator position."""
+    pct = int(_clamp(pct, 0, 100))
+    if pct <= 9:
+        return pct
+    return round(pct / 5) * 5
+
+
+def _chlor_presses(current: int, target: int):
+    """Return (key, n_presses) to move chlorinator from current to target."""
+    if current == target:
+        return 'PLUS', 0
+    going_up = target > current
+    key = 'PLUS' if going_up else 'MINUS'
+    pct = current
+    n = 0
+    while pct != target:
+        pct = _chlor_step_up(pct) if going_up else _chlor_step_down(pct)
+        n += 1
+        if n > 200:
+            raise RuntimeError(f'Chlorinator step loop did not reach {target} from {current}')
+    return key, n
+
+
+# ---------------------------------------------------------------------------
 
 class SimPanel:
     _MENU_RING = [
@@ -370,9 +413,9 @@ class SimPanel:
             elif s == 'vsp_speed4':
                 self._vsp[3] = min(100, self._vsp[3] + 5)
             elif s == 'pool_chlorinator':
-                self._pool_chlor = min(100, self._pool_chlor + 5)
+                self._pool_chlor = _chlor_step_up(self._pool_chlor)
             elif s == 'spa_chlorinator':
-                self._spa_chlor = min(100, self._spa_chlor + 5)
+                self._spa_chlor = _chlor_step_up(self._spa_chlor)
         elif name == 'MINUS':
             if s == 'pool_heater' and self._pool_heater_on:
                 self._pool_setpoint = max(65, self._pool_setpoint - 1)
@@ -381,9 +424,9 @@ class SimPanel:
             elif s == 'vsp_speed4':
                 self._vsp[3] = max(0, self._vsp[3] - 5)
             elif s == 'pool_chlorinator':
-                self._pool_chlor = max(0, self._pool_chlor - 5)
+                self._pool_chlor = _chlor_step_down(self._pool_chlor)
             elif s == 'spa_chlorinator':
-                self._spa_chlor = max(0, self._spa_chlor - 5)
+                self._spa_chlor = _chlor_step_down(self._spa_chlor)
         elif name == 'HEATER_1':
             # Toggle heater enable. In sim, the toggle applies to whichever heater
             # item is currently displayed (or the mode-active one from Default).
@@ -619,19 +662,19 @@ class MenuNavigator:
     def set_chlorinator(self, which: str, target_pct: int) -> dict:
         """
         Write a chlorinator output % via menu navigation.
-        Adjusts in 5% steps (verified step size matches SimPanel).
-        target_pct is clamped to [0, 100] and snapped to 5% grid.
+        Step size is variable: 1% below 10%, 5% at 10% and above.
+        target_pct is snapped to the nearest valid position before navigation.
         which = 'pool' | 'spa'
         """
         if which not in ('pool', 'spa'):
             raise ValueError(f'which must be "pool" or "spa"')
-        target_pct = int(_clamp(round(target_pct / 5) * 5, 0, 100))
+        target_pct = _chlor_snap(int(target_pct))
         # Settings ring offsets from anchor: spa_chlorinator=5, pool_chlorinator=6
-        presses = 5 if which == 'spa' else 6
+        nav_presses = 5 if which == 'spa' else 6
         try:
             with _nav_lock:
                 self._anchor()
-                for _ in range(presses):
+                for _ in range(nav_presses):
                     self._send('RIGHT')
                 l1, l2 = self._lcd.lines()
                 label = 'Spa Chlorinator' if which == 'spa' else 'Pool Chlorinator'
@@ -641,9 +684,8 @@ class MenuNavigator:
                     current_pct = int(l2.replace('%', '').strip())
                 except ValueError:
                     raise ValueError(f'Cannot parse chlorinator %: {l2!r}')
-                diff = (target_pct - current_pct) // 5
-                key = 'PLUS' if diff > 0 else 'MINUS'
-                for _ in range(abs(diff)):
+                key, n = _chlor_presses(current_pct, target_pct)
+                for _ in range(n):
                     self._send(key)
                 with state_lock:
                     state.chlorinator_percent = float(target_pct)

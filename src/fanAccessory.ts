@@ -37,7 +37,7 @@ export class FanAccessory {
       .onSet(() => { /* no-op */ });
 
     this.service.getCharacteristic(C.RotationSpeed)
-      .setProps({ minValue: 0, maxValue: 100, minStep: role === 'chlorinator' ? 5 : 5 })
+      .setProps({ minValue: 0, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })
       .onGet(() => this.currentPct)
       .onSet(this.handleSetSpeed.bind(this));
   }
