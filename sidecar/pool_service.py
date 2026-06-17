@@ -346,6 +346,21 @@ def panel_thread(host: str, port: int) -> None:
             aq = AquaLogic(web_port=0)  # suppress built-in web server
             aq._web = lcd               # intercept every LCD frame
             aq.connect(host, port)
+            # CRITICAL for WiFi-bridge write reliability: disable Nagle's
+            # algorithm on the socket. The aqualogic lib opens a raw TCP socket
+            # and never sets TCP_NODELAY, so our tiny key frames (~15 bytes) get
+            # held by Nagle until the previous segment is ACKed. Combined with
+            # the bridge's delayed-ACK this is the classic ~40ms Nagle stall —
+            # the key frame leaves at a random 0-40ms offset and almost always
+            # misses the panel's narrow post-keep-alive poll window (Bad CRC).
+            # With Nagle off the frame goes on the wire immediately, so the
+            # reactive send lands in the window far more reliably.
+            try:
+                import socket as _socket
+                aq._socket.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+                log.info('TCP_NODELAY set on bridge socket (Nagle disabled)')
+            except Exception as e:
+                log.warning('Could not set TCP_NODELAY: %s', e)
             with panel_lock:
                 panel = RealPanel(aq, States, Keys)
             aq.process(on_change)       # blocks until connection drops
