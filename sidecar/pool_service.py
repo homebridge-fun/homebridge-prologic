@@ -85,26 +85,33 @@ panel = None
 panel_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# WiFi-bridge write reliability ("key burst")
+# WiFi-bridge write reliability ("key burst" + RS-485 turnaround padding)
 #
-# The aqualogic library sends a queued key frame exactly once, immediately
-# after it sees a keep-alive packet. The AquaLogic panel only accepts a
-# keypress in a very narrow window right after that keep-alive. Over a direct
-# serial wire that single shot lands fine; over a high-latency WiFi serial
-# bridge (e.g. USR-W610, ~40-50ms loopback) it arrives after the window has
-# closed, collides (Bad CRC), the state never changes, and the request is
-# requeued until it gives up — so writes silently fail while reads work.
+# Two distinct problems on the USR-W610 WiFi-RS-485 bridge:
 #
-# The community workaround (HA forums) is to write the same frame several
-# times across the ~100ms gap between keep-alives, so at least one copy lands
-# in a valid window despite WiFi jitter. Repeated identical key frames read as
-# a single held button press on the panel, so this does NOT double-toggle.
+# 1. RS-485 turnaround latency: the W610 must switch its DE/RE driver from
+#    RX→TX before it can drive the bus.  The hardware turnaround is ~350µs.
+#    At 19200 baud with 2 stop bits, one byte takes 573µs.  Without padding
+#    the very first byte of our frame (the DLE 0x10 start delimiter) is sent
+#    before the bus driver is fully on, partially corrupting it.  The panel's
+#    frame parser never finds a clean DLE STX and discards the frame silently.
+#    Fix: prepend KEY_PAD_BYTES null bytes before every key frame so the
+#    turnaround delay eats padding instead of the frame header.  2 bytes @
+#    573µs each gives 1.1ms — well above the 350µs turnaround.
 #
-# Tunable via CLI; defaults mirror the proven forum values (wait 50ms, then
-# write 5x ~10ms apart). Set burst=1 to restore stock single-shot behavior.
+# 2. Window timing: the panel only accepts keypresses in a window after each
+#    keep-alive.  Sending the frame multiple times (burst) across successive
+#    keep-alive windows improves the chance that at least one lands cleanly.
+#    Repeated identical frames read as a single held button on the panel
+#    (no double-toggle).
+#
+# Tunable via CLI and /debug/keyburst.  Set burst=1, pad=0 for stock behavior.
 KEY_BURST = 5
-KEY_PREDELAY_MS = 25.0   # empirically the predelay that best clears the window
+KEY_PREDELAY_MS = 25.0
 KEY_GAP_MS = 10.0
+# Null bytes prepended to every frame write to absorb the RS-485 DE/RE
+# turnaround delay (~350µs on the W610).  2 bytes @ 573µs/byte = 1.15ms.
+KEY_PAD_BYTES = 2
 # Max seconds to wait after a burst for a clean LEDs frame to confirm the toggle.
 # The verify loop polls _actual_state and returns the instant it lands, so this
 # is only the ceiling for a genuine miss before we re-press. Long enough that a
@@ -126,11 +133,20 @@ def _install_key_burst(AquaLogic) -> None:
             return
         data = self._send_queue.get(block=False)
         frame = data['frame']
+        # Prepend null padding bytes to absorb the RS-485 DE/RE turnaround
+        # delay on the W610 (~350µs).  Without padding the bridge asserts TX
+        # and begins clocking the first byte (DLE 0x10) before the bus driver
+        # is fully enabled, corrupting the start delimiter so the panel's frame
+        # parser discards the entire frame.  Null bytes are not valid DLE STX
+        # so the panel ignores them and then finds an intact frame header.
+        pad = bytes(KEY_PAD_BYTES)
+        padded = pad + bytes(frame)
         time.sleep(KEY_PREDELAY_MS / 1000.0)
         for _ in range(max(1, KEY_BURST)):
-            self._write(frame)
+            self._write(padded)
             time.sleep(KEY_GAP_MS / 1000.0)
-        log.info('Sent (x%d): %s', KEY_BURST, binascii.hexlify(frame).decode())
+        log.info('Sent (x%d pad=%d): %s', KEY_BURST, KEY_PAD_BYTES,
+                 binascii.hexlify(frame).decode())
         # No async _check_state requeue. Verification is done synchronously in
         # RealPanel.set_circuit under _nav_lock using _actual_state(), which
         # reads _states directly and avoids the optimistic queue-peek problem.
@@ -150,8 +166,8 @@ def _install_key_burst(AquaLogic) -> None:
 
     AquaLogic._send_frame = _send_frame_burst
     AquaLogic.get_state = _get_state_safe
-    log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms',
-             KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS)
+    log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms pad=%d',
+             KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_PAD_BYTES)
 
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
@@ -1101,7 +1117,7 @@ def debug_keyburst() -> Response:
     The _send_frame_burst closure reads these globals on each send, so changes
     take effect on the next keypress.
     """
-    global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S
+    global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES
     if request.method == 'POST':
         body = request.get_json(force=True) or {}
         if 'burst' in body:
@@ -1114,14 +1130,17 @@ def debug_keyburst() -> Response:
             KEY_MAX_RETRIES = max(1, int(body['max_retries']))
         if 'verify_delay_s' in body:
             KEY_VERIFY_DELAY_S = float(body['verify_delay_s'])
+        if 'pad_bytes' in body:
+            KEY_PAD_BYTES = max(0, int(body['pad_bytes']))
         log.info('Key-burst retuned: burst=%d predelay=%.0fms gap=%.0fms '
-                 'retries=%d verify=%.1fs', KEY_BURST, KEY_PREDELAY_MS,
-                 KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S)
+                 'retries=%d verify=%.1fs pad=%d', KEY_BURST, KEY_PREDELAY_MS,
+                 KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES)
     return jsonify({'burst': KEY_BURST,
                     'predelay_ms': KEY_PREDELAY_MS,
                     'gap_ms': KEY_GAP_MS,
                     'max_retries': KEY_MAX_RETRIES,
-                    'verify_delay_s': KEY_VERIFY_DELAY_S})
+                    'verify_delay_s': KEY_VERIFY_DELAY_S,
+                    'pad_bytes': KEY_PAD_BYTES})
 
 
 @app.route('/keypad/<key>', methods=['POST'])
