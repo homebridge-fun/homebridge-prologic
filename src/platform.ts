@@ -148,7 +148,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
     // Fan: VSP pump speed (slot 4 %)
     if (this.cfg.enablePumpSpeedFan) {
-      const acc = register('Pump Speed',
+      const acc = register('Pump Speed Override',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-fan-pump`));
       this.pumpFan = new FanAccessory(this, acc, 'pump');
     }
