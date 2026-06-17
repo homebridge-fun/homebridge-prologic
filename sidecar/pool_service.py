@@ -162,14 +162,19 @@ class RealPanel:
         if s is None:
             raise KeyError(name)
         # HEATER_1 enable/disable toggles via the HEATER_1 keypad key
-        # (KeyId 0x0D) — the same key the menu navigator uses. HEATER_AUTO_MODE
-        # is a *State*, not a Key, so it must never be looked up on Keys.
-        # The key is a toggle, so only press it when the broadcast state
-        # differs from the requested state (keeps the call idempotent).
+        # (KeyId 0x0D). The key is a toggle, so only press it when the
+        # broadcast state differs from the requested state (idempotent).
+        # Also update pool/spa_heater_enabled so the next /status poll
+        # reflects the change without waiting for the next read_heater().
         if s == self._States.HEATER_1:
             current = bool(self._aq.get_state(self._States.HEATER_1))
             if current != on:
                 self._aq.send_key(self._Keys.HEATER_1)
+            with state_lock:
+                if state.valve_mode == 'spa':
+                    state.spa_heater_enabled = on
+                else:
+                    state.pool_heater_enabled = on
             return True
         return bool(self._aq.set_state(s, on))
 
