@@ -161,15 +161,15 @@ class RealPanel:
         s = self._smap.get(name)
         if s is None:
             raise KeyError(name)
-        # HEATER_1: the library's set_state always returns False for
-        # HEATER_AUTO_MODE because it can't confirm heater state from
-        # broadcasts. Send the key directly and return True so the REST
-        # endpoint doesn't misread this as a 422 failure.
+        # HEATER_1 enable/disable toggles via the HEATER_1 keypad key
+        # (KeyId 0x0D) — the same key the menu navigator uses. HEATER_AUTO_MODE
+        # is a *State*, not a Key, so it must never be looked up on Keys.
+        # The key is a toggle, so only press it when the broadcast state
+        # differs from the requested state (keeps the call idempotent).
         if s == self._States.HEATER_1:
-            key = getattr(self._Keys, 'HEATER_AUTO_MODE', None)
-            if key is None:
-                raise ValueError('HEATER_AUTO_MODE key not found in library')
-            self._aq.send_key(key)
+            current = bool(self._aq.get_state(self._States.HEATER_1))
+            if current != on:
+                self._aq.send_key(self._Keys.HEATER_1)
             return True
         return bool(self._aq.set_state(s, on))
 
