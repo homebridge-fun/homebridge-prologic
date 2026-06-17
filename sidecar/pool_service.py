@@ -923,6 +923,35 @@ def health() -> Response:
 
 
 # ---------------------------------------------------------------------------
+# Background heater refresher
+#
+# Heater setpoints and enable-state can only be read by navigating the Settings
+# menu, so they cannot ride the passive /status poll. This thread does one read
+# shortly after the bus connects (so HomeKit shows real values on startup),
+# then refreshes on a slow interval to catch changes made at the panel.
+# Valve mode is updated passively in on_change and needs no navigation.
+# ---------------------------------------------------------------------------
+
+def refresher_thread(interval: float) -> None:
+    did_initial = False
+    while True:
+        with state_lock:
+            connected = state.connected
+        nav = _get_navigator()
+        if nav is not None and connected:
+            for which in ('pool', 'spa'):
+                try:
+                    nav.read_heater(which)
+                except Exception as e:
+                    log.warning(f'heater refresh ({which}) failed: {e}')
+            if not did_initial:
+                log.info('Initial heater state read complete.')
+                did_initial = True
+        # Retry quickly until the first successful read, then settle to interval.
+        time.sleep(interval if did_initial else 10)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -934,6 +963,9 @@ def main() -> None:
     parser.add_argument('--api-host', default='127.0.0.1')
     parser.add_argument('--simulate', action='store_true',
                         help='Run full menu simulation without any hardware')
+    parser.add_argument('--heater-refresh', type=float, default=600.0,
+                        help='Seconds between background heater-state reads '
+                             '(menu navigation). 0 disables. Default 600.')
     args = parser.parse_args()
 
     if args.simulate:
@@ -943,6 +975,10 @@ def main() -> None:
             parser.error('--host is required unless --simulate is given')
         t = threading.Thread(target=panel_thread, args=(args.host, args.port), daemon=True, name='aqualogic')
     t.start()
+
+    if args.heater_refresh > 0:
+        threading.Thread(target=refresher_thread, args=(args.heater_refresh,),
+                         daemon=True, name='refresher').start()
 
     log.info(f'REST API listening on {args.api_host}:{args.api_port}')
     app.run(host=args.api_host, port=args.api_port, threaded=True)
