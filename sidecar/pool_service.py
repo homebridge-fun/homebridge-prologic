@@ -161,10 +161,16 @@ class RealPanel:
         s = self._smap.get(name)
         if s is None:
             raise KeyError(name)
-        # HEATER_1 set_state always returns False; HEATER_AUTO_MODE is the
-        # only library-supported heater on/off control.
+        # HEATER_1: the library's set_state always returns False for
+        # HEATER_AUTO_MODE because it can't confirm heater state from
+        # broadcasts. Send the key directly and return True so the REST
+        # endpoint doesn't misread this as a 422 failure.
         if s == self._States.HEATER_1:
-            s = self._States.HEATER_AUTO_MODE
+            key = getattr(self._Keys, 'HEATER_AUTO_MODE', None)
+            if key is None:
+                raise ValueError('HEATER_AUTO_MODE key not found in library')
+            self._aq.send_key(key)
+            return True
         return bool(self._aq.set_state(s, on))
 
     def send_key(self, name: str) -> None:
