@@ -117,7 +117,7 @@ KEY_MAX_RETRIES = 3
 
 
 def _install_key_burst(AquaLogic) -> None:
-    """Monkeypatch AquaLogic._send_frame to burst-write key frames."""
+    """Monkeypatch AquaLogic._send_frame and get_state."""
     import binascii
 
     def _send_frame_burst(self) -> None:
@@ -130,13 +130,25 @@ def _install_key_burst(AquaLogic) -> None:
             self._write(frame)
             time.sleep(KEY_GAP_MS / 1000.0)
         log.info('Sent (x%d): %s', KEY_BURST, binascii.hexlify(frame).decode())
-        # No async _check_state requeue here. Circuit toggles are verified and
-        # retried synchronously in RealPanel.set_circuit under _nav_lock, which
-        # also serializes them against the menu navigator so keypresses never
-        # interleave on the shared bus. The library's async requeue couldn't
-        # coordinate with that lock and would double-toggle.
+        # No async _check_state requeue. Verification is done synchronously in
+        # RealPanel.set_circuit under _nav_lock using _actual_state(), which
+        # reads _states directly and avoids the optimistic queue-peek problem.
+
+    def _get_state_safe(self, state):
+        """get_state patched to handle raw send_key frames (no desired_states)."""
+        for data in list(self._send_queue.queue):
+            desired_states = data.get('desired_states')
+            if desired_states is None:
+                continue
+            for desired_state in desired_states:
+                if desired_state['state'] == state:
+                    return desired_state['enabled']
+        if state.value == 0x80000000:  # States.FILTER_LOW_SPEED
+            return (0x20 & self._flashing_states) != 0  # FILTER bit
+        return (state.value & self._states) != 0
 
     AquaLogic._send_frame = _send_frame_burst
+    AquaLogic.get_state = _get_state_safe
     log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms',
              KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS)
 
@@ -237,24 +249,39 @@ class RealPanel:
 
         # Serialize against the menu navigator (heater refresher) under
         # _nav_lock: both feed the same RS-485 send queue, and interleaved
-        # keypresses corrupt each other (Bad CRC) and lose the toggle. Verify
-        # and retry synchronously here — each set_state queues exactly one burst
-        # press; we then poll the cached circuit state, which a clean LEDs frame
-        # refreshes once the bus is quiet, and only re-press on a genuine miss.
+        # keypresses corrupt each other (Bad CRC) and lose the toggle.
+        #
+        # Verify using _actual_state(), NOT get_state(). get_state() is
+        # optimistic — it peeks at the send queue and returns the *desired*
+        # state the instant set_state() queues the frame, so our verify loop
+        # would declare success before the burst even fires. _actual_state()
+        # reads aq._states (the raw LEDs bit-field) directly, which only
+        # updates when the panel broadcasts a clean LEDs frame after the press.
         with _nav_lock:
             for _ in range(max(1, KEY_MAX_RETRIES)):
-                if bool(self._aq.get_state(target)) == on:
+                if self._actual_state(target) == on:
                     return True  # already in / reached desired state
                 # set_state queues one burst toggle, or returns False if this
                 # state has no keypad key (unsupported circuit).
                 if not self._aq.set_state(target, on):
                     raise UnsupportedCircuit(name)
-                deadline = time.time() + KEY_VERIFY_DELAY_S
-                while time.time() < deadline:
-                    time.sleep(0.4)
-                    if bool(self._aq.get_state(target)) == on:
-                        return True
-            return bool(self._aq.get_state(target)) == on  # unconfirmed after retries
+                # Wait for the burst to fire (queue drains in the process loop).
+                t0 = time.time()
+                while not self._aq._send_queue.empty():
+                    if time.time() - t0 > 3.0:
+                        break
+                    time.sleep(0.1)
+                # Give the panel time to broadcast updated LEDs frame.
+                time.sleep(KEY_VERIFY_DELAY_S)
+                if self._actual_state(target) == on:
+                    return True
+            return self._actual_state(target) == on  # unconfirmed after retries
+
+    def _actual_state(self, state) -> bool:
+        """Read the panel's confirmed bit-field, bypassing get_state's optimism."""
+        if state == self._States.HEATER_AUTO_MODE:
+            return bool(self._aq._heater_auto_mode)
+        return bool(state.value & self._aq._states)
 
     def send_key(self, name: str) -> None:
         k = getattr(self._Keys, name, None)
