@@ -76,6 +76,55 @@ state_lock = threading.Lock()
 panel = None
 panel_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# WiFi-bridge write reliability ("key burst")
+#
+# The aqualogic library sends a queued key frame exactly once, immediately
+# after it sees a keep-alive packet. The AquaLogic panel only accepts a
+# keypress in a very narrow window right after that keep-alive. Over a direct
+# serial wire that single shot lands fine; over a high-latency WiFi serial
+# bridge (e.g. USR-W610, ~40-50ms loopback) it arrives after the window has
+# closed, collides (Bad CRC), the state never changes, and the request is
+# requeued until it gives up — so writes silently fail while reads work.
+#
+# The community workaround (HA forums) is to write the same frame several
+# times across the ~100ms gap between keep-alives, so at least one copy lands
+# in a valid window despite WiFi jitter. Repeated identical key frames read as
+# a single held button press on the panel, so this does NOT double-toggle.
+#
+# Tunable via CLI; defaults mirror the proven forum values (wait 50ms, then
+# write 5x ~10ms apart). Set burst=1 to restore stock single-shot behavior.
+KEY_BURST = 5
+KEY_PREDELAY_MS = 50.0
+KEY_GAP_MS = 10.0
+
+
+def _install_key_burst(AquaLogic) -> None:
+    """Monkeypatch AquaLogic._send_frame to burst-write key frames."""
+    import binascii
+    from threading import Timer
+
+    def _send_frame_burst(self) -> None:
+        if self._send_queue.empty():
+            return
+        data = self._send_queue.get(block=False)
+        frame = data['frame']
+        time.sleep(KEY_PREDELAY_MS / 1000.0)
+        for _ in range(max(1, KEY_BURST)):
+            self._write(frame)
+            time.sleep(KEY_GAP_MS / 1000.0)
+        log.info('Sent (x%d): %s', KEY_BURST, binascii.hexlify(frame).decode())
+        try:
+            if data.get('desired_states') is not None:
+                # Verify the state actually changed; requeue if not (library logic).
+                Timer(2.0, self._check_state, [data]).start()
+        except (KeyError, AttributeError):
+            pass
+
+    AquaLogic._send_frame = _send_frame_burst
+    log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms',
+             KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS)
+
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
     'SPILLOVER', 'AUX_1', 'AUX_2', 'HEATER_1', 'SUPER_CHLORINATE',
@@ -182,6 +231,9 @@ def panel_thread(host: str, port: int) -> None:
     from aqualogic.core import AquaLogic
     from aqualogic.states import States
     from aqualogic.keys import Keys
+
+    if KEY_BURST > 1:
+        _install_key_burst(AquaLogic)
 
     smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
 
@@ -1198,6 +1250,7 @@ def refresher_thread(interval: float) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS
     parser = argparse.ArgumentParser(description='AquaPlus/ProLogic RS-485 sidecar')
     parser.add_argument('--host', help='WiFi serial bridge IP (required unless --simulate)')
     parser.add_argument('--port', type=int, default=8899)
@@ -1208,7 +1261,18 @@ def main() -> None:
     parser.add_argument('--heater-refresh', type=float, default=600.0,
                         help='Seconds between background heater-state reads '
                              '(menu navigation). 0 disables. Default 600.')
+    parser.add_argument('--key-burst', type=int, default=KEY_BURST,
+                        help='Times to write each key frame per send, to beat '
+                             'WiFi-bridge latency. 1 = stock single shot. Default 5.')
+    parser.add_argument('--key-predelay-ms', type=float, default=KEY_PREDELAY_MS,
+                        help='Delay after keep-alive before bursting (ms). Default 50.')
+    parser.add_argument('--key-gap-ms', type=float, default=KEY_GAP_MS,
+                        help='Gap between burst writes (ms). Default 10.')
     args = parser.parse_args()
+
+    KEY_BURST = args.key_burst
+    KEY_PREDELAY_MS = args.key_predelay_ms
+    KEY_GAP_MS = args.key_gap_ms
 
     if args.simulate:
         t = threading.Thread(target=simulate_thread, daemon=True, name='simulate')
