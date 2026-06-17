@@ -1086,7 +1086,7 @@ def debug_keyburst() -> Response:
     The _send_frame_burst closure reads these globals on each send, so changes
     take effect on the next keypress.
     """
-    global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS
+    global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S
     if request.method == 'POST':
         body = request.get_json(force=True) or {}
         if 'burst' in body:
@@ -1095,11 +1095,18 @@ def debug_keyburst() -> Response:
             KEY_PREDELAY_MS = float(body['predelay_ms'])
         if 'gap_ms' in body:
             KEY_GAP_MS = float(body['gap_ms'])
-        log.info('Key-burst retuned: burst=%d predelay=%.0fms gap=%.0fms',
-                 KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS)
+        if 'max_retries' in body:
+            KEY_MAX_RETRIES = max(1, int(body['max_retries']))
+        if 'verify_delay_s' in body:
+            KEY_VERIFY_DELAY_S = float(body['verify_delay_s'])
+        log.info('Key-burst retuned: burst=%d predelay=%.0fms gap=%.0fms '
+                 'retries=%d verify=%.1fs', KEY_BURST, KEY_PREDELAY_MS,
+                 KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S)
     return jsonify({'burst': KEY_BURST,
                     'predelay_ms': KEY_PREDELAY_MS,
-                    'gap_ms': KEY_GAP_MS})
+                    'gap_ms': KEY_GAP_MS,
+                    'max_retries': KEY_MAX_RETRIES,
+                    'verify_delay_s': KEY_VERIFY_DELAY_S})
 
 
 @app.route('/keypad/<key>', methods=['POST'])
