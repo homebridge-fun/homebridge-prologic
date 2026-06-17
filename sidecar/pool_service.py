@@ -125,8 +125,9 @@ def _install_key_burst(AquaLogic) -> None:
             pass
 
     AquaLogic._send_frame = _send_frame_burst
-    log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms',
-             KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS)
+    msg = f'Key-burst send enabled: burst={KEY_BURST} predelay={KEY_PREDELAY_MS:.0f}ms gap={KEY_GAP_MS:.0f}ms'
+    print(msg, flush=True)
+    log.info(msg)
 
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
@@ -1289,7 +1290,9 @@ def main() -> None:
         threading.Thread(target=refresher_thread, args=(args.heater_refresh,),
                          daemon=True, name='refresher').start()
 
-    log.info(f'REST API listening on {args.api_host}:{args.api_port}')
+    startup_msg = f'pool_service starting: REST API on {args.api_host}:{args.api_port} key-burst={KEY_BURST}'
+    print(startup_msg, flush=True)
+    log.info(startup_msg)
     app.run(host=args.api_host, port=args.api_port, threaded=True)
 
 
