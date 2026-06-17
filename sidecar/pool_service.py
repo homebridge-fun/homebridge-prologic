@@ -210,6 +210,10 @@ lcd = LcdCapture()
 _nav_lock = threading.Lock()
 
 
+class UnsupportedCircuit(Exception):
+    """Raised when a circuit has no corresponding keypad key to toggle it."""
+
+
 # ---------------------------------------------------------------------------
 # Real panel adapter
 # ---------------------------------------------------------------------------
@@ -241,13 +245,16 @@ class RealPanel:
             for _ in range(max(1, KEY_MAX_RETRIES)):
                 if bool(self._aq.get_state(target)) == on:
                     return True  # already in / reached desired state
-                self._aq.set_state(target, on)  # queue one burst toggle
+                # set_state queues one burst toggle, or returns False if this
+                # state has no keypad key (unsupported circuit).
+                if not self._aq.set_state(target, on):
+                    raise UnsupportedCircuit(name)
                 deadline = time.time() + KEY_VERIFY_DELAY_S
                 while time.time() < deadline:
                     time.sleep(0.4)
                     if bool(self._aq.get_state(target)) == on:
                         return True
-            return bool(self._aq.get_state(target)) == on
+            return bool(self._aq.get_state(target)) == on  # unconfirmed after retries
 
     def send_key(self, name: str) -> None:
         k = getattr(self._Keys, name, None)
@@ -1031,9 +1038,12 @@ def set_circuit(name: str) -> Response:
     try:
         ok = p.set_circuit(key, on)
         if not ok:
-            return jsonify({'error': f'{key} cannot be toggled (no keypad key)'}), 422
+            # Press was sent but the panel state never confirmed the change.
+            return jsonify({'error': f'{key} toggle not confirmed by panel'}), 502
         log.info(f'Circuit {key} -> {"ON" if on else "OFF"}')
         return jsonify({'ok': True})
+    except UnsupportedCircuit:
+        return jsonify({'error': f'{key} cannot be toggled (no keypad key)'}), 422
     except Exception as e:
         log.error(f'set_circuit {key}: {e}')
         return jsonify({'error': str(e)}), 500
