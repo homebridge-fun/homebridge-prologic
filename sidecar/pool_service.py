@@ -199,10 +199,16 @@ def panel_thread(host: str, port: int) -> None:
                     state.circuits[name] = bool(aq.get_state(s))
                 except Exception:
                     pass
-            # Parse valve mode from default cycling display (§10)
-            if 'Pool Mode' in l2:
+            # Parse valve mode from default cycling display (§10).
+            # The panel's "Filter Speed  NN% Pool/Spa Mode" frame carries the
+            # active mode. On this hardware the LCD text has no newline, so the
+            # whole 32-char frame lands in l1 and l2 is empty — match against
+            # the joined frame, not l2 alone. "Spa Mode"/"Pool Mode" are
+            # distinct from "Spa Temp"/"Spa-CountDn" so this won't false-match.
+            frame = f'{l1} {l2}'
+            if 'Pool Mode' in frame:
                 state.valve_mode = 'pool'
-            elif 'Spa Mode' in l2:
+            elif 'Spa Mode' in frame:
                 state.valve_mode = 'spa'
 
     while True:
