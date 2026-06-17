@@ -161,10 +161,13 @@ class RealPanel:
         s = self._smap.get(name)
         if s is None:
             raise KeyError(name)
-        # set_state returns False for HEATER_1 on some firmware (the key is
-        # still sent). Always return True so the REST layer returns 200.
-        self._aq.set_state(s, on)
-        return True
+        # set_state(States.HEATER_1, on) is a no-op stub in the aqualogic lib
+        # (it never sends a key). The keypad HEATER_1 button toggles Auto vs
+        # Manual Off, which the lib models as HEATER_AUTO_MODE — that path
+        # actually sends Keys.HEATER_1. Route the heater enable through it.
+        if s == self._States.HEATER_1:
+            return bool(self._aq.set_state(self._States.HEATER_AUTO_MODE, on))
+        return bool(self._aq.set_state(s, on))
 
     def send_key(self, name: str) -> None:
         k = getattr(self._Keys, name, None)
@@ -198,6 +201,14 @@ def panel_thread(host: str, port: int) -> None:
                     state.circuits[name] = bool(aq.get_state(s))
                 except Exception:
                     pass
+            # HEATER_1's broadcast bit (States.HEATER_1) is the *relay* — true
+            # only while actively calling for heat. The enable state the keypad
+            # HEATER_1 button toggles is Auto vs Manual Off = HEATER_AUTO_MODE.
+            # Report the enable bit so the switch/thermostat tiles track it.
+            try:
+                state.circuits['HEATER_1'] = bool(aq.get_state(States.HEATER_AUTO_MODE))
+            except Exception:
+                pass
             # Parse valve mode from default cycling display (§10).
             # The panel's "Filter Speed  NN% Pool/Spa Mode" frame carries the
             # active mode. On this hardware the LCD text has no newline, so the
