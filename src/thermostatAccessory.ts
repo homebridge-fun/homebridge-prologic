@@ -70,9 +70,14 @@ export class ThermostatAccessory {
     this.service.getCharacteristic(C.CurrentHeatingCoolingState)
       .onGet(() => this.heatingActive ? 1 : 0);
 
+    // §10: target mode is pinned to Heat so HomeKit always renders the
+    // setpoint dial, even while the physical heater is Manual Off. The real
+    // enable state is conveyed by CurrentHeatingCoolingState + the accessory
+    // name. The toggle still writes HEATER_1 (handleSetMode); the tile just
+    // returns to "Heat" on the next poll since Heat is its resting display.
     this.service.getCharacteristic(C.TargetHeatingCoolingState)
       .setProps({ validValues: [0, 1] })
-      .onGet(() => this.heatingActive ? 1 : 0)
+      .onGet(() => 1)
       .onSet(this.handleSetMode.bind(this));
 
     // Display units: 1 = Fahrenheit (HomeKit internally always uses Celsius)
@@ -163,8 +168,10 @@ export class ThermostatAccessory {
       this.heatingActive = isActiveNow;
       this.service.updateCharacteristic(C.CurrentHeatingCoolingState, isActiveNow ? 1 : 0);
     }
-    // Target state mirrors the heater enable (user-facing on/off)
-    this.service.updateCharacteristic(C.TargetHeatingCoolingState, enabled ? 1 : 0);
+    // Target mode is pinned to Heat so the setpoint dial stays visible even
+    // when the heater is Manual Off. Real on/off lives in the name +
+    // CurrentHeatingCoolingState above (and the separate 'Heater' switch).
+    this.service.updateCharacteristic(C.TargetHeatingCoolingState, 1);
 
     // Dynamic, role-clear name (§10.1 / §10.2)
     const name = this.composeName(s, which, enabled);
