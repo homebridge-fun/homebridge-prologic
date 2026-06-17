@@ -52,6 +52,11 @@ export class SidecarClient {
     await this.http.post(`/heater/${which}/setpoint`, { temp_f: Math.round(tempF) });
   }
 
+  /** Enable/disable a heater (Auto vs Manual Off) via menu navigation. */
+  async setHeaterEnabled(which: 'pool' | 'spa', on: boolean): Promise<void> {
+    await this.http.post(`/heater/${which}/enable`, { on });
+  }
+
   // ── VSP slot 4 (menu navigation + FILTER activation) ─────────────────────
 
   async getVspSlot4(): Promise<VspSlot4> {

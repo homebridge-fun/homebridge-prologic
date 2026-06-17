@@ -171,8 +171,20 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
         this.spaModeSwitch?.updateMode(status.valve_mode);
 
+        // Heater enable state for the active body (matches thermostats).
+        const activeHeaterEnabled = (status.valve_mode === 'spa'
+          ? status.spa_heater_enabled
+          : status.pool_heater_enabled) ?? false;
+
         for (const [circuit, sw] of this.switches) {
-          sw.updateState(status.circuits[circuit] ?? false);
+          if (circuit === 'HEATER_1') {
+            // HEATER_1 reflects heater *enable* (menu state), not the
+            // 'calling for heat' broadcast circuit, so it stays in sync
+            // with the thermostat tiles.
+            sw.updateState(activeHeaterEnabled);
+          } else {
+            sw.updateState(status.circuits[circuit] ?? false);
+          }
         }
 
         const ts: ThermostatState = {

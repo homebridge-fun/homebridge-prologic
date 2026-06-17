@@ -36,6 +36,11 @@ export class SwitchAccessory {
     try {
       if (this.circuit === 'SUPER_CHLORINATE') {
         await this.platform.sidecar.setSuperChlorinate(on);
+      } else if (this.circuit === 'HEATER_1') {
+        // Heater enable is a menu state, not a circuit toggle. Route to the
+        // active body's heater (matches the physical keypad button behavior).
+        const which = this.platform.currentValveMode ?? 'pool';
+        await this.platform.sidecar.setHeaterEnabled(which, on);
       } else {
         await this.platform.sidecar.setCircuit(this.circuit, on);
       }

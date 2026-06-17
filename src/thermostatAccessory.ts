@@ -111,8 +111,9 @@ export class ThermostatAccessory {
     );
     // Optimistically update so onGet returns the new value before the poll confirms.
     this.heaterEnabled = on;
+    const which = this.targetBody(this.platform.currentValveMode);
     try {
-      await this.platform.sidecar.setCircuit('HEATER_1', on);
+      await this.platform.sidecar.setHeaterEnabled(which, on);
     } catch (err) {
       this.heaterEnabled = !on; // revert on failure
       this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);

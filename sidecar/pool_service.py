@@ -161,21 +161,11 @@ class RealPanel:
         s = self._smap.get(name)
         if s is None:
             raise KeyError(name)
-        # HEATER_1 enable/disable toggles via the HEATER_1 keypad key
-        # (KeyId 0x0D). The key is a toggle, so only press it when the
-        # broadcast state differs from the requested state (idempotent).
-        # Also update pool/spa_heater_enabled so the next /status poll
-        # reflects the change without waiting for the next read_heater().
+        # HEATER_1 enable/disable is NOT a simple circuit toggle — it's a menu
+        # state (Auto vs Manual Off). Routed through MenuNavigator.set_heater_enabled
+        # via POST /heater/<which>/enable, not this circuit path.
         if s == self._States.HEATER_1:
-            current = bool(self._aq.get_state(self._States.HEATER_1))
-            if current != on:
-                self._aq.send_key(self._Keys.HEATER_1)
-            with state_lock:
-                if state.valve_mode == 'spa':
-                    state.spa_heater_enabled = on
-                else:
-                    state.pool_heater_enabled = on
-            return True
+            raise ValueError('Use /heater/<which>/enable to toggle the heater')
         return bool(self._aq.set_state(s, on))
 
     def send_key(self, name: str) -> None:
@@ -608,6 +598,51 @@ class MenuNavigator:
         finally:
             self.fast_exit()
 
+    def set_heater_enabled(self, which: str, on: bool) -> dict:
+        """
+        Enable or disable a heater (Auto vs Manual Off) via menu navigation.
+
+        This is the authoritative way to change heater enable state — the
+        HEATER_1 keypad key from the default display does not reliably toggle
+        the Manual Off menu state, and the HEATER_1 broadcast circuit reflects
+        'actively calling for heat', not 'enabled'.
+
+        - Enable from Manual Off: PLUS reveals the stored °F (heater now Auto),
+          then RIGHT to lock in.
+        - Disable from enabled: press HEATER_1 on the item until 'Manual Off'.
+        Idempotent: if already in the requested state, does nothing.
+        """
+        if which not in ('pool', 'spa'):
+            raise ValueError(f'which must be "pool" or "spa"')
+        try:
+            with _nav_lock:
+                self._anchor()
+                presses = 1 if which == 'spa' else 2
+                for _ in range(presses):
+                    self._send('RIGHT')
+                l1, l2 = self._lcd.lines()
+                was_off = l2.strip() == 'Manual Off'
+
+                if on and was_off:
+                    # PLUS from Manual Off enables at the stored setpoint.
+                    self._send('PLUS')
+                    self._send('RIGHT')   # lock in / move off item
+                elif not on and not was_off:
+                    # Toggle HEATER_1 on the item until 'Manual Off' appears.
+                    for _ in range(3):
+                        _, l2 = self._send('HEATER_1')
+                        if 'Manual Off' in l2:
+                            break
+
+                with state_lock:
+                    if which == 'pool':
+                        state.pool_heater_enabled = on
+                    else:
+                        state.spa_heater_enabled = on
+                return {'which': which, 'enabled': on, 'was_off': was_off}
+        finally:
+            self.fast_exit()
+
     def set_heater(self, which: str, target_f: int) -> dict:
         """
         Write a heater setpoint with restore-to-prior-state discipline (§13.3):
@@ -947,6 +982,28 @@ def get_heater_state(which: str) -> Response:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         log.error(f'read_heater {which}: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/heater/<which>/enable', methods=['POST'])
+def set_heater_enable(which: str) -> Response:
+    """
+    Enable/disable a heater (Auto vs Manual Off) via menu navigation.
+    Body: {"on": true|false}
+    """
+    body = request.get_json(force=True)
+    on = bool(body.get('on', False))
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        result = nav.set_heater_enabled(which, on)
+        log.info(f'Heater {which} enable -> {on} (was_off={result["was_off"]})')
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        log.error(f'set_heater_enabled {which}: {e}')
         return jsonify({'error': str(e)}), 500
 
 
