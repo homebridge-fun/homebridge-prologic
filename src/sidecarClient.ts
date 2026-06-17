@@ -33,6 +33,10 @@ export class SidecarClient {
     await this.http.post(`/circuit/${encodeURIComponent(name)}`, { on });
   }
 
+  async setMode(mode: 'pool' | 'spa'): Promise<void> {
+    await this.http.post('/mode', { mode });
+  }
+
   // ── Heater setpoints (menu navigation) ────────────────────────────────────
 
   async getHeaterState(which: 'pool' | 'spa'): Promise<HeaterState> {

@@ -45,6 +45,7 @@ export interface PlatformConfig {
   enablePoolHeaterThermostat: boolean;
   enableSpaHeaterThermostat: boolean;
   enableTemperatureSensors: boolean;
+  enableSpaModeSwitch: boolean;
   enableChlorinatorFan: boolean;
   enablePumpSpeedFan: boolean;
 }

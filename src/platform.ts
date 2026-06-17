@@ -3,6 +3,7 @@ import { SwitchAccessory } from './switchAccessory';
 import { ThermostatAccessory, type ThermostatState } from './thermostatAccessory';
 import { TemperatureAccessory } from './temperatureAccessory';
 import { FanAccessory } from './fanAccessory';
+import { SpaModeAccessory } from './spaModeAccessory';
 import { SidecarClient } from './sidecarClient';
 import {
   PLATFORM_NAME, PLUGIN_NAME, CIRCUITS,
@@ -26,6 +27,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private thermostatSpa?: ThermostatAccessory;
   private poolTempSensor?: TemperatureAccessory;
   private airTempSensor?: TemperatureAccessory;
+  private spaModeSwitch?: SpaModeAccessory;
   private chlorinatorFan?: FanAccessory;
   private pumpFan?: FanAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
@@ -43,12 +45,13 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       sidecarHost: config['sidecarHost'] ?? '127.0.0.1',
       sidecarPort: config['sidecarPort'] ?? 5757,
       pollInterval: config['pollInterval'] ?? 5000,
-      circuits: config['circuits'] ?? ['POOL', 'SPA', 'FILTER', 'LIGHTS', 'HEATER_1'],
+      circuits: config['circuits'] ?? ['FILTER', 'LIGHTS', 'HEATER_1'],
       activeBodies: config['activeBodies'] ?? ['pool', 'spa'],
       enableActiveHeaterThermostat: config['enableActiveHeaterThermostat'] ?? true,
       enablePoolHeaterThermostat: config['enablePoolHeaterThermostat'] ?? true,
       enableSpaHeaterThermostat: config['enableSpaHeaterThermostat'] ?? true,
       enableTemperatureSensors: config['enableTemperatureSensors'] ?? true,
+      enableSpaModeSwitch: config['enableSpaModeSwitch'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
     };
@@ -83,6 +86,13 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       }
       return acc;
     };
+
+    // Spa mode switch (On=spa, Off=pool)
+    if (this.cfg.enableSpaModeSwitch) {
+      const acc = register('Spa',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-mode-spa`));
+      this.spaModeSwitch = new SpaModeAccessory(this, acc);
+    }
 
     // Circuit switches
     for (const circuit of this.cfg.circuits) {
@@ -158,6 +168,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         const status = await this.sidecar.getStatus();
 
         this.currentValveMode = status.valve_mode;
+
+        this.spaModeSwitch?.updateMode(status.valve_mode);
 
         for (const [circuit, sw] of this.switches) {
           sw.updateState(status.circuits[circuit] ?? false);

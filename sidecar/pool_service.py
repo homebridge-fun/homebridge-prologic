@@ -847,6 +847,39 @@ def get_display_history() -> Response:
     return jsonify({'history': entries})
 
 
+@app.route('/mode', methods=['POST'])
+def set_mode() -> Response:
+    """
+    Set pool/spa valve mode.  Body: {"mode": "pool"|"spa"}
+
+    For pool+spa-only systems this is a single cycle-key press whenever the
+    current mode differs from the target.  Optimistically updates valve_mode
+    so the next /status poll reflects the change immediately.
+    """
+    body = request.get_json(force=True)
+    target = body.get('mode', '').lower()
+    if target not in ('pool', 'spa'):
+        return jsonify({'error': 'mode must be "pool" or "spa"'}), 400
+    p = _get_panel()
+    if p is None:
+        return jsonify({'error': 'Not connected'}), 503
+    with state_lock:
+        current = state.valve_mode
+    if current == target:
+        return jsonify({'ok': True, 'mode': target, 'changed': False})
+    try:
+        # Send the POOL/SPA cycle key via the existing circuit path.
+        # For pool+spa-only systems one press always toggles.
+        p.set_circuit('POOL' if target == 'pool' else 'SPA', True)
+        with state_lock:
+            state.valve_mode = target
+        log.info(f'Mode -> {target}')
+        return jsonify({'ok': True, 'mode': target, 'changed': True})
+    except Exception as e:
+        log.error(f'set_mode {target}: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/circuit/<name>', methods=['POST'])
 def set_circuit(name: str) -> Response:
     body = request.get_json(force=True)
