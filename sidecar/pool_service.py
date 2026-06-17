@@ -46,21 +46,13 @@ logging.basicConfig(
     force=True,  # override any handler Flask/werkzeug installed at import time,
                  # otherwise basicConfig is a no-op and our INFO logs are dropped
 )
-# Give our own logger a dedicated stdout handler with propagate=False. Flask's
-# import-time logging setup was swallowing pool_service records that relied on
-# the root handler (aqualogic.core records came through fine, ours didn't), so
-# we stop depending on root propagation entirely.
-import sys as _sys
-log = logging.getLogger('pool_service')
+# NB: our logger must NOT be named 'pool_service'. Flask(__name__) resolves its
+# app name to 'pool_service' (the script's module name), so app.logger IS
+# logging.getLogger('pool_service'). The `app.logger.setLevel(WARNING)` below
+# would then clobber *our* logger to WARNING and silently drop every INFO line.
+# Use a distinct name so the two loggers never collide.
+log = logging.getLogger('pool_sidecar')
 log.setLevel(logging.INFO)
-log.propagate = False
-if not log.handlers:
-    # stderr, not stdout: under systemd stdout is block-buffered so records sit
-    # unflushed and never reach the journal, while stderr is unbuffered. This is
-    # the same stream aqualogic.core's records ride to appear promptly.
-    _h = logging.StreamHandler(_sys.stderr)
-    _h.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
-    log.addHandler(_h)
 
 
 # ---------------------------------------------------------------------------
