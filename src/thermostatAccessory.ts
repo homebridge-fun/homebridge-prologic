@@ -13,6 +13,8 @@ export interface ThermostatState {
   poolHeaterEnabled: boolean | null;
   spaHeaterEnabled: boolean | null;
   valveMode: 'pool' | 'spa' | null;
+  /** HEATER_1 broadcast circuit — true when the heater is enabled (keypad state). */
+  heater1Circuit: boolean;
 }
 
 export type ThermostatBody = 'auto' | 'pool' | 'spa';
@@ -105,15 +107,10 @@ export class ThermostatAccessory {
 
   async handleSetMode(value: CharacteristicValue): Promise<void> {
     const on = (value as number) !== 0;
-    this.platform.log.info(
-      `[Thermostat ${this.body}] mode → ${on ? 'Heat' : 'Off'} ` +
-      '(HEATER_1 is the single physical heater enable for the active body)',
-    );
-    // Optimistically update so onGet returns the new value before the poll confirms.
-    this.heaterEnabled = on;
-    const which = this.targetBody(this.platform.currentValveMode);
+    this.platform.log.info(`[Thermostat ${this.body}] mode → ${on ? 'Heat' : 'Off'} (HEATER_1 circuit)`);
+    this.heaterEnabled = on; // optimistic update
     try {
-      await this.platform.sidecar.setHeaterEnabled(which, on);
+      await this.platform.sidecar.setCircuit('HEATER_1', on);
     } catch (err) {
       this.heaterEnabled = !on; // revert on failure
       this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);
@@ -158,8 +155,8 @@ export class ThermostatAccessory {
       }
     }
 
-    // Heating enabled for the reflected body
-    const enabled = (which === 'spa' ? s.spaHeaterEnabled : s.poolHeaterEnabled) ?? false;
+    // HEATER_1 broadcast circuit is the single source of truth for enabled state.
+    const enabled = s.heater1Circuit;
 
     // HomeKit has no "standby"; the current-heating-state field is HEAT only
     // when enabled AND this body is the active valve mode (§10.2). Otherwise OFF.

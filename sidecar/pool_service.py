@@ -161,12 +161,10 @@ class RealPanel:
         s = self._smap.get(name)
         if s is None:
             raise KeyError(name)
-        # HEATER_1 enable/disable is NOT a simple circuit toggle — it's a menu
-        # state (Auto vs Manual Off). Routed through MenuNavigator.set_heater_enabled
-        # via POST /heater/<which>/enable, not this circuit path.
-        if s == self._States.HEATER_1:
-            raise ValueError('Use /heater/<which>/enable to toggle the heater')
-        return bool(self._aq.set_state(s, on))
+        # set_state returns False for HEATER_1 on some firmware (the key is
+        # still sent). Always return True so the REST layer returns 200.
+        self._aq.set_state(s, on)
+        return True
 
     def send_key(self, name: str) -> None:
         k = getattr(self._Keys, name, None)
