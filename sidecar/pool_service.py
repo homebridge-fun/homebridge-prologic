@@ -103,17 +103,18 @@ panel_lock = threading.Lock()
 # Tunable via CLI; defaults mirror the proven forum values (wait 50ms, then
 # write 5x ~10ms apart). Set burst=1 to restore stock single-shot behavior.
 KEY_BURST = 5
-KEY_PREDELAY_MS = 50.0
+KEY_PREDELAY_MS = 25.0   # empirically the predelay that best clears the window
 KEY_GAP_MS = 10.0
-# Seconds to wait after a burst before checking whether the toggle landed.
-# Must be long enough for the bus to fall quiet and a clean LEDs frame to
-# refresh the library's cached circuit states — our burst causes Bad CRC on
-# surrounding frames, so checking too soon reads stale state and re-presses a
-# toggle that already worked (flip-flop). 4s leaves a comfortable clean window.
-KEY_VERIFY_DELAY_S = 4.0
-# Cap re-presses on a genuine miss. The stock library retries 10x; with a 4s
-# settle that would be ~40s of flip risk, so we cap to a few honest attempts.
-KEY_MAX_RETRIES = 3
+# Max seconds to wait after a burst for a clean LEDs frame to confirm the toggle.
+# The verify loop polls _actual_state and returns the instant it lands, so this
+# is only the ceiling for a genuine miss before we re-press. Long enough that a
+# press that *did* land is always confirmed (avoids re-pressing = overshoot).
+KEY_VERIFY_DELAY_S = 3.0
+# Re-press on a genuine miss. Safe to be generous: set_circuit checks the real
+# panel state before every press and stops the instant it lands, so extra
+# attempts can't overshoot. With low per-press reliability this is what makes a
+# toggle eventually succeed (e.g. 40%/press -> ~95% after 6 tries).
+KEY_MAX_RETRIES = 6
 
 
 def _install_key_burst(AquaLogic) -> None:
@@ -267,14 +268,15 @@ class RealPanel:
                     raise UnsupportedCircuit(name)
                 # Wait for the burst to fire (queue drains in the process loop).
                 t0 = time.time()
-                while not self._aq._send_queue.empty():
-                    if time.time() - t0 > 3.0:
-                        break
+                while not self._aq._send_queue.empty() and time.time() - t0 < 3.0:
                     time.sleep(0.1)
-                # Give the panel time to broadcast updated LEDs frame.
-                time.sleep(KEY_VERIFY_DELAY_S)
-                if self._actual_state(target) == on:
-                    return True
+                # Poll the real panel state; return the instant a clean LEDs
+                # frame confirms the toggle, else re-press after the ceiling.
+                deadline = time.time() + KEY_VERIFY_DELAY_S
+                while time.time() < deadline:
+                    time.sleep(0.3)
+                    if self._actual_state(target) == on:
+                        return True
             return self._actual_state(target) == on  # unconfirmed after retries
 
     def _actual_state(self, state) -> bool:
