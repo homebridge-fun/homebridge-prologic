@@ -1049,6 +1049,30 @@ def set_circuit(name: str) -> Response:
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/debug/keyburst', methods=['GET', 'POST'])
+def debug_keyburst() -> Response:
+    """Live-tune the key-burst timing without a restart (diagnostics).
+
+    POST JSON any of: burst (int), predelay_ms (float), gap_ms (float).
+    The _send_frame_burst closure reads these globals on each send, so changes
+    take effect on the next keypress.
+    """
+    global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS
+    if request.method == 'POST':
+        body = request.get_json(force=True) or {}
+        if 'burst' in body:
+            KEY_BURST = max(1, int(body['burst']))
+        if 'predelay_ms' in body:
+            KEY_PREDELAY_MS = float(body['predelay_ms'])
+        if 'gap_ms' in body:
+            KEY_GAP_MS = float(body['gap_ms'])
+        log.info('Key-burst retuned: burst=%d predelay=%.0fms gap=%.0fms',
+                 KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS)
+    return jsonify({'burst': KEY_BURST,
+                    'predelay_ms': KEY_PREDELAY_MS,
+                    'gap_ms': KEY_GAP_MS})
+
+
 @app.route('/keypad/<key>', methods=['POST'])
 def keypad_press(key: str) -> Response:
     """
