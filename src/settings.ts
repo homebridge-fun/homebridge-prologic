@@ -45,6 +45,8 @@ export interface PlatformConfig {
   enablePoolHeaterThermostat: boolean;
   enableSpaHeaterThermostat: boolean;
   enableTemperatureSensors: boolean;
+  enableChlorinatorFan: boolean;
+  enablePumpSpeedFan: boolean;
 }
 
 export function celsiusToFahrenheit(c: number): number {

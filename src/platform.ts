@@ -2,6 +2,7 @@ import type { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformCo
 import { SwitchAccessory } from './switchAccessory';
 import { ThermostatAccessory, type ThermostatState } from './thermostatAccessory';
 import { TemperatureAccessory } from './temperatureAccessory';
+import { FanAccessory } from './fanAccessory';
 import { SidecarClient } from './sidecarClient';
 import {
   PLATFORM_NAME, PLUGIN_NAME, CIRCUITS,
@@ -25,6 +26,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private thermostatSpa?: ThermostatAccessory;
   private poolTempSensor?: TemperatureAccessory;
   private airTempSensor?: TemperatureAccessory;
+  private chlorinatorFan?: FanAccessory;
+  private pumpFan?: FanAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -46,6 +49,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enablePoolHeaterThermostat: config['enablePoolHeaterThermostat'] ?? true,
       enableSpaHeaterThermostat: config['enableSpaHeaterThermostat'] ?? true,
       enableTemperatureSensors: config['enableTemperatureSensors'] ?? true,
+      enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
+      enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
     };
 
     this.sidecar = new SidecarClient(this.cfg.sidecarHost, this.cfg.sidecarPort);
@@ -124,6 +129,20 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       }
     }
 
+    // Fan: pool chlorinator output %
+    if (this.cfg.enableChlorinatorFan) {
+      const acc = register('Chlorinator',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-fan-chlorinator`));
+      this.chlorinatorFan = new FanAccessory(this, acc, 'chlorinator');
+    }
+
+    // Fan: VSP pump speed (slot 4 %)
+    if (this.cfg.enablePumpSpeedFan) {
+      const acc = register('Pump Speed',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-fan-pump`));
+      this.pumpFan = new FanAccessory(this, acc, 'pump');
+    }
+
     const stale = this.cachedAccessories.filter(a => !toKeep.has(a.UUID));
     if (stale.length > 0) {
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
@@ -159,6 +178,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
         this.poolTempSensor?.updateTemperature(status.pool_temp);
         this.airTempSensor?.updateTemperature(status.air_temp);
+
+        this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
+        this.pumpFan?.updateSpeed(status.vsp_slot4_pct);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);
       }

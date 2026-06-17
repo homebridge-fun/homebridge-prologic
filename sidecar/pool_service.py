@@ -614,6 +614,43 @@ class MenuNavigator:
         finally:
             self.fast_exit()
 
+    # ── Chlorinator output % ─────────────────────────────────────────────────
+
+    def set_chlorinator(self, which: str, target_pct: int) -> dict:
+        """
+        Write a chlorinator output % via menu navigation.
+        Adjusts in 5% steps (verified step size matches SimPanel).
+        target_pct is clamped to [0, 100] and snapped to 5% grid.
+        which = 'pool' | 'spa'
+        """
+        if which not in ('pool', 'spa'):
+            raise ValueError(f'which must be "pool" or "spa"')
+        target_pct = int(_clamp(round(target_pct / 5) * 5, 0, 100))
+        # Settings ring offsets from anchor: spa_chlorinator=5, pool_chlorinator=6
+        presses = 5 if which == 'spa' else 6
+        try:
+            with _nav_lock:
+                self._anchor()
+                for _ in range(presses):
+                    self._send('RIGHT')
+                l1, l2 = self._lcd.lines()
+                label = 'Spa Chlorinator' if which == 'spa' else 'Pool Chlorinator'
+                if label not in l1:
+                    raise RuntimeError(f'Expected {label}, got: {l1!r}')
+                try:
+                    current_pct = int(l2.replace('%', '').strip())
+                except ValueError:
+                    raise ValueError(f'Cannot parse chlorinator %: {l2!r}')
+                diff = (target_pct - current_pct) // 5
+                key = 'PLUS' if diff > 0 else 'MINUS'
+                for _ in range(abs(diff)):
+                    self._send(key)
+                with state_lock:
+                    state.chlorinator_percent = float(target_pct)
+                return {'which': which, 'target_pct': target_pct, 'previous_pct': current_pct}
+        finally:
+            self.fast_exit()
+
     # ── VSP slot 4 ───────────────────────────────────────────────────────────
 
     def read_vsp_slot4(self) -> dict:
@@ -917,11 +954,36 @@ def activate_vsp_slot4() -> Response:
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/chlorinator/<which>', methods=['POST'])
+def set_chlorinator_which(which: str) -> Response:
+    """Set pool or spa chlorinator output % via menu navigation. Body: {"percent": 50}"""
+    body = request.get_json(force=True)
+    pct = body.get('percent')
+    if pct is None:
+        return jsonify({'error': 'percent is required'}), 400
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        result = nav.set_chlorinator(which, int(pct))
+        log.info(f'Chlorinator {which} -> {pct}%')
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        log.error(f'set_chlorinator {which}: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/chlorinator', methods=['POST'])
-def set_chlorinator() -> Response:
-    return jsonify({
-        'error': 'Chlorinator output is read-only. Current value is in /status.'
-    }), 501
+def set_chlorinator_legacy() -> Response:
+    """Legacy: routes to pool chlorinator. Prefer /chlorinator/pool."""
+    body = request.get_json(force=True)
+    pct = body.get('percent')
+    which = body.get('which', 'pool')
+    if pct is None:
+        return jsonify({'error': 'percent and optionally which ("pool"|"spa") are required'}), 400
+    return set_chlorinator_which(which)
 
 
 @app.route('/superchlorinate', methods=['POST'])

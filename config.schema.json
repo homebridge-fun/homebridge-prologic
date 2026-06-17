@@ -77,6 +77,18 @@
         "type": "boolean",
         "default": true,
         "description": "Expose read-only air and pool temperature sensors."
+      },
+      "enableChlorinatorFan": {
+        "title": "Chlorinator Fan",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose pool chlorinator output % as a Fan accessory (speed ring = output %). Read/write via Settings menu navigation."
+      },
+      "enablePumpSpeedFan": {
+        "title": "Pump Speed Fan",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose VSP pump slot-4 speed % as a Fan accessory (speed ring = slot 4 %). Read/write via Settings menu navigation."
       }
     },
     "required": ["name"]

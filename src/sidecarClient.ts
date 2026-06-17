@@ -64,6 +64,12 @@ export class SidecarClient {
     await this.http.post('/vsp/slot4/activate');
   }
 
+  // ── Chlorinator (menu navigation) ────────────────────────────────────────
+
+  async setChlorinatorPercent(which: 'pool' | 'spa', percent: number): Promise<void> {
+    await this.http.post(`/chlorinator/${which}`, { percent: Math.round(percent) });
+  }
+
   // ── Misc ──────────────────────────────────────────────────────────────────
 
   async setSuperChlorinate(on: boolean): Promise<void> {
