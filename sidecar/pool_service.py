@@ -85,43 +85,45 @@ panel = None
 panel_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# WiFi-bridge write reliability ("key burst" + RS-485 turnaround padding)
+# WiFi-bridge write reliability (keep-alive window targeting)
 #
-# Two distinct problems on the USR-W610 WiFi-RS-485 bridge:
+# The aqualogic library sends a queued key frame once, right after it reads a
+# keep-alive. The AquaLogic panel only accepts a keypress in a narrow window
+# that follows each keep-alive. Over a direct serial wire the reactive send
+# lands; over the USR-W610 WiFi serial bridge it arrives too late and the panel
+# silently drops it (Bad CRC), so writes fail while reads work.
 #
-# 1. RS-485 turnaround latency: the W610 must switch its DE/RE driver from
-#    RX→TX before it can drive the bus.  The hardware turnaround is ~350µs.
-#    At 19200 baud with 2 stop bits, one byte takes 573µs.  Without padding
-#    the very first byte of our frame (the DLE 0x10 start delimiter) is sent
-#    before the bus driver is fully on, partially corrupting it.  The panel's
-#    frame parser never finds a clean DLE STX and discards the frame silently.
-#    Fix: prepend KEY_PAD_BYTES null bytes before every key frame so the
-#    turnaround delay eats padding instead of the frame header.  2 bytes @
-#    573µs each gives 1.1ms — well above the 350µs turnaround.
+# Empirically (10ms-resolution sweep on real hardware, see commit history) the
+# panel's accept window for THIS bridge sits ~70ms after we receive a
+# keep-alive: per-frame landing rate peaks sharply at predelay=70ms (~60%) and
+# is near-zero at 0-50ms and 90ms+. So we delay KEY_PREDELAY_MS after the
+# keep-alive, then write the frame ONCE.
 #
-# 2. Window timing: the panel only accepts keypresses in a window after each
-#    keep-alive.  Sending the frame multiple times (burst) across successive
-#    keep-alive windows improves the chance that at least one lands cleanly.
-#    Repeated identical frames read as a single held button on the panel
-#    (no double-toggle).
+# Bursting (writing the frame several times in quick succession) was tried and
+# is actively HARMFUL on this bridge: the W610 packs the rapid writes into a
+# merged serial run that the panel rejects wholesale — a 3x burst spanning the
+# 70ms peak scored 0/10 where a single frame at 70ms scored 6/10. RS-485
+# turnaround padding was likewise a dead end (the W610 turnaround is ~75µs,
+# ~0.1 of a byte time, far too small to corrupt the frame header). Both are
+# kept as no-default tunables (burst=1, pad=0) purely for diagnostics.
 #
-# Tunable via CLI and /debug/keyburst.  Set burst=1, pad=0 for stock behavior.
-KEY_BURST = 5
-KEY_PREDELAY_MS = 25.0
-KEY_GAP_MS = 10.0
-# Null bytes prepended to every frame write to absorb the RS-485 DE/RE
-# turnaround delay (~350µs on the W610).  2 bytes @ 573µs/byte = 1.15ms.
-KEY_PAD_BYTES = 2
-# Max seconds to wait after a burst for a clean LEDs frame to confirm the toggle.
+# Per-frame reliability is ~60%, so set_circuit re-presses up to KEY_MAX_RETRIES
+# times, checking the real panel state before each press and stopping the
+# instant it lands. 8 independent 60% shots => ~99.9% — measured 10/10 in situ.
+KEY_BURST = 1            # single frame; >1 is harmful on the W610 (diagnostics only)
+KEY_PREDELAY_MS = 70.0   # measured center of the panel's post-keep-alive window
+KEY_GAP_MS = 10.0        # only used when KEY_BURST > 1 (diagnostics)
+KEY_PAD_BYTES = 0        # RS-485 turnaround padding; 0 = off (diagnostics only)
+# Max seconds to wait after a press for a clean LEDs frame to confirm the toggle.
 # The verify loop polls _actual_state and returns the instant it lands, so this
 # is only the ceiling for a genuine miss before we re-press. Long enough that a
 # press that *did* land is always confirmed (avoids re-pressing = overshoot).
 KEY_VERIFY_DELAY_S = 3.0
 # Re-press on a genuine miss. Safe to be generous: set_circuit checks the real
 # panel state before every press and stops the instant it lands, so extra
-# attempts can't overshoot. With low per-press reliability this is what makes a
-# toggle eventually succeed (e.g. 40%/press -> ~95% after 6 tries).
-KEY_MAX_RETRIES = 6
+# attempts can't overshoot. At ~60%/press this is what carries a toggle to
+# ~99.9% reliability (1 - 0.4^8).
+KEY_MAX_RETRIES = 8
 
 
 def _install_key_burst(AquaLogic) -> None:
@@ -133,20 +135,19 @@ def _install_key_burst(AquaLogic) -> None:
             return
         data = self._send_queue.get(block=False)
         frame = data['frame']
-        # Prepend null padding bytes to absorb the RS-485 DE/RE turnaround
-        # delay on the W610 (~350µs).  Without padding the bridge asserts TX
-        # and begins clocking the first byte (DLE 0x10) before the bus driver
-        # is fully enabled, corrupting the start delimiter so the panel's frame
-        # parser discards the entire frame.  Null bytes are not valid DLE STX
-        # so the panel ignores them and then finds an intact frame header.
-        pad = bytes(KEY_PAD_BYTES)
-        padded = pad + bytes(frame)
+        # Optional RS-485 turnaround padding (default off). Proven unnecessary
+        # on the W610 (~75µs turnaround) but kept as a diagnostic lever.
+        out = bytes(KEY_PAD_BYTES) + bytes(frame) if KEY_PAD_BYTES else frame
+        # Wait for the panel's post-keep-alive accept window, then write once.
+        # KEY_BURST > 1 writes repeatedly — proven HARMFUL on this bridge (the
+        # W610 merges rapid writes); kept only for diagnostics.
         time.sleep(KEY_PREDELAY_MS / 1000.0)
         for _ in range(max(1, KEY_BURST)):
-            self._write(padded)
-            time.sleep(KEY_GAP_MS / 1000.0)
-        log.info('Sent (x%d pad=%d): %s', KEY_BURST, KEY_PAD_BYTES,
-                 binascii.hexlify(frame).decode())
+            self._write(out)
+            if KEY_BURST > 1:
+                time.sleep(KEY_GAP_MS / 1000.0)
+        log.info('Sent (x%d pad=%d predelay=%.0fms): %s', KEY_BURST,
+                 KEY_PAD_BYTES, KEY_PREDELAY_MS, binascii.hexlify(frame).decode())
         # No async _check_state requeue. Verification is done synchronously in
         # RealPanel.set_circuit under _nav_lock using _actual_state(), which
         # reads _states directly and avoids the optimistic queue-peek problem.
@@ -315,8 +316,9 @@ def panel_thread(host: str, port: int) -> None:
     from aqualogic.states import States
     from aqualogic.keys import Keys
 
-    if KEY_BURST > 1:
-        _install_key_burst(AquaLogic)
+    # Always install: even at burst=1 we need the keep-alive window targeting
+    # (predelay) and the get_state patch that tolerates raw send_key frames.
+    _install_key_burst(AquaLogic)
 
     smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
 
@@ -1397,12 +1399,15 @@ def main() -> None:
                         help='Seconds between background heater-state reads '
                              '(menu navigation). 0 disables. Default 600.')
     parser.add_argument('--key-burst', type=int, default=KEY_BURST,
-                        help='Times to write each key frame per send, to beat '
-                             'WiFi-bridge latency. 1 = stock single shot. Default 5.')
+                        help='Times to write each key frame per send. 1 = single '
+                             'shot (correct for the W610; >1 is harmful — it '
+                             'merges rapid writes). Default 1.')
     parser.add_argument('--key-predelay-ms', type=float, default=KEY_PREDELAY_MS,
-                        help='Delay after keep-alive before bursting (ms). Default 50.')
+                        help='Delay after keep-alive before writing the frame '
+                             '(ms). Targets the panel accept window. Default 70.')
     parser.add_argument('--key-gap-ms', type=float, default=KEY_GAP_MS,
-                        help='Gap between burst writes (ms). Default 10.')
+                        help='Gap between writes when --key-burst > 1 (ms, '
+                             'diagnostics only). Default 10.')
     args = parser.parse_args()
 
     KEY_BURST = args.key_burst
