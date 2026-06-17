@@ -108,6 +108,7 @@ def _install_key_burst(AquaLogic) -> None:
     from threading import Timer
 
     def _send_frame_burst(self) -> None:
+        print('[burst] _send_frame called, queue empty=%s' % self._send_queue.empty(), flush=True)
         if self._send_queue.empty():
             return
         data = self._send_queue.get(block=False)
@@ -116,6 +117,7 @@ def _install_key_burst(AquaLogic) -> None:
         for _ in range(max(1, KEY_BURST)):
             self._write(frame)
             time.sleep(KEY_GAP_MS / 1000.0)
+        print('[burst] Sent (x%d): %s' % (KEY_BURST, binascii.hexlify(frame).decode()), flush=True)
         log.info('Sent (x%d): %s', KEY_BURST, binascii.hexlify(frame).decode())
         try:
             if data.get('desired_states') is not None:
