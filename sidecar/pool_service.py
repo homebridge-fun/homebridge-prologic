@@ -46,8 +46,18 @@ logging.basicConfig(
     force=True,  # override any handler Flask/werkzeug installed at import time,
                  # otherwise basicConfig is a no-op and our INFO logs are dropped
 )
+# Give our own logger a dedicated stdout handler with propagate=False. Flask's
+# import-time logging setup was swallowing pool_service records that relied on
+# the root handler (aqualogic.core records came through fine, ours didn't), so
+# we stop depending on root propagation entirely.
+import sys as _sys
 log = logging.getLogger('pool_service')
 log.setLevel(logging.INFO)
+log.propagate = False
+if not log.handlers:
+    _h = logging.StreamHandler(_sys.stdout)
+    _h.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+    log.addHandler(_h)
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +118,6 @@ def _install_key_burst(AquaLogic) -> None:
     from threading import Timer
 
     def _send_frame_burst(self) -> None:
-        print('[burst] _send_frame called, queue empty=%s' % self._send_queue.empty(), flush=True)
         if self._send_queue.empty():
             return
         data = self._send_queue.get(block=False)
@@ -117,7 +126,6 @@ def _install_key_burst(AquaLogic) -> None:
         for _ in range(max(1, KEY_BURST)):
             self._write(frame)
             time.sleep(KEY_GAP_MS / 1000.0)
-        print('[burst] Sent (x%d): %s' % (KEY_BURST, binascii.hexlify(frame).decode()), flush=True)
         log.info('Sent (x%d): %s', KEY_BURST, binascii.hexlify(frame).decode())
         try:
             if data.get('desired_states') is not None:
@@ -127,9 +135,8 @@ def _install_key_burst(AquaLogic) -> None:
             pass
 
     AquaLogic._send_frame = _send_frame_burst
-    msg = f'Key-burst send enabled: burst={KEY_BURST} predelay={KEY_PREDELAY_MS:.0f}ms gap={KEY_GAP_MS:.0f}ms'
-    print(msg, flush=True)
-    log.info(msg)
+    log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms',
+             KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS)
 
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
@@ -1292,9 +1299,8 @@ def main() -> None:
         threading.Thread(target=refresher_thread, args=(args.heater_refresh,),
                          daemon=True, name='refresher').start()
 
-    startup_msg = f'pool_service starting: REST API on {args.api_host}:{args.api_port} key-burst={KEY_BURST}'
-    print(startup_msg, flush=True)
-    log.info(startup_msg)
+    log.info('REST API listening on %s:%s (key-burst=%d)',
+             args.api_host, args.api_port, KEY_BURST)
     app.run(host=args.api_host, port=args.api_port, threaded=True)
 
 
