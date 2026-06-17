@@ -43,8 +43,11 @@ from flask import Flask, jsonify, request, Response
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    force=True,  # override any handler Flask/werkzeug installed at import time,
+                 # otherwise basicConfig is a no-op and our INFO logs are dropped
 )
 log = logging.getLogger('pool_service')
+log.setLevel(logging.INFO)
 
 
 # ---------------------------------------------------------------------------
