@@ -55,7 +55,10 @@ log = logging.getLogger('pool_service')
 log.setLevel(logging.INFO)
 log.propagate = False
 if not log.handlers:
-    _h = logging.StreamHandler(_sys.stdout)
+    # stderr, not stdout: under systemd stdout is block-buffered so records sit
+    # unflushed and never reach the journal, while stderr is unbuffered. This is
+    # the same stream aqualogic.core's records ride to appear promptly.
+    _h = logging.StreamHandler(_sys.stderr)
     _h.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
     log.addHandler(_h)
 
