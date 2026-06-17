@@ -110,7 +110,6 @@ KEY_GAP_MS = 10.0
 def _install_key_burst(AquaLogic) -> None:
     """Monkeypatch AquaLogic._send_frame to burst-write key frames."""
     import binascii
-    from threading import Timer
 
     def _send_frame_burst(self) -> None:
         if self._send_queue.empty():
@@ -122,12 +121,14 @@ def _install_key_burst(AquaLogic) -> None:
             self._write(frame)
             time.sleep(KEY_GAP_MS / 1000.0)
         log.info('Sent (x%d): %s', KEY_BURST, binascii.hexlify(frame).decode())
-        try:
-            if data.get('desired_states') is not None:
-                # Verify the state actually changed; requeue if not (library logic).
-                Timer(2.0, self._check_state, [data]).start()
-        except (KeyError, AttributeError):
-            pass
+        # Deliberately do NOT schedule _check_state here. Every keypad key is a
+        # *toggle*, and _check_state re-queues the same frame if it doesn't
+        # observe the new state within 2s — but the panel's broadcast of the
+        # updated circuit state lags that window, so the requeue fires a second
+        # press and flips the circuit back. The 5x burst already lands the press
+        # reliably in one valid window, so we send exactly once and trust it.
+        # If a press is ever genuinely missed, the user simply taps again; that
+        # is far safer than a requeue storm double-toggling the light.
 
     AquaLogic._send_frame = _send_frame_burst
     log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms',
