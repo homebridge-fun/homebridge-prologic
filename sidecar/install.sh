@@ -2,13 +2,23 @@
 # install.sh — Install and register the AquaPlus/ProLogic sidecar service
 #
 # Usage:
-#   sudo bash install.sh --bridge-host 192.168.50.XXX [--bridge-port 8899] [--api-port 5757]
+#   sudo bash install.sh --bridge-host 192.168.68.XXX [--bridge-port 8899] [--api-port 5757]
 #
 # Prerequisites: Python 3.9+ (with python3-venv), systemd
 #
 # On Raspberry Pi OS Bookworm and other PEP 668 "externally-managed" systems,
 # system-wide `pip install` is blocked, so this installs into a dedicated
 # virtualenv at ${INSTALL_DIR}/venv.
+#
+# VERIFIED HARDWARE SETUP (ProLogic PS, board G1--11049F-1)
+#   Bridge:  USR-W610 in RS-485 mode, TCP Server, port 8899
+#   Serial:  19200 baud, 8 data bits, NO parity, 2 stop bits (8N2)
+#            (the aqualogic library hardcodes 19200/8N2 — these MUST match)
+#   Wiring:  the RS-485 data pair on the panel's J2 header is pins 2 and 4
+#            (NOT pin 1 — that is not a data line; pin 3 is ~7.6V bus power).
+#            Two-wire A/B only; panel ground not required on short runs.
+#            If you see clean 8-byte repeating frames but no '10 02' frame
+#            starts, swap A and B on the bridge (polarity).
 
 set -euo pipefail
 

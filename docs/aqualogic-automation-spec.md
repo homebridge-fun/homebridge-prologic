@@ -10,6 +10,27 @@ AquaConnect web box, exposed to HomeKit as heater + VSP control.
 
 ---
 
+## 0. Verified physical bridge connection `[VERIFIED]`
+
+Established live on the actual hardware (ProLogic PS, main board sticker `G1--11049F-1`):
+
+| Item | Value |
+|---|---|
+| Bridge | **USR-W610** (RS-485 mode), TCP **Server**, port **8899**, IP `192.168.68.101` |
+| Serial params | **19200 / 8 / None / 2** (8N2) — must match the aqualogic library, which hardcodes 19200 + `STOPBITS_TWO` |
+| Panel header | **J2** |
+| RS-485 data pair | **pin 2 + pin 4** (two-wire A/B) |
+| Pin 1 | NOT a data line (measured ~-2.2 V; red herring during bring-up) |
+| Pin 3 | ~7.6 V bus power — **do not connect to the bridge** |
+| Ground | not required on short runs (two-wire worked) |
+
+**Bring-up gotchas (all hit during the first install):**
+- The Waveshare UART-WIFI232-B2 produced identical garbage to the W610 — both bridges are fine; the problems were pin selection and framing.
+- A correct connection shows a clean **8-byte repeating frame** in a raw TCP capture. If you see that but **no `10 02` frame starts**, A/B polarity is reversed — swap A and B on the bridge.
+- Symptom map: `socket timeout` = no bytes at all (wrong pins / no link); `Frame timeout` / `Bad CRC` = bytes arriving but mis-framed (wrong pair, polarity, or stop bits); clean `10 02 … 10 03` with ASCII payload = success.
+
+---
+
 ## 1. System facts
 
 | Item | Value | Source |
