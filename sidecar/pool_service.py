@@ -455,15 +455,19 @@ class AquaConnectBackend:
     def _post(self, key_code: str) -> Optional[str]:
         """POST a key ('00' = no-op read) and return the raw response body.
 
-        Serialized through _http_lock; callers that need post+settle+reread as
-        one atomic unit must hold the lock around the whole sequence instead.
+        Body MUST be exactly "KeyId=NN&" — verbatim from the panel's own
+        WebsProcessKey() (WebsFuncs.js:690). The firmware's parser scans for
+        "KeyId=" up to the trailing '&'; urlencode() omits that '&' and the box
+        then silently ignores the key (verified live: keys did nothing without
+        it, reads worked fine). Serialized through _http_lock; callers needing
+        post+settle+reread as one unit hold the lock around the whole sequence.
         """
-        import urllib.parse
-        data = urllib.parse.urlencode({'KeyId': key_code}).encode()
+        data = f'KeyId={key_code}&'.encode()
         try:
             req = self._urllib.Request(
                 self._url, data=data,
-                headers={'Content-Type': 'application/x-www-form-urlencoded'})
+                headers={'Content-Type': 'application/x-www-form-urlencoded',
+                         'Connection': 'close'})
             with self._urllib.urlopen(req, timeout=5) as resp:
                 return resp.read().decode('latin-1', errors='replace')
         except Exception as e:
