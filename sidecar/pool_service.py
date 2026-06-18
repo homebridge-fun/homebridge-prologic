@@ -166,6 +166,45 @@ def _install_key_burst(AquaLogic) -> None:
             return (0x20 & self._flashing_states) != 0  # FILTER bit
         return (state.value & self._states) != 0
 
+    # Patch LONG_DISPLAY_UPDATE handling in process().
+    # The library's process() ignores LONG_DISPLAY_UPDATE (0x04 0x0a) with
+    # '# Not currently parsed / pass'. But during menu navigation the panel
+    # sends LONG frames (full 2×16 LCD), NOT short DISPLAY_UPDATE (0x01 0x03)
+    # frames. Without this patch, lcd.text_updated() is never called during
+    # menu navigation, so _send() always times out and _press_until() burns
+    # its entire budget thinking every RIGHT/PLUS/MINUS was dropped.
+    #
+    # Fix: replace the body of the LONG branch with the same decode+callback
+    # that the short branch uses, plus bit-7 stripping for flashing chars
+    # (characters with bit 7 set blink on the physical display per PR #11).
+    import inspect, textwrap, types
+
+    src = inspect.getsource(AquaLogic.process)
+    old_stub = (
+        'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
+        '                    # Not currently parsed\n'
+        '                    pass'
+    )
+    new_body = (
+        'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
+        '                    raw = bytes(b & 0x7f for b in frame)\n'
+        '                    text = raw.replace(b\'\\xdf\', b\'\\xc2\\xb0\').decode(\'utf-8\', errors=\'replace\')\n'
+        '                    self._web.text_updated(text)'
+    )
+    if old_stub not in src:
+        log.warning('LONG_DISPLAY_UPDATE patch: expected stub not found in '
+                    'aqualogic.core.AquaLogic.process — menu LCD updates will '
+                    'not fire. Check library version.')
+    else:
+        import aqualogic.core as _aq_core
+        patched_src = textwrap.dedent(src.replace(old_stub, new_body))
+        globs = vars(_aq_core).copy()
+        globs['__name__'] = _aq_core.__name__
+        exec(compile(patched_src, inspect.getfile(AquaLogic), 'exec'), globs)
+        AquaLogic.process = globs['process']
+        log.info('LONG_DISPLAY_UPDATE patch applied: menu navigation LCD '
+                 'updates will now reach LcdCapture.')
+
     AquaLogic._send_frame = _send_frame_burst
     AquaLogic.get_state = _get_state_safe
     log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms pad=%d',
