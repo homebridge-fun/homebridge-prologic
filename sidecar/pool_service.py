@@ -856,22 +856,32 @@ class MenuNavigator:
     def _same_item(a: str, b: str) -> bool:
         """True if two frames are the same menu item (ignoring a value flash).
 
-        The selected value flashes, so an item shows as both 'Label Value' and
-        'Label' (value blanked). One is a prefix of the other. A real
-        navigation step or a value change (50% -> 45%) is NOT a prefix match.
+        Handles three oscillation sources:
+        1. Value flash: item shows as 'Label Value' and 'Label' alternately.
+           One is a prefix of the other.
+        2. SHORT vs LONG frame character differences: SHORT frame uses '_' for
+           degree symbol and ' ' for ':', LONG frame uses '°' and ':'.
+           Canonical alphanumeric-token comparison normalises these away.
+        3. Garbled RS-485 noise frames never start with an uppercase letter.
         """
         a, b = (a or '').strip(), (b or '').strip()
         if a == b:
             return True
-        # Garbled bus frames (transient RS-485 noise) never start with an
-        # uppercase letter. Treat them as same-item so _send doesn't exit
-        # on a garbled frame before the panel processes the keypress.
+        # Garbled bus frames never start with uppercase; ignore them.
         if not a or not a[0].isupper():
             return True
         if not b or not b[0].isupper():
             return True
-        short, lng = (a, b) if len(a) <= len(b) else (b, a)
-        return bool(short) and lng.startswith(short)
+        # Canonical form: only alphanumeric tokens (strips °/_/:/%/spaces).
+        # 'Pool Temp 77°F' and 'Pool Temp 77_F' both become ['Pool','Temp','77','F'].
+        # 'Thursday 8:02A' and 'Thursday 8 02A' both become ['Thursday','8','02A'].
+        canon_a = re.findall(r'[A-Za-z0-9]+', a)
+        canon_b = re.findall(r'[A-Za-z0-9]+', b)
+        if canon_a == canon_b:
+            return True
+        # Value-blank flash: label tokens are a prefix of label+value tokens.
+        short, lng = (canon_a, canon_b) if len(canon_a) <= len(canon_b) else (canon_b, canon_a)
+        return bool(short) and lng[:len(short)] == short
 
     def _read_value(self, parser, timeout: float = 1.6):
         """Read a parseable value, waiting through value-flash blank frames.
