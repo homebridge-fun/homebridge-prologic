@@ -181,7 +181,11 @@ def anchor() -> bool:
 
 def test1_press_gap(gaps_s: list) -> dict:
     """
-    For each gap in gaps_s, send MENU and check if the screen changed from idle.
+    For each gap in gaps_s, send MENU at exactly `gap` seconds after the prior
+    request, then settle+reread. A landed press shows a menu screen (idle never
+    shows one on its own). The immediate POST response returns the PRE-press
+    frame, so we must reread after a settle to observe the effect (this is why
+    the real send_nav_key does post→settle→reread).
 
     Returns {gap_s: True/False} (True = press landed).
     """
@@ -192,16 +196,17 @@ def test1_press_gap(gaps_s: list) -> dict:
             print(f'  gap={gap:.2f}s  ANCHOR_FAIL — skipped')
             results[gap] = None
             continue
-        # Read idle baseline, then press MENU at exactly `gap` seconds after
-        # that read completes. Pass gap= directly to _req so it measures from
-        # _last_req (set at the end of the read) and sleeps the remainder.
+        # Read idle baseline, press MENU at exactly `gap` s after that read,
+        # then settle and reread to see if the screen entered the menu ring.
         baseline = rd()
-        after = press('02', gap=gap)  # MENU; waits exactly `gap` from last req
-        landed = after != baseline and not _looks_idle(after)
+        resp = press('02', gap=gap)          # MENU; waits exactly `gap`
+        time.sleep(2.0)                       # settle (≥ debounce window)
+        after = rd()                          # reread the settled screen
+        landed = bool(MENU_RE.search(after))  # menu screen ⇒ press landed
         results[gap] = landed
         sym = '✓ landed' if landed else '✗ dropped'
-        print(f'  gap={gap:.2f}s  before={baseline!r}  after={after!r}  {sym}')
-        # Return to idle before the next trial
+        print(f'  gap={gap:.2f}s  base={baseline!r}  resp={resp!r}  '
+              f'after={after!r}  {sym}')
     return results
 
 
@@ -220,13 +225,16 @@ def test2_read_then_press(delays_s: list) -> dict:
             print(f'  delay={delay:.2f}s  ANCHOR_FAIL — skipped')
             results[delay] = None
             continue
-        # Read with full gap, then press MENU at exactly `delay` seconds after
+        # Read, then press MENU exactly `delay` s after the read, settle, reread.
         baseline = rd()
-        after = press('02', gap=delay)
-        landed = after != baseline and not _looks_idle(after)
+        resp = press('02', gap=delay)
+        time.sleep(2.0)
+        after = rd()
+        landed = bool(MENU_RE.search(after))
         results[delay] = landed
         sym = '✓ landed' if landed else '✗ dropped'
-        print(f'  delay={delay:.2f}s  before={baseline!r}  after={after!r}  {sym}')
+        print(f'  delay={delay:.2f}s  base={baseline!r}  resp={resp!r}  '
+              f'after={after!r}  {sym}')
     return results
 
 
