@@ -802,29 +802,34 @@ class MenuNavigator:
     def _send(self, key: str, expect_change: bool = True) -> str:
         """Send one key and return the resulting normalized frame.
 
-        The panel re-broadcasts its display every ~2s, so the raw event fires
-        even when nothing changed. We therefore wait for the frame *content* to
-        differ from what it was before the press (up to _KEY_TIMEOUT). A press
-        that lands changes the frame and returns quickly; a dropped press (the
-        write only lands ~60% of the time over the WiFi bridge) times out with
-        the frame unchanged, which lets callers detect the miss and re-press.
-        Waiting for a real change also avoids acting on a stale re-broadcast.
+        Waits for a *meaningful* display change — one that represents a real
+        navigation step or value change — and ignores transient noise:
 
-        Every press is appended to the module-level _NAV_TRACE ring so a failed
-        navigation can be replayed frame-by-frame against the spec (§3/§4).
+        • Garbled frames (not starting with an uppercase letter) are transient
+          bus artifacts; we treat them as the same item and keep waiting.
+        • Value-flash frames (value field blanks, label stays — one is a prefix
+          of the other) are the same menu item; we keep waiting.
+        • A real change: navigation to a different item, or a value digit change.
+
+        A dropped press (~40% on the WiFi bridge) causes KEY_TIMEOUT with the
+        text unchanged; callers re-press. Every press is appended to _NAV_TRACE.
         """
         before = self._lcd.text()
         t0 = time.time()
-        # Send the key, then wait for it to actually go out on the wire. The
-        # keypress is queued and transmitted on the next keep-alive (~0.5s
-        # later), so if we started watching the display immediately we'd return
-        # on the value's natural *flash* before the press even left — and then
-        # press again, chasing the flash around the whole ring. Block until the
-        # frame is transmitted first.
         self._panel.send_key(key)
-        self._wait_key_sent()
         if not expect_change:
             after = self._lcd.text()
+            _trace_key(key, before, after, time.time() - t0, expect_change)
+            return after
+        deadline = t0 + self._KEY_TIMEOUT
+        while time.time() < deadline:
+            if not self._same_item(self._lcd.text(), before):
+                break
+            self._lcd._event.clear()
+            self._lcd._event.wait(min(0.5, max(0.0, deadline - time.time())))
+        after = self._lcd.text()
+        _trace_key(key, before, after, time.time() - t0, expect_change)
+        return after
             _trace_key(key, before, after, time.time() - t0, expect_change)
             return after
         # Now wait for a *real* change. Check immediately first — the keypress
@@ -872,6 +877,13 @@ class MenuNavigator:
         """
         a, b = (a or '').strip(), (b or '').strip()
         if a == b:
+            return True
+        # Garbled bus frames (transient RS-485 noise) never start with an
+        # uppercase letter. Treat them as same-item so _send doesn't exit
+        # on a garbled frame before the panel processes the keypress.
+        if not a or not a[0].isupper():
+            return True
+        if not b or not b[0].isupper():
             return True
         short, lng = (a, b) if len(a) <= len(b) else (b, a)
         return bool(short) and lng.startswith(short)
