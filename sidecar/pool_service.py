@@ -694,6 +694,34 @@ def simulate_thread() -> None:
 # mid-operation error does not leave the panel stuck in a menu.
 # ---------------------------------------------------------------------------
 
+# Per-keypress navigation trace (most recent first via reversed view). Each
+# entry: {seq, ts, key, before, after, changed, expect_change, wait_s}.
+# Read it back over /debug/nav-trace to replay a failed walk against the spec.
+_NAV_TRACE: "deque[dict]" = deque(maxlen=400)
+_NAV_TRACE_LOCK = threading.Lock()
+_NAV_SEQ = [0]
+
+
+def _trace_key(key: str, before: str, after: str, wait_s: float,
+               expect_change: bool) -> None:
+    with _NAV_TRACE_LOCK:
+        _NAV_SEQ[0] += 1
+        seq = _NAV_SEQ[0]
+        entry = {
+            'seq': seq,
+            'ts': round(time.time(), 3),
+            'key': key,
+            'before': before,
+            'after': after,
+            'changed': after != before,
+            'expect_change': expect_change,
+            'wait_s': round(wait_s, 3),
+        }
+        _NAV_TRACE.append(entry)
+    log.info('NAV #%d %-7s %4.0fms %s | %r -> %r', seq, key, wait_s * 1000,
+             'CHG' if entry['changed'] else 'same', before, after)
+
+
 class MenuNavigator:
     _SETTINGS_HDR = 'Settings Menu'
     _DEFAULT_MENU_HDR = 'Default Menu'
@@ -720,11 +748,15 @@ class MenuNavigator:
         write only lands ~60% of the time over the WiFi bridge) times out with
         the frame unchanged, which lets callers detect the miss and re-press.
         Waiting for a real change also avoids acting on a stale re-broadcast.
+
+        Every press is appended to the module-level _NAV_TRACE ring so a failed
+        navigation can be replayed frame-by-frame against the spec (§3/§4).
         """
         before = self._lcd.text()
         self._lcd._event.clear()
+        t0 = time.time()
         self._panel.send_key(key)
-        deadline = time.time() + self._KEY_TIMEOUT
+        deadline = t0 + self._KEY_TIMEOUT
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
@@ -733,7 +765,9 @@ class MenuNavigator:
             self._lcd._event.clear()
             if not expect_change or self._lcd.text() != before:
                 break
-        return self._lcd.text()
+        after = self._lcd.text()
+        _trace_key(key, before, after, time.time() - t0, expect_change)
+        return after
 
     def _press_until(self, key: str, ok, budget: int, what: str) -> str:
         """Press `key` until ok(normalized_text) is True, re-pressing on misses.
@@ -1161,6 +1195,33 @@ def set_circuit(name: str) -> Response:
     except Exception as e:
         log.error(f'set_circuit {key}: {e}')
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/debug/nav-trace')
+def debug_nav_trace() -> Response:
+    """Replay the most recent keypress trace, newest last.
+
+    Query: ?n=N limits to the last N entries (default 60). Each entry shows the
+    key, the normalized LCD frame before/after, whether it changed, and how long
+    _send waited. Use this to validate a walk against the spec ring (§3/§4)
+    instead of inferring from a one-line error.
+    """
+    try:
+        n = int(request.args.get('n', 60))
+    except (TypeError, ValueError):
+        n = 60
+    with _NAV_TRACE_LOCK:
+        items = list(_NAV_TRACE)
+    if n > 0:
+        items = items[-n:]
+    return jsonify({'count': len(items), 'trace': items})
+
+
+@app.route('/debug/nav-trace/clear', methods=['POST'])
+def debug_nav_trace_clear() -> Response:
+    with _NAV_TRACE_LOCK:
+        _NAV_TRACE.clear()
+    return jsonify({'ok': True})
 
 
 @app.route('/debug/keyburst', methods=['GET', 'POST'])
