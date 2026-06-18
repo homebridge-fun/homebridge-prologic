@@ -128,32 +128,53 @@ def press(code: str, gap: float = MIN_GAP) -> str:
     return _lcd(_req(code, gap=gap))
 
 
-# ── Anchor: navigate from anywhere back to idle time screen ──────────────────
+# ── Anchor: navigate to Default Menu then RIGHT to idle (§13.1 fast_exit) ────
 
-IDLE_RE = re.compile(r'\b(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b', re.I)
-IDLE_TEMPS_RE = re.compile(r'\d{2,3}[°]?[FC]?', re.I)  # catches "Air: 72F Pool: 85F"
+# Known menu-ring screens — anything matching this is NOT idle
+MENU_RE = re.compile(
+    r'(Settings Menu|Timers Menu|Diagnostic Menu|Configuration Menu|Default Menu)',
+    re.I)
 
-
+# Idle screens on this panel: status scroll ("Pool Chlorinator 40%",
+# "Salt Level 3100 PPM", "Air: 72", weekday name, etc.)
+# Anything that is NOT a named menu item is considered idle.
 def _looks_idle(text: str) -> bool:
-    return bool(IDLE_RE.search(text)) or 'Air:' in text or 'Pool Temp' in text
+    return bool(text) and not MENU_RE.search(text)
 
 
 def anchor() -> bool:
-    """Navigate back to the idle screen. Returns True if successful."""
+    """Navigate to Default Menu then send RIGHT to drop back to idle (§13.1).
+
+    The panel cycles: Settings → Timers → Diagnostic → Configuration-Locked →
+    Default Menu. Once we see 'Default Menu' we send RIGHT (not MENU) which
+    exits the ring and returns to the status display.
+    """
     print('  Anchoring to idle screen …')
-    for attempt in range(1, 9):
-        # Use full gap before every press to avoid debounce issues
+    # First check: already idle?
+    text = rd()
+    print(f'    [check] LCD: {text!r}')
+    if _looks_idle(text):
+        print('    → already idle')
+        return True
+    # Drive to Default Menu then exit with RIGHT
+    for attempt in range(1, 13):
         text = rd()
         print(f'    [{attempt}] LCD: {text!r}')
-        if _looks_idle(text):
-            print('    → idle confirmed')
-            return True
-        # Send MENU and re-read; sleep ≥ MIN_GAP between consecutive requests
-        # is already handled inside _req(), but we add a safety margin.
-        press('02')   # MENU
-    text = rd()
-    print(f'    [final] LCD: {text!r}')
-    return _looks_idle(text)
+        if 'Default Menu' in text:
+            # §13.1: one RIGHT exits the menu ring back to idle
+            after = press('01')   # RIGHT
+            print(f'    → RIGHT after Default Menu → {after!r}')
+            time.sleep(0.5)
+            final = rd()
+            print(f'    → final: {final!r}')
+            if _looks_idle(final):
+                print('    → idle confirmed')
+                return True
+            # If RIGHT didn't drop to idle, keep looping
+        else:
+            press('02')   # MENU — advance toward Default Menu
+    print('    → anchor failed after 12 attempts')
+    return False
 
 
 # ── Test 1: press-drop threshold ──────────────────────────────────────────────
@@ -171,14 +192,11 @@ def test1_press_gap(gaps_s: list) -> dict:
             print(f'  gap={gap:.2f}s  ANCHOR_FAIL — skipped')
             results[gap] = None
             continue
-        # Read the idle screen (with full MIN_GAP), THEN press with test gap.
+        # Read idle baseline, then press MENU at exactly `gap` seconds after
+        # that read completes. Pass gap= directly to _req so it measures from
+        # _last_req (set at the end of the read) and sleeps the remainder.
         baseline = rd()
-        time.sleep(gap)   # explicit extra wait (on top of any gap already elapsed)
-        # Force the gap to be exactly `gap` from _last_req by passing gap=0
-        # (we already slept it manually above) — but we want to ensure the
-        # socket call fires right now, so set gap to MIN_GAP and let _req
-        # handle it (it will be satisfied since we just slept).
-        after = press('02', gap=0.0)  # MENU; gap=0 = fire immediately
+        after = press('02', gap=gap)  # MENU; waits exactly `gap` from last req
         landed = after != baseline and not _looks_idle(after)
         results[gap] = landed
         sym = '✓ landed' if landed else '✗ dropped'
@@ -202,11 +220,9 @@ def test2_read_then_press(delays_s: list) -> dict:
             print(f'  delay={delay:.2f}s  ANCHOR_FAIL — skipped')
             results[delay] = None
             continue
-        # Read with full gap
+        # Read with full gap, then press MENU at exactly `delay` seconds after
         baseline = rd()
-        # Wait `delay` then press immediately (gap=0 so we control exact timing)
-        time.sleep(delay)
-        after = press('02', gap=0.0)
+        after = press('02', gap=delay)
         landed = after != baseline and not _looks_idle(after)
         results[delay] = landed
         sym = '✓ landed' if landed else '✗ dropped'
