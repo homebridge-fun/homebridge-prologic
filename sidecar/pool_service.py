@@ -1224,6 +1224,52 @@ def debug_nav_trace_clear() -> Response:
     return jsonify({'ok': True})
 
 
+@app.route('/debug/rawkey', methods=['POST'])
+def debug_rawkey() -> Response:
+    """Send one key under a chosen RS-485 frame type, bypassing send_key.
+
+    Body: {"key": "RIGHT", "frametype": "remote"}
+      frametype: "local"  -> 00 02 LOCAL_WIRED_KEY_EVENT (what send_key uses)
+                 "remote" -> 00 03 REMOTE_WIRED_KEY_EVENT (what a wired remote
+                              like the AquaConnect box emits)
+    Builds the frame exactly like aqualogic._get_key_event_frame but lets us
+    pick the frame type, so we can prove whether menu-scroll keys need the
+    remote event type. Returns the hex frame queued.
+    """
+    p = _get_panel()
+    if p is None:
+        return jsonify({'error': 'Not connected'}), 503
+    body = request.get_json(force=True) or {}
+    name = body.get('key', '')
+    ftype = body.get('frametype', 'remote').lower()
+    try:
+        aq = p._aq
+        Keys = p._Keys
+        k = getattr(Keys, name, None)
+        if k is None:
+            return jsonify({'error': f'Unknown key {name!r}'}), 400
+        type_bytes = aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT if ftype == 'remote' \
+            else aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT
+        frame = bytearray()
+        frame.append(aq.FRAME_DLE)
+        frame.append(aq.FRAME_STX)
+        aq._append_data(frame, type_bytes)
+        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+        crc = sum(frame)
+        aq._append_data(frame, crc.to_bytes(2, byteorder='big'))
+        frame.append(aq.FRAME_DLE)
+        frame.append(aq.FRAME_ETX)
+        import binascii
+        hexf = binascii.hexlify(bytes(frame)).decode()
+        aq._send_queue.put({'frame': frame})
+        log.info('rawkey %s type=%s queued: %s', name, ftype, hexf)
+        return jsonify({'ok': True, 'key': name, 'frametype': ftype, 'frame': hexf})
+    except Exception as e:
+        log.error(f'rawkey: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/debug/keyburst', methods=['GET', 'POST'])
 def debug_keyburst() -> Response:
     """Live-tune the key-burst timing without a restart (diagnostics).
