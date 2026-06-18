@@ -827,18 +827,16 @@ class MenuNavigator:
             after = self._lcd.text()
             _trace_key(key, before, after, time.time() - t0, expect_change)
             return after
-        # Now wait for a *real* change. The selected value field flashes on/off
-        # (~every 0.4s), toggling e.g. 'Pool Chlorinator 50%' <-> 'Pool
-        # Chlorinator'. That is the same menu item, not a navigation step, so we
-        # ignore it: a flash only blanks the value, leaving the label, so the
-        # two frames are in a prefix relationship. We return only when the item
-        # identity actually changes (or KEY_TIMEOUT elapses = dropped press).
+        # Now wait for a *real* change. Check immediately first — the keypress
+        # may have already fired and the display may have changed while
+        # _wait_key_sent was sleeping; if we cleared the event first we'd
+        # throw away that response and wait for the next one (the auto-cycle).
         deadline = t0 + self._KEY_TIMEOUT
         while time.time() < deadline:
-            self._lcd._event.clear()
-            self._lcd._event.wait(min(0.5, max(0.0, deadline - time.time())))
             if not self._same_item(self._lcd.text(), before):
                 break
+            self._lcd._event.clear()
+            self._lcd._event.wait(min(0.5, max(0.0, deadline - time.time())))
         after = self._lcd.text()
         _trace_key(key, before, after, time.time() - t0, expect_change)
         return after
