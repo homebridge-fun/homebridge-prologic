@@ -1490,18 +1490,23 @@ def debug_lcd_watch() -> Response:
 
 @app.route('/debug/map-menu', methods=['POST'])
 def debug_map_menu() -> Response:
-    """Discovery: press MENU once then RIGHT repeatedly to map the menu ring.
+    """Discovery: press MENU then RIGHT to map the top-level and Settings rings.
 
-    Body: {"menu_presses": 1, "right_presses": 15, "exit": true}
-      menu_presses: how many MENU presses before starting the RIGHT walk (default 1)
-      right_presses: how many RIGHT presses to make (default 15)
-      exit: if true (default), press MENU until Default Menu then RIGHT to exit
+    Body:
+      frametype: "remote" (default) or "local" — RS-485 frame type for key sends.
+                 AquaConnect uses "remote"; the library default is "local".
+                 If MENU is not entering the menu, try switching this.
+      menu_budget: max MENU presses to find a menu header (default 6)
+      right_presses: RIGHT presses to make once in the menu (default 15)
+      exit: if true (default), attempt to exit back to Default display after
 
-    Returns a list of {key, before, after, wait_s} for every press.
-    Runs under _nav_lock so it won't race the background refresher.
+    Each press is validated: after MENU we confirm we left the status cycle
+    (got a menu header line, not a status item). RIGHT presses log before/after
+    individually. Returns partial + diagnosis immediately if MENU fails.
     """
     body = request.get_json(force=True) or {}
-    menu_presses = max(1, int(body.get('menu_presses', 1)))
+    frametype = body.get('frametype', 'remote').lower()
+    menu_budget = max(1, int(body.get('menu_budget', 6)))
     right_presses = max(1, int(body.get('right_presses', 15)))
     do_exit = bool(body.get('exit', True))
 
@@ -1509,43 +1514,98 @@ def debug_map_menu() -> Response:
     if p is None:
         return jsonify({'error': 'Not connected'}), 503
 
-    nav = MenuNavigator(p, lcd)
-    steps = []
+    aq = p._aq
+    Keys = p._Keys
 
-    def _press(key):
+    # Known status-cycle item prefixes — if we land on one of these after
+    # pressing MENU, we're still in the status cycle, not in a menu.
+    STATUS_PREFIXES = ('Thursday', 'Pool Temp', 'Air Temp', 'Pool Chlorinator',
+                       'Salt Level', 'Heater1', 'Filter Speed', 'Spa Temp')
+
+    def _is_status(norm: str) -> bool:
+        return any(norm.startswith(p) for p in STATUS_PREFIXES)
+
+    def _send_raw(key_name: str) -> None:
+        """Send key using the chosen frame type (remote or local)."""
+        k = getattr(Keys, key_name)
+        type_bytes = aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT if frametype == 'remote' \
+            else aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT
+        frame = bytearray()
+        frame.append(aq.FRAME_DLE)
+        frame.append(aq.FRAME_STX)
+        aq._append_data(frame, type_bytes)
+        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+        crc = sum(frame)
+        aq._append_data(frame, crc.to_bytes(2, byteorder='big'))
+        frame.append(aq.FRAME_DLE)
+        frame.append(aq.FRAME_ETX)
+        aq._send_queue.put({'frame': frame})
+
+    def _press(key_name: str, wait: float = 5.0):
         before = lcd.text()
         t0 = time.time()
-        p.send_key(key)
-        deadline = t0 + 6.0
+        _send_raw(key_name)
+        deadline = t0 + wait
         while time.time() < deadline:
-            cur = lcd.text()
-            if cur != before:
+            # Use canonical same-item check so SHORT/LONG oscillation doesn't
+            # count as a real change.
+            if not MenuNavigator._same_item(lcd.text(), before):
                 break
             lcd._event.clear()
             lcd._event.wait(min(0.5, max(0.0, deadline - time.time())))
         after = lcd.text()
-        steps.append({'key': key, 'before': before,
-                      'after': after, 'wait_s': round(time.time() - t0, 3)})
-        return after
+        return {
+            'key': key_name,
+            'frametype': frametype,
+            'before': before,
+            'after': after,
+            'changed': not MenuNavigator._same_item(before, after),
+            'is_status': _is_status(after),
+            'wait_s': round(time.time() - t0, 3),
+        }
 
+    steps = []
     try:
         with _nav_lock:
-            for _ in range(menu_presses):
-                _press('MENU')
-            for _ in range(right_presses):
-                cur = _press('RIGHT')
-                # Stop if we've wrapped back to the Settings Menu header
-                # (we've done a full ring)
-                if steps[-1]['before'] == nav._SETTINGS_HDR and cur == nav._SETTINGS_HDR:
+            # Phase 1: press MENU until we land on a non-status item (menu header)
+            in_menu = False
+            for i in range(menu_budget):
+                r = _press('MENU')
+                steps.append(r)
+                if not _is_status(r['after']):
+                    in_menu = True
                     break
+
+            if not in_menu:
+                return jsonify({
+                    'diagnosis': f'MENU never left status cycle after {menu_budget} presses '
+                                 f'(frametype={frametype!r}). Try frametype="local".',
+                    'count': len(steps), 'steps': steps,
+                })
+
+            # Phase 2: walk RIGHT through the menu ring
+            for _ in range(right_presses):
+                r = _press('RIGHT')
+                steps.append(r)
+                # Detect full-ring wrap: back to same header we started from
+                if (len(steps) > 2
+                        and steps[-1]['after'] == steps[0]['after']
+                        and not _is_status(steps[-1]['after'])):
+                    break
+
             if do_exit:
-                nav.fast_exit()
+                # Press MENU until we see a status item (back in Default display),
+                # then stop — crude but safe when we don't know which menu we're in.
+                for _ in range(10):
+                    r = _press('MENU', wait=3.0)
+                    if _is_status(r['after']):
+                        break
     except Exception as e:
         log.error('map-menu: %s', e)
         return jsonify({'error': str(e), 'partial': steps}), 500
 
     return jsonify({'count': len(steps), 'steps': steps})
-
 
 
 def keypad_press(key: str) -> Response:
