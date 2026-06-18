@@ -421,3 +421,89 @@ The AquaConnect bridge's network address must be a **user setting**, not hardcod
 - The plugin should fail gracefully / surface a clear connection error if the bridge is unreachable, rather than silently stalling on the slow bus.
 
 > Default the config to this system's values (pool+spa active; AUX2 + VALVE3 hidden; bridge `192.168.50.100`) but keep every item user-overridable so the plugin ports to other AquaLogic/ProLogic setups.
+
+---
+
+## 15. AquaConnect HTTP backend (dual-backend architecture) `[VERIFIED-REF]`
+
+The navigator runs over **either** of two interchangeable backends, selectable
+at runtime (`--backend rs485|aquaconnect`). Both feed the **same**
+`MenuNavigator` and `LcdCapture`, so all menu logic (§3–§13) is shared; only the
+transport differs.
+
+- **`rs485`** (default) — raw RS-485 frames over the USR-W610 WiFi serial bridge
+  (§0, §11). Fast; the validated primary path.
+- **`aquaconnect`** — HTTP to the AquaConnect web box. No RS-485 wiring needed;
+  useful as a fallback and for A/B testing navigation logic.
+
+`[VERIFIED-REF]` below = matches the working `SteveTheGeekHA/AquaConnectDeviceHandler`
+reference implementation; confirm once against the live box with `GET
+/debug/aquaconnect?raw=1` before relying on byte offsets.
+
+### 15.1 Wire protocol
+- **Endpoint:** `POST http://<host>/WNewSt.htm` (default host `192.168.50.100`).
+- **Key press:** form body `KeyId=NN`, `Content-Type: application/x-www-form-urlencoded`,
+  where `NN` is the §2 web key code (`MENU=02`, `RIGHT=01`, `LEFT=03`, `PLUS=06`,
+  `MINUS=05`, `POOL/SPA/SPILLOVER=07`, `FILTER=08`, `LIGHTS=09`, `AUX1=0A`,
+  `AUX2=0B`, `VALVE3=11`, `HEATER1=13`).
+- **No-op read:** `KeyId=00` returns current state without pressing anything.
+- **No auth.**
+
+### 15.2 Response format
+HTML page; the payload is between `<body>` and `</body>`, split on `\n`. The
+**first line is a header and is dropped**; then:
+
+| Line | Content |
+|---|---|
+| 0 | LCD display **line 1** (e.g. `Pool Chlorinator`) |
+| 1 | LCD display **line 2** / value (e.g. `35%`) |
+| 2 | **LED/equipment state** — 6 ASCII chars (see §15.3) |
+
+- The degree symbol arrives HTML-encoded as `&#176` (no trailing `;`); render to `°`.
+- **Blank-line-2 hazard:** on the idle temp screen line 2 is empty and gets
+  dropped by the newline tokenizer, shifting the LED line up into the line-2
+  slot. The parser therefore locates the LED line by **pattern** (6 chars, both
+  nibbles ∈ {3,4,5,6}), not by position, and treats the remainder as LCD text.
+
+### 15.3 Equipment-state decode (the 6-char LED line) `[VERIFIED-REF]`
+Each character carries **two** equipment LEDs, one per nibble (high nibble =
+"first" LED, low nibble = "second"). Nibble value → state:
+
+| Nibble | State |
+|---|---|
+| `3` | absent / no key on this panel |
+| `4` | off |
+| `5` | on |
+| `6` | blink (transitioning / attention) |
+
+Position map:
+
+| Char | First LED (high nibble) | Second LED (low nibble) |
+|---|---|---|
+| 0 | Pool mode | Spa mode |
+| 1 | Spillover mode | Filter |
+| 2 | Lights | — |
+| 3 | Heater | — |
+| 4 | — | Aux1 |
+| 5 | Aux2 | — |
+
+Example: char 0 = `T` (`0x54`) → high `5` = Pool **on**, low `4` = Spa **off**.
+This is the source for the cached state model (§13.2): valve mode, filter,
+lights, heater, aux on/off — without waiting for the Default screen to cycle.
+
+### 15.4 Timing & concurrency
+- The box mirrors the panel over the **same slow RS-485 bus**, so the immediate
+  POST response can still show the pre-keypress screen. After each key the
+  backend waits `_AC_SETTLE_S` (default **3 s**) and re-reads (`KeyId=00`).
+- All HTTP is serialized through one lock; a key-send holds it across
+  post→settle→reread so the background state poller never issues an overlapping
+  POST (concurrent POSTs confuse the box).
+- A background poller (`KeyId=00`, default every 5 s) keeps the cached state
+  fresh when idle.
+
+### 15.5 Calibration & debug
+- `GET /debug/aquaconnect` — one no-op read; returns parsed LCD, decoded LED
+  state, and the extracted body lines. Add `?raw=1` for the full HTML body
+  (use this to confirm §15.2 offsets against the live box on first connect).
+- `POST /debug/aquaconnect {"keys":["MENU","RIGHT",...]}` — drive a key
+  sequence and see the LCD + equipment state after each press.

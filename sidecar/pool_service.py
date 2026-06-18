@@ -331,14 +331,24 @@ _nav_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# AquaConnect HTTP backend (§15 / §2)
+# AquaConnect HTTP backend (§2 key codes; protocol verified against the
+# SteveTheGeekHA/AquaConnectDeviceHandler reference implementation)
 #
-# Sends keypad presses via POST /WNewSt.htm KeyId=NN and polls the same
-# endpoint (KeyId=00 = no-op) to read the current LCD state.  Feeds the
-# standard LcdCapture so the MenuNavigator sees no difference.
+# Sends keypad presses via POST /WNewSt.htm  body "KeyId=NN" and polls the same
+# endpoint (KeyId=00 = no-op read) to read the current LCD + equipment state.
+# Feeds the standard LcdCapture so the MenuNavigator sees no difference.
+#
+# Response format (WNewSt.htm):
+#   HTML page; the interesting content is between <body> and </body>.
+#   Tokenized on '\n', the FIRST line is a header/cursor line and is dropped;
+#   the next three lines are:
+#     line[0]  LCD display line 1   (e.g. "Pool Chlorinator")
+#     line[1]  LCD display line 2   (e.g. "35%")  — the value field
+#     line[2]  LED/equipment state  (6 ASCII chars; see _decode_ac_led)
+#   The degree symbol arrives HTML-encoded as "&#176".
 # ---------------------------------------------------------------------------
 
-# AquaConnect key codes (§2)
+# AquaConnect web key codes (§2)
 _AC_KEY_CODES = {
     'RIGHT': '01',
     'MENU':  '02',
@@ -347,6 +357,7 @@ _AC_KEY_CODES = {
     'PLUS':  '06',
     'POOL':  '07',
     'SPA':   '07',
+    'SPILLOVER': '07',
     'FILTER': '08',
     'LIGHTS': '09',
     'AUX1':  '0A',
@@ -355,34 +366,97 @@ _AC_KEY_CODES = {
     'HEATER1': '13',
 }
 
-# How long to wait (seconds) for the AquaConnect box to update its LCD
-# display after a key is sent before we consider the response settled.
+# How long to wait (seconds) for the AquaConnect box to mirror the panel LCD
+# after a key is sent before we re-read the settled screen. The box reflects
+# the panel over the same slow RS-485 bus, so the immediate POST response can
+# still show the pre-keypress screen.
 _AC_SETTLE_S = 3.0
+
+# LED nibble decode (each equipment LED is one 4-bit nibble in the state line).
+#   3 = absent / no key on this panel
+#   4 = off
+#   5 = on
+#   6 = blink (transitioning / attention)
+_AC_LED_MAP = {0x3: 'absent', 0x4: 'off', 0x5: 'on', 0x6: 'blink'}
+# Valid LED-state characters: a byte whose BOTH nibbles are in {3,4,5,6}.
+_AC_LED_RE = re.compile(r'^[3-6CDEFcdefSTUVstuv]{6}$')
+
+
+def _ac_led_nibbles(c: str) -> Tuple[Optional[str], Optional[str]]:
+    """Decode one LED-state character into (first-LED, second-LED) states.
+
+    The character's byte value carries two nibbles; the high nibble is the
+    'first' LED at that position, the low nibble the 'second'.
+    """
+    b = ord(c)
+    return _AC_LED_MAP.get((b >> 4) & 0xF), _AC_LED_MAP.get(b & 0xF)
+
+
+def _decode_ac_led(line3: str) -> dict:
+    """Decode the 6-char LED/equipment-state line into named states (§13.2).
+
+    Layout (from the reference handler):
+      char[0]: first=Pool mode,  second=Spa mode
+      char[1]: first=Spillover,  second=Filter
+      char[2]: first=Lights
+      char[3]: first=Heater
+      char[4]: second=Aux1
+      char[5]: first=Aux2
+    Each value is one of 'absent' | 'off' | 'on' | 'blink' (or None if unknown).
+    """
+    out: dict = {}
+    if not line3 or len(line3) < 6:
+        return out
+    pool_m, spa_m = _ac_led_nibbles(line3[0])
+    spill_m, filt = _ac_led_nibbles(line3[1])
+    lights, _ = _ac_led_nibbles(line3[2])
+    heater, _ = _ac_led_nibbles(line3[3])
+    _, aux1 = _ac_led_nibbles(line3[4])
+    aux2, _ = _ac_led_nibbles(line3[5])
+    out['pool_mode'] = pool_m
+    out['spa_mode'] = spa_m
+    out['spillover_mode'] = spill_m
+    out['filter'] = filt
+    out['lights'] = lights
+    out['heater'] = heater
+    out['aux1'] = aux1
+    out['aux2'] = aux2
+    return out
 
 
 class AquaConnectBackend:
     """HTTP backend that drives menu navigation through the AquaConnect box.
 
-    Provides the same LCD + key-send surface as the RS-485 path but uses
-    POST /WNewSt.htm instead of raw RS-485 frames.
+    Provides the same LCD + key-send surface as the RS-485 path but over
+    POST /WNewSt.htm instead of raw RS-485 frames. The `lcd` attribute is an
+    LcdCapture that the MenuNavigator reads exactly as it reads the RS-485 one.
 
-    The `lcd` attribute is an LcdCapture instance — pass it to MenuNavigator
-    as the `l` parameter so the navigator uses the AC-sourced text.
+    All HTTP is serialized through `_http_lock` so the background poller never
+    overlaps a key-send (two concurrent POSTs confuse the box).
     """
 
-    def __init__(self, host: str = '192.168.50.100'):
+    def __init__(self, host: str = '192.168.50.100', poll_s: float = 5.0):
         import urllib.request
         self._host = host
         self._url = f'http://{host}/WNewSt.htm'
         self._urllib = urllib.request
         self.lcd = LcdCapture()
+        self._http_lock = threading.Lock()
+        self._last_raw: Optional[str] = None   # last full body, for /debug calibration
+        self._last_led: dict = {}
+        self._poll_s = poll_s
         self._poll_stop = threading.Event()
         self._poll_thread = threading.Thread(
             target=self._poll_loop, daemon=True, name='ac-poll')
         self._poll_thread.start()
 
+    # ── HTTP ────────────────────────────────────────────────────────────────
     def _post(self, key_code: str) -> Optional[str]:
-        """POST a key (or '00' for a no-op read) and return raw response text."""
+        """POST a key ('00' = no-op read) and return the raw response body.
+
+        Serialized through _http_lock; callers that need post+settle+reread as
+        one atomic unit must hold the lock around the whole sequence instead.
+        """
         import urllib.parse
         data = urllib.parse.urlencode({'KeyId': key_code}).encode()
         try:
@@ -395,55 +469,104 @@ class AquaConnectBackend:
             log.warning('AquaConnect HTTP error: %s', e)
             return None
 
-    def _parse_lcd(self, body: str) -> Optional[str]:
-        """Extract LCD text from WNewSt.htm response.
+    # ── Parsing ───────────────────────────────────────────────────────────────
+    @staticmethod
+    def _body_lines(body: str):
+        """Return the meaningful lines inside <body>…</body>, header dropped.
 
-        The AquaConnect response is xxx-delimited fields.  The LCD content
-        appears as the first two non-empty text fields (line1 and line2).
-        Falls back gracefully if the format differs.
+        Mirrors the reference handler: take content between the body tags,
+        split on newlines, drop empty lines and the first (header) line.
         """
         if not body:
-            return None
-        parts = body.split('xxx')
-        lines = [p.strip() for p in parts if p.strip()]
+            return []
+        start = body.find('<body>')
+        end = body.find('</body>')
+        inner = body[start + 6:end] if (start != -1 and end != -1) else body
+        lines = [ln.strip() for ln in inner.split('\n')]
+        lines = [ln for ln in lines if ln]      # tokenize drops empties
+        return lines[1:]                          # drop header line
+
+    def _parse(self, body: str):
+        """Parse a response body into (lcd_text, led_dict).
+
+        lcd_text is the LCD lines combined (matching the RS-485 40-char frame),
+        with the &#176 degree entity rendered as '°'. led_dict is the decoded
+        equipment state, or {} if the LED line is absent/unrecognised.
+
+        The LED-state line is found by PATTERN, not position: when LCD line 2
+        is blank (common on the idle temp screen) the empty-line filter shifts
+        it up, so a positional read would leak the LED bytes into the LCD text.
+        """
+        lines = self._body_lines(body)
         if not lines:
-            return None
-        # First field = line1; second field = line2 if present
-        l1 = lines[0] if len(lines) > 0 else ''
-        l2 = lines[1] if len(lines) > 1 else ''
-        return (l1 + (' ' + l2 if l2 else '')).strip()
+            return None, {}
+        import html
+        # Pull out the LED-state line (6 chars, both nibbles in {3,4,5,6}).
+        led, lcd_lines = {}, []
+        for ln in lines:
+            if not led and _AC_LED_RE.match(ln):
+                led = _decode_ac_led(ln)
+            else:
+                lcd_lines.append(html.unescape(ln.replace('&#176', '°')))
+        lcd = ' '.join(lcd_lines[:2]).strip()
+        return (lcd or None), led
 
-    def _poll_loop(self) -> None:
-        """Background poll: refresh the LCD every 2 seconds via KeyId=00."""
-        while not self._poll_stop.is_set():
-            body = self._post('00')
-            if body:
-                text = self._parse_lcd(body)
-                if text:
-                    self.lcd.text_updated(text)
-            self._poll_stop.wait(2.0)
+    def _apply(self, body: str) -> None:
+        """Update LCD capture + cached LED state + global PoolState from a body."""
+        if not body:
+            return
+        self._last_raw = body
+        lcd, led = self._parse(body)
+        if lcd:
+            self.lcd.text_updated(lcd)
+        if led:
+            self._last_led = led
+            _apply_ac_led_to_state(led)
 
+    # ── Public navigator surface ──────────────────────────────────────────────
     def send_nav_key(self, key_name: str) -> None:
-        """Send a navigation key and wait for the LCD to settle."""
+        """Send one navigation key and block until the box has settled.
+
+        Holds _http_lock across post → settle → reread so the poller cannot
+        interleave a second POST. Returns only once self.lcd reflects the
+        post-keypress screen, so the navigator's _send sees the change at once.
+        """
         code = _AC_KEY_CODES.get(key_name.upper())
         if code is None:
             raise ValueError(f'No AquaConnect code for key: {key_name}')
-        body = self._post(code)
-        if body:
-            text = self._parse_lcd(body)
-            if text:
-                self.lcd.text_updated(text)
-        # Give the panel time to update before the navigator checks the screen
-        time.sleep(_AC_SETTLE_S)
-        # One more read to get the settled state
-        body2 = self._post('00')
-        if body2:
-            text2 = self._parse_lcd(body2)
-            if text2:
-                self.lcd.text_updated(text2)
+        with self._http_lock:
+            self._apply(self._post(code))
+            time.sleep(_AC_SETTLE_S)
+            self._apply(self._post('00'))
+
+    # ── Background state poll ─────────────────────────────────────────────────
+    def _poll_loop(self) -> None:
+        while not self._poll_stop.is_set():
+            with self._http_lock:
+                self._apply(self._post('00'))
+            self._poll_stop.wait(self._poll_s)
 
     def stop(self) -> None:
         self._poll_stop.set()
+
+
+def _apply_ac_led_to_state(led: dict) -> None:
+    """Fold decoded AquaConnect LED state into the shared PoolState (§13.2)."""
+    with state_lock:
+        # Active body/valve mode
+        if led.get('pool_mode') in ('on', 'blink'):
+            state.valve_mode = 'pool'
+        elif led.get('spa_mode') in ('on', 'blink'):
+            state.valve_mode = 'spa'
+        # Equipment on/off → circuits dict (absent stays out of the map)
+        for name, key in (('filter', 'FILTER'), ('lights', 'LIGHTS'),
+                          ('heater', 'HEATER_1'), ('aux1', 'AUX_1'),
+                          ('aux2', 'AUX_2')):
+            st = led.get(name)
+            if st in ('on', 'off', 'blink'):
+                state.circuits[key] = (st != 'off')
+        state.connected = True
+        state.last_update = time.time()
 
 
 _ac_backend: Optional['AquaConnectBackend'] = None
@@ -1638,23 +1761,34 @@ def debug_keyburst() -> Response:
 
 @app.route('/debug/aquaconnect', methods=['GET', 'POST'])
 def debug_aquaconnect() -> Response:
-    """Test the AquaConnect HTTP backend directly.
+    """Inspect/test the AquaConnect HTTP backend directly.
 
-    GET  — returns current LCD text as seen by the AC backend (or error if not active).
-    POST — send a sequence of keys. Body: {"keys": ["MENU", "RIGHT", ...]}
-           Each key is sent with the configured settle delay and the LCD after
-           each press is returned.
+    GET  — do one no-op read and return the FULL raw body plus the parsed LCD
+           text, decoded equipment state, and the 3 extracted body lines. Use
+           this to calibrate the parser against the live box (?raw=1 includes
+           the entire HTML body verbatim).
+    POST — send a sequence of keys. Body: {"keys": ["MENU", "RIGHT", ...]}.
+           Each key uses the configured settle delay; the LCD after each press
+           is returned along with the running equipment-state decode.
     """
     if _ac_backend is None:
-        return jsonify({'error': 'AquaConnect backend not active (start with --backend aquaconnect)'}), 400
+        return jsonify({'error': 'AquaConnect backend not active '
+                                 '(start with --backend aquaconnect)'}), 400
     if request.method == 'GET':
-        body = _ac_backend._post('00')
-        raw = _ac_backend._parse_lcd(body) if body else None
-        return jsonify({
-            'lcd_raw': raw,
-            'lcd_norm': _norm(raw) if raw else None,
+        with _ac_backend._http_lock:
+            body = _ac_backend._post('00')
+        lcd, led = _ac_backend._parse(body) if body else (None, {})
+        lines = _ac_backend._body_lines(body) if body else []
+        out = {
+            'lcd_parsed': lcd,
+            'lcd_norm': _norm(lcd) if lcd else None,
             'lcd_cached': _ac_backend.lcd.text(),
-        })
+            'led_state': led,
+            'body_lines': lines[:4],
+        }
+        if request.args.get('raw'):
+            out['raw_body'] = body
+        return jsonify(out)
     # POST — key sequence
     data = request.get_json(force=True) or {}
     keys = data.get('keys', [])
@@ -1663,9 +1797,10 @@ def debug_aquaconnect() -> Response:
         before = _ac_backend.lcd.text()
         try:
             _ac_backend.send_nav_key(key)
-            after = _ac_backend.lcd.text()
-            steps.append({'key': key, 'before': before, 'after': after,
-                          'changed': before != after})
+            steps.append({'key': key, 'before': before,
+                          'after': _ac_backend.lcd.text(),
+                          'changed': before != _ac_backend.lcd.text(),
+                          'led_state': dict(_ac_backend._last_led)})
         except ValueError as e:
             steps.append({'key': key, 'error': str(e)})
     return jsonify({'steps': steps})
