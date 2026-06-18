@@ -379,7 +379,8 @@ _AC_SETTLE_S = 3.0
 #   6 = blink (transitioning / attention)
 _AC_LED_MAP = {0x3: 'absent', 0x4: 'off', 0x5: 'on', 0x6: 'blink'}
 # Valid LED-state characters: a byte whose BOTH nibbles are in {3,4,5,6}.
-_AC_LED_RE = re.compile(r'^[3-6CDEFcdefSTUVstuv]{6}$')
+# The line is >= 6 chars (this firmware sends 12: 6 populated + 6 absent slots).
+_AC_LED_RE = re.compile(r'^[3-6CDEFcdefSTUVstuv]{6,}$')
 
 
 def _ac_led_nibbles(c: str) -> Tuple[Optional[str], Optional[str]]:
@@ -472,19 +473,27 @@ class AquaConnectBackend:
     # ── Parsing ───────────────────────────────────────────────────────────────
     @staticmethod
     def _body_lines(body: str):
-        """Return the meaningful lines inside <body>…</body>, header dropped.
+        """Return the meaningful lines inside <body>…</body>.
 
-        Mirrors the reference handler: take content between the body tags,
-        split on newlines, drop empty lines and the first (header) line.
+        Verified live (firmware WebsR2-1.x): lines are CRLF-separated and each
+        is terminated by a literal 'xxx' marker which is stripped. Empty lines
+        are dropped. No leading line is dropped — on this firmware the first
+        line is real LCD content (e.g. the weekday on the idle clock screen).
+        Example body lines: ['Thursday', '5:47P', 'TECD4C333333'].
         """
         if not body:
             return []
         start = body.find('<body>')
         end = body.find('</body>')
         inner = body[start + 6:end] if (start != -1 and end != -1) else body
-        lines = [ln.strip() for ln in inner.split('\n')]
-        lines = [ln for ln in lines if ln]      # tokenize drops empties
-        return lines[1:]                          # drop header line
+        out = []
+        for ln in inner.replace('\r', '').split('\n'):
+            ln = ln.strip()
+            if ln.endswith('xxx'):          # firmware line terminator
+                ln = ln[:-3].strip()
+            if ln:
+                out.append(ln)
+        return out
 
     def _parse(self, body: str):
         """Parse a response body into (lcd_text, led_dict).
