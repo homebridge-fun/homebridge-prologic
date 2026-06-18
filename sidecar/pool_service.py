@@ -244,13 +244,23 @@ def _norm(text: str) -> str:
     (e.g. a leading '\\x03\\x03' or '\\x03\\x02(\\x03') that appear on the
     fresh frame and vanish on the next rebroadcast of the same screen. Left
     in, the identical screen reads as two different strings and _send() sees
-    a spurious 'change' on every press. Strip every control char (< 0x20) so
-    a screen normalizes to one stable value regardless of cursor noise.
+    a spurious 'change' on every press. Strip every control char (< 0x20).
+
+    Some LCD highlight/cursor bytes have values 0x80-0xFF; after the LONG
+    frame's bit-7 mask they become printable ASCII (e.g. 0xAD->'−', 0xA9→')').
+    These appear at the START of the frame, before the actual content. Strip
+    any leading non-alphanumeric characters so '-  Super Chlorinate Off' and
+    ') Pool Chlorinator 50%' normalize identically to their undecorated forms.
+    All valid menu item names start with a letter or digit (§4); the '+' in
+    '+ to enter' is always mid-string after the item label.
     """
     if not text:
         return ''
     cleaned = ''.join(c if ord(c) >= 0x20 else ' ' for c in text)
-    return ' '.join(cleaned.split())
+    result = ' '.join(cleaned.split())
+    # Strip leading non-alphanumeric chars (masked cursor/highlight bytes).
+    result = re.sub(r'^[^A-Za-z0-9]*', '', result)
+    return result
 
 
 # ---------------------------------------------------------------------------
