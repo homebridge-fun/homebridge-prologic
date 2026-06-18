@@ -830,21 +830,6 @@ class MenuNavigator:
         after = self._lcd.text()
         _trace_key(key, before, after, time.time() - t0, expect_change)
         return after
-            _trace_key(key, before, after, time.time() - t0, expect_change)
-            return after
-        # Now wait for a *real* change. Check immediately first — the keypress
-        # may have already fired and the display may have changed while
-        # _wait_key_sent was sleeping; if we cleared the event first we'd
-        # throw away that response and wait for the next one (the auto-cycle).
-        deadline = t0 + self._KEY_TIMEOUT
-        while time.time() < deadline:
-            if not self._same_item(self._lcd.text(), before):
-                break
-            self._lcd._event.clear()
-            self._lcd._event.wait(min(0.5, max(0.0, deadline - time.time())))
-        after = self._lcd.text()
-        _trace_key(key, before, after, time.time() - t0, expect_change)
-        return after
 
     def _wait_key_sent(self, timeout: float = 2.5) -> None:
         """Block until a queued keypress has been transmitted on the bus.
