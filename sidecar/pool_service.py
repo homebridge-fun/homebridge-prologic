@@ -1446,7 +1446,96 @@ def debug_keyburst() -> Response:
                     'pad_bytes': KEY_PAD_BYTES})
 
 
-@app.route('/keypad/<key>', methods=['POST'])
+@app.route('/debug/lcd-watch')
+def debug_lcd_watch() -> Response:
+    """Return the last N distinct normalized LCD frames seen (passive, no keys).
+
+    Query: ?n=N (default 30), ?secs=S (wait up to S seconds for new frames
+    before returning; default 0 = immediate snapshot).
+
+    Each entry: {ts, raw, norm} where raw is the un-normalized text and norm
+    is what the navigator sees. Use this to observe the status-cycle ring
+    without touching the keypad.
+    """
+    try:
+        n = int(request.args.get('n', 30))
+        wait_secs = float(request.args.get('secs', 0))
+    except (TypeError, ValueError):
+        n, wait_secs = 30, 0.0
+
+    if wait_secs > 0:
+        deadline = time.time() + min(wait_secs, 120.0)
+        while time.time() < deadline:
+            lcd._event.clear()
+            lcd._event.wait(min(1.0, deadline - time.time()))
+
+    snap = lcd.snapshot()[-n:]
+    out = []
+    for ts, raw in snap:
+        out.append({'ts': round(ts, 3), 'raw': raw.strip(), 'norm': _norm(raw)})
+    return jsonify({'count': len(out), 'frames': out})
+
+
+@app.route('/debug/map-menu', methods=['POST'])
+def debug_map_menu() -> Response:
+    """Discovery: press MENU once then RIGHT repeatedly to map the menu ring.
+
+    Body: {"menu_presses": 1, "right_presses": 15, "exit": true}
+      menu_presses: how many MENU presses before starting the RIGHT walk (default 1)
+      right_presses: how many RIGHT presses to make (default 15)
+      exit: if true (default), press MENU until Default Menu then RIGHT to exit
+
+    Returns a list of {key, before, after, wait_s} for every press.
+    Runs under _nav_lock so it won't race the background refresher.
+    """
+    body = request.get_json(force=True) or {}
+    menu_presses = max(1, int(body.get('menu_presses', 1)))
+    right_presses = max(1, int(body.get('right_presses', 15)))
+    do_exit = bool(body.get('exit', True))
+
+    p = _get_panel()
+    if p is None:
+        return jsonify({'error': 'Not connected'}), 503
+
+    nav = MenuNavigator(p, lcd)
+    steps = []
+
+    def _press(key):
+        before = lcd.text()
+        t0 = time.time()
+        p.send_key(key)
+        deadline = t0 + 6.0
+        while time.time() < deadline:
+            cur = lcd.text()
+            if cur != before:
+                break
+            lcd._event.clear()
+            lcd._event.wait(min(0.5, max(0.0, deadline - time.time())))
+        after = lcd.text()
+        steps.append({'key': key, 'before': before,
+                      'after': after, 'wait_s': round(time.time() - t0, 3)})
+        return after
+
+    try:
+        with _nav_lock:
+            for _ in range(menu_presses):
+                _press('MENU')
+            for _ in range(right_presses):
+                cur = _press('RIGHT')
+                # Stop if we've wrapped back to the Settings Menu header
+                # (we've done a full ring)
+                if steps[-1]['before'] == nav._SETTINGS_HDR and cur == nav._SETTINGS_HDR:
+                    break
+            if do_exit:
+                nav.fast_exit()
+    except Exception as e:
+        log.error('map-menu: %s', e)
+        return jsonify({'error': str(e), 'partial': steps}), 500
+
+    return jsonify({'count': len(steps), 'steps': steps})
+
+
+
 def keypad_press(key: str) -> Response:
     """
     Send a single raw keypad key.  Intended for diagnostics and manual
