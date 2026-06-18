@@ -53,7 +53,6 @@ logging.basicConfig(
 # would then clobber *our* logger to WARNING and silently drop every INFO line.
 # Use a distinct name so the two loggers never collide.
 log = logging.getLogger('pool_sidecar')
-logging.getLogger('pool.long_frame').setLevel(logging.DEBUG)
 log.setLevel(logging.INFO)
 
 
@@ -188,15 +187,16 @@ def _install_key_burst(AquaLogic) -> None:
     )
     new_body = (
         'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
-        '                    import logging as _lg\n'
-        '                    _lg.getLogger("pool.long_frame").debug(\n'
-        '                        "LONG raw hex: %s  len=%d",\n'
-        '                        frame.hex(" "), len(frame))\n'
-        '                    # Preserve 0xDF (LCD degree char) before masking\n'
-        '                    # bit 7; otherwise 0xDF & 0x7F = 0x5F = "_".\n'
-        '                    raw = bytes(b if b == 0xdf else (b & 0x7f) for b in frame)\n'
-        '                    text = raw.replace(b\'\\xdf\', b\'\\xc2\\xb0\').decode(\'utf-8\', errors=\'replace\')\n'
-        '                    self._web.text_updated(text)'
+        '                    # LONG frame: variable-length header + 40 LCD bytes\n'
+        '                    # (20-char line 1 + 20-char line 2) + 0x00 null.\n'
+        '                    # Short frames (len<41) are cursor/blink control\n'
+        '                    # packets, not text updates — skip them or they\n'
+        '                    # decode as garbage (e.g. "ju %").\n'
+        '                    if len(frame) >= 41:\n'
+        '                        lcd = frame[-41:-1]  # drop header + null\n'
+        '                        raw = bytes(b if b == 0xdf else (b & 0x7f) for b in lcd)\n'
+        '                        text = raw.replace(b\'\\xdf\', b\'\\xc2\\xb0\').decode(\'utf-8\', errors=\'replace\')\n'
+        '                        self._web.text_updated(text)'
     )
     if old_stub not in src:
         log.warning('LONG_DISPLAY_UPDATE patch: expected stub not found in '
