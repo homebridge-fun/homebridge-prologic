@@ -330,6 +330,125 @@ lcd = LcdCapture()
 _nav_lock = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# AquaConnect HTTP backend (§15 / §2)
+#
+# Sends keypad presses via POST /WNewSt.htm KeyId=NN and polls the same
+# endpoint (KeyId=00 = no-op) to read the current LCD state.  Feeds the
+# standard LcdCapture so the MenuNavigator sees no difference.
+# ---------------------------------------------------------------------------
+
+# AquaConnect key codes (§2)
+_AC_KEY_CODES = {
+    'RIGHT': '01',
+    'MENU':  '02',
+    'LEFT':  '03',
+    'MINUS': '05',
+    'PLUS':  '06',
+    'POOL':  '07',
+    'SPA':   '07',
+    'FILTER': '08',
+    'LIGHTS': '09',
+    'AUX1':  '0A',
+    'AUX2':  '0B',
+    'VALVE3': '11',
+    'HEATER1': '13',
+}
+
+# How long to wait (seconds) for the AquaConnect box to update its LCD
+# display after a key is sent before we consider the response settled.
+_AC_SETTLE_S = 3.0
+
+
+class AquaConnectBackend:
+    """HTTP backend that drives menu navigation through the AquaConnect box.
+
+    Provides the same LCD + key-send surface as the RS-485 path but uses
+    POST /WNewSt.htm instead of raw RS-485 frames.
+
+    The `lcd` attribute is an LcdCapture instance — pass it to MenuNavigator
+    as the `l` parameter so the navigator uses the AC-sourced text.
+    """
+
+    def __init__(self, host: str = '192.168.50.100'):
+        import urllib.request
+        self._host = host
+        self._url = f'http://{host}/WNewSt.htm'
+        self._urllib = urllib.request
+        self.lcd = LcdCapture()
+        self._poll_stop = threading.Event()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name='ac-poll')
+        self._poll_thread.start()
+
+    def _post(self, key_code: str) -> Optional[str]:
+        """POST a key (or '00' for a no-op read) and return raw response text."""
+        import urllib.parse
+        data = urllib.parse.urlencode({'KeyId': key_code}).encode()
+        try:
+            req = self._urllib.Request(
+                self._url, data=data,
+                headers={'Content-Type': 'application/x-www-form-urlencoded'})
+            with self._urllib.urlopen(req, timeout=5) as resp:
+                return resp.read().decode('latin-1', errors='replace')
+        except Exception as e:
+            log.warning('AquaConnect HTTP error: %s', e)
+            return None
+
+    def _parse_lcd(self, body: str) -> Optional[str]:
+        """Extract LCD text from WNewSt.htm response.
+
+        The AquaConnect response is xxx-delimited fields.  The LCD content
+        appears as the first two non-empty text fields (line1 and line2).
+        Falls back gracefully if the format differs.
+        """
+        if not body:
+            return None
+        parts = body.split('xxx')
+        lines = [p.strip() for p in parts if p.strip()]
+        if not lines:
+            return None
+        # First field = line1; second field = line2 if present
+        l1 = lines[0] if len(lines) > 0 else ''
+        l2 = lines[1] if len(lines) > 1 else ''
+        return (l1 + (' ' + l2 if l2 else '')).strip()
+
+    def _poll_loop(self) -> None:
+        """Background poll: refresh the LCD every 2 seconds via KeyId=00."""
+        while not self._poll_stop.is_set():
+            body = self._post('00')
+            if body:
+                text = self._parse_lcd(body)
+                if text:
+                    self.lcd.text_updated(text)
+            self._poll_stop.wait(2.0)
+
+    def send_nav_key(self, key_name: str) -> None:
+        """Send a navigation key and wait for the LCD to settle."""
+        code = _AC_KEY_CODES.get(key_name.upper())
+        if code is None:
+            raise ValueError(f'No AquaConnect code for key: {key_name}')
+        body = self._post(code)
+        if body:
+            text = self._parse_lcd(body)
+            if text:
+                self.lcd.text_updated(text)
+        # Give the panel time to update before the navigator checks the screen
+        time.sleep(_AC_SETTLE_S)
+        # One more read to get the settled state
+        body2 = self._post('00')
+        if body2:
+            text2 = self._parse_lcd(body2)
+            if text2:
+                self.lcd.text_updated(text2)
+
+    def stop(self) -> None:
+        self._poll_stop.set()
+
+
+_ac_backend: Optional['AquaConnectBackend'] = None
+
+
 class UnsupportedCircuit(Exception):
     """Raised when a circuit has no corresponding keypad key to toggle it."""
 
@@ -799,21 +918,29 @@ class MenuNavigator:
     # showing the Settings Menu header before it will accept RIGHT.
     _POST_MENU_SETTLE_S = 0.35
 
-    def __init__(self, p, l: LcdCapture):
+    def __init__(self, p, l: LcdCapture, backend=None):
         self._panel = p
         self._lcd = l
+        # If an AquaConnectBackend is provided, key sends go through it and
+        # its own LCD capture is used instead of the RS-485 one.
+        self._ac_backend = backend
+        if backend is not None:
+            self._lcd = backend.lcd
 
     def text(self) -> str:
         """Current normalized LCD frame."""
         return self._lcd.text()
 
     def _send_key_remote(self, key: str) -> None:
-        """Queue a key using REMOTE_WIRED frame type (same as AquaConnect box).
+        """Queue a key via the active backend.
 
-        Verified: RIGHT/LEFT/PLUS/MINUS only work with REMOTE frames. MENU
-        also works with LOCAL (and enters the menu in one press), but remote
-        works too. We use REMOTE for all navigation keys for consistency.
+        RS-485 backend: REMOTE_WIRED frame (verified: RIGHT/LEFT/PLUS/MINUS only
+        work with REMOTE, not LOCAL frames).
+        AquaConnect backend: HTTP POST KeyId=NN (§2 key codes).
         """
+        if self._ac_backend is not None:
+            self._ac_backend.send_nav_key(key)
+            return
         aq = self._panel._aq
         Keys = self._panel._Keys
         k = getattr(Keys, key)
@@ -1018,7 +1145,7 @@ class MenuNavigator:
             try:
                 self._press_until('MENU', lambda t: t == self._DEFAULT_MENU_HDR,
                                   self._MENU_MAX, self._DEFAULT_MENU_HDR)
-                self._send('MENU', expect_change=False)
+                self._send('RIGHT', expect_change=False)  # §13.1: RIGHT once exits to status cycle
             except RuntimeError:
                 return  # best-effort; never raise out of a finally cleanup
 
@@ -1295,6 +1422,9 @@ def _get_panel():
 
 
 def _get_navigator() -> Optional[MenuNavigator]:
+    if _ac_backend is not None:
+        # AquaConnect mode: no RS-485 panel needed
+        return MenuNavigator(None, lcd, backend=_ac_backend)
     p = _get_panel()
     return MenuNavigator(p, lcd) if p is not None else None
 
@@ -1504,6 +1634,41 @@ def debug_keyburst() -> Response:
                     'max_retries': KEY_MAX_RETRIES,
                     'verify_delay_s': KEY_VERIFY_DELAY_S,
                     'pad_bytes': KEY_PAD_BYTES})
+
+
+@app.route('/debug/aquaconnect', methods=['GET', 'POST'])
+def debug_aquaconnect() -> Response:
+    """Test the AquaConnect HTTP backend directly.
+
+    GET  — returns current LCD text as seen by the AC backend (or error if not active).
+    POST — send a sequence of keys. Body: {"keys": ["MENU", "RIGHT", ...]}
+           Each key is sent with the configured settle delay and the LCD after
+           each press is returned.
+    """
+    if _ac_backend is None:
+        return jsonify({'error': 'AquaConnect backend not active (start with --backend aquaconnect)'}), 400
+    if request.method == 'GET':
+        body = _ac_backend._post('00')
+        raw = _ac_backend._parse_lcd(body) if body else None
+        return jsonify({
+            'lcd_raw': raw,
+            'lcd_norm': _norm(raw) if raw else None,
+            'lcd_cached': _ac_backend.lcd.text(),
+        })
+    # POST — key sequence
+    data = request.get_json(force=True) or {}
+    keys = data.get('keys', [])
+    steps = []
+    for key in keys:
+        before = _ac_backend.lcd.text()
+        try:
+            _ac_backend.send_nav_key(key)
+            after = _ac_backend.lcd.text()
+            steps.append({'key': key, 'before': before, 'after': after,
+                          'changed': before != after})
+        except ValueError as e:
+            steps.append({'key': key, 'error': str(e)})
+    return jsonify({'steps': steps})
 
 
 @app.route('/debug/lcd-watch')
@@ -1930,17 +2095,29 @@ def main() -> None:
     parser.add_argument('--key-gap-ms', type=float, default=KEY_GAP_MS,
                         help='Gap between writes when --key-burst > 1 (ms, '
                              'diagnostics only). Default 10.')
+    parser.add_argument('--backend', choices=['rs485', 'aquaconnect'], default='rs485',
+                        help='Navigation backend: rs485 (default) or aquaconnect (HTTP).')
+    parser.add_argument('--aquaconnect-host', default='192.168.50.100',
+                        help='AquaConnect box IP for --backend aquaconnect. Default 192.168.50.100.')
     args = parser.parse_args()
 
     KEY_BURST = args.key_burst
     KEY_PREDELAY_MS = args.key_predelay_ms
     KEY_GAP_MS = args.key_gap_ms
 
+    global _ac_backend
+    if args.backend == 'aquaconnect':
+        _ac_backend = AquaConnectBackend(host=args.aquaconnect_host)
+        log.info('AquaConnect backend: http://%s/WNewSt.htm', args.aquaconnect_host)
+        # AquaConnect mode: no RS-485 panel thread needed
+        app.run(host=args.api_host, port=args.api_port, threaded=True)
+        return
+
     if args.simulate:
         t = threading.Thread(target=simulate_thread, daemon=True, name='simulate')
     else:
         if not args.host:
-            parser.error('--host is required unless --simulate is given')
+            parser.error('--host is required unless --simulate is given or --backend aquaconnect')
         t = threading.Thread(target=panel_thread, args=(args.host, args.port), daemon=True, name='aqualogic')
     t.start()
 
