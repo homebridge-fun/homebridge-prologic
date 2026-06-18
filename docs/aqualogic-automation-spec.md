@@ -252,6 +252,40 @@ One physical heater with two mode-driven setpoints is exposed as **three thermos
 - All setpoint reads/writes go through the §5 paths; all VSP through §6; all gated by §7 guards and the §8 scope.
 - VSP activation: gate every slot-select `+`/`-` on LCD line 1 reading `Filter On:` (§6.4 post-timeout hazard).
 
+### 11.1 RS-485 frame type carries the menu display `[VERIFIED]`
+The single most important undocumented detail, found by byte-level bus tracing:
+
+- The panel sends the LCD over **two different frame types**:
+  - `DISPLAY_UPDATE` (`0x01 0x03`) — the short single-line frames used by the
+    **Default cycling screen** (clock, temps, equipment status). The
+    `swilson/aqualogic` library parses these and calls `text_updated()`.
+  - `LONG_DISPLAY_UPDATE` (`0x04 0x0a`) — the full 2×16 frame used by **all
+    menu navigation** (Settings ring, submenus, value items). The library
+    **ignores this frame type** (`# Not currently parsed / pass`) and never
+    calls `text_updated()` for it.
+- **Consequence:** an unpatched library is *blind during menu navigation* — the
+  closed-loop read in §11 never sees the screen change, every keypress looks
+  dropped, and the navigator spins until it exhausts its retry budget. This
+  masqueraded as "the panel ignores RIGHT" for a long time. The keypress was
+  landing fine; we just couldn't see the result.
+- **Fix:** parse `LONG_DISPLAY_UPDATE` with the same decode the short handler
+  uses and forward it to the LCD capture.
+
+### 11.2 LONG frame decoding quirks `[VERIFIED]`
+- **Bit 7 = flashing.** Characters shown flashing on the physical display
+  arrive with bit 7 set (`char | 0x80`); mask it off (`& 0x7f`) or text won't
+  match (upstream `swilson/aqualogic` PR #11).
+- **Degree symbol** is `0xdf` → render as `°` (same as the short handler).
+- **Cursor-position control bytes.** LONG frames carry leading LCD control
+  bytes (observed `\x03\x03`, `\x03\x02(\x03`) that appear on the *fresh*
+  frame and disappear on the next rebroadcast of the same screen. Strip every
+  control char (`< 0x20`) during normalization, otherwise the identical screen
+  reads as two different strings and the change-detector fires a spurious
+  "change" on every press.
+- **Occasional garbled frames** (e.g. `\x0f\x1a\x16\x03nx %`) appear
+  transiently; after control-byte stripping they normalize to non-matching
+  junk, and the text-anchored walk simply re-reads past them.
+
 ---
 
 ## 12. Live menu examples & behavior `[VERIFIED]`

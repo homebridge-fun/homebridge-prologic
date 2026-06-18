@@ -237,8 +237,18 @@ def _norm(text: str) -> str:
     aqualogic library itself tokenizes with text.split(); we mirror that:
     drop NULs and collapse every whitespace run to a single space. So
     '     Pool Chlorinator        30%   \\x00' -> 'Pool Chlorinator 30%'.
+
+    LONG_DISPLAY_UPDATE frames also carry LCD cursor-position control bytes
+    (e.g. a leading '\\x03\\x03' or '\\x03\\x02(\\x03') that appear on the
+    fresh frame and vanish on the next rebroadcast of the same screen. Left
+    in, the identical screen reads as two different strings and _send() sees
+    a spurious 'change' on every press. Strip every control char (< 0x20) so
+    a screen normalizes to one stable value regardless of cursor noise.
     """
-    return ' '.join((text or '').replace('\x00', '').split())
+    if not text:
+        return ''
+    cleaned = ''.join(c if ord(c) >= 0x20 else ' ' for c in text)
+    return ' '.join(cleaned.split())
 
 
 # ---------------------------------------------------------------------------
