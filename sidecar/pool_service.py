@@ -804,21 +804,83 @@ class MenuNavigator:
         navigation can be replayed frame-by-frame against the spec (§3/§4).
         """
         before = self._lcd.text()
-        self._lcd._event.clear()
         t0 = time.time()
+        # Send the key, then wait for it to actually go out on the wire. The
+        # keypress is queued and transmitted on the next keep-alive (~0.5s
+        # later), so if we started watching the display immediately we'd return
+        # on the value's natural *flash* before the press even left — and then
+        # press again, chasing the flash around the whole ring. Block until the
+        # frame is transmitted first.
         self._panel.send_key(key)
+        self._wait_key_sent()
+        if not expect_change:
+            after = self._lcd.text()
+            _trace_key(key, before, after, time.time() - t0, expect_change)
+            return after
+        # Now wait for a *real* change. The selected value field flashes on/off
+        # (~every 0.4s), toggling e.g. 'Pool Chlorinator 50%' <-> 'Pool
+        # Chlorinator'. That is the same menu item, not a navigation step, so we
+        # ignore it: a flash only blanks the value, leaving the label, so the
+        # two frames are in a prefix relationship. We return only when the item
+        # identity actually changes (or KEY_TIMEOUT elapses = dropped press).
         deadline = t0 + self._KEY_TIMEOUT
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                break
-            self._lcd._event.wait(remaining)
+        while time.time() < deadline:
             self._lcd._event.clear()
-            if not expect_change or self._lcd.text() != before:
+            self._lcd._event.wait(min(0.5, max(0.0, deadline - time.time())))
+            if not self._same_item(self._lcd.text(), before):
                 break
         after = self._lcd.text()
         _trace_key(key, before, after, time.time() - t0, expect_change)
         return after
+
+    def _wait_key_sent(self, timeout: float = 2.5) -> None:
+        """Block until a queued keypress has been transmitted on the bus.
+
+        The real panel queues frames and writes them on the next keep-alive;
+        we wait for the send queue to drain, then a short settle so the write
+        (which the burst does ~predelay after dequeue) has completed. The
+        simulator is synchronous and has no queue, so this is a no-op there.
+        """
+        aq = getattr(self._panel, '_aq', None)
+        q = getattr(aq, '_send_queue', None) if aq is not None else None
+        if q is None:
+            return
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if q.empty():
+                break
+            time.sleep(0.05)
+        # Burst sleeps KEY_PREDELAY_MS after dequeue before the actual write;
+        # add that plus a small margin so the press has truly landed.
+        time.sleep(KEY_PREDELAY_MS / 1000.0 + 0.05)
+
+    @staticmethod
+    def _same_item(a: str, b: str) -> bool:
+        """True if two frames are the same menu item (ignoring a value flash).
+
+        The selected value flashes, so an item shows as both 'Label Value' and
+        'Label' (value blanked). One is a prefix of the other. A real
+        navigation step or a value change (50% -> 45%) is NOT a prefix match.
+        """
+        a, b = (a or '').strip(), (b or '').strip()
+        if a == b:
+            return True
+        short, lng = (a, b) if len(a) <= len(b) else (b, a)
+        return bool(short) and lng.startswith(short)
+
+    def _read_value(self, parser, timeout: float = 1.6):
+        """Read a parseable value, waiting through value-flash blank frames.
+
+        The value field flashes, so a single read can catch the blanked frame
+        (parser -> None). Poll across the flash until the value is visible.
+        """
+        val = parser(self._lcd.text())
+        deadline = time.time() + timeout
+        while val is None and time.time() < deadline:
+            self._lcd._event.clear()
+            self._lcd._event.wait(min(0.4, max(0.0, deadline - time.time())))
+            val = parser(self._lcd.text())
+        return val
 
     def _press_until(self, key: str, ok, budget: int, what: str) -> str:
         """Press `key` until ok(normalized_text) is True, re-pressing on misses.
@@ -836,23 +898,24 @@ class MenuNavigator:
                 return txt
         raise RuntimeError(f'Could not reach {what}; stuck at {self._lcd.text()!r}')
 
-    def _step_to(self, get_cur, target: int, up_key: str, down_key: str,
+    def _step_to(self, parser, target: int, up_key: str, down_key: str,
                  budget: int, what: str) -> int:
         """Drive a numeric setting to `target`, re-reading after every press.
 
-        Robust to the ~60% press-land rate: a dropped press leaves the value
-        unchanged and is re-pressed; an overshoot reverses direction next
-        iteration. Converges on the exact target because direction is chosen
-        fresh each step and we stop on equality.
+        `parser` extracts the current value from the LCD frame; we read it
+        through the value-flash with _read_value so a blanked frame never
+        reads as None mid-step. Robust to dropped presses (value unchanged ->
+        re-press) and overshoot (direction chosen fresh each iteration);
+        converges because we stop on equality.
         """
         for _ in range(budget):
-            cur = get_cur()
+            cur = self._read_value(parser)
             if cur is None:
                 raise RuntimeError(f'Cannot read {what} value at {self._lcd.text()!r}')
             if cur == target:
                 return cur
             self._send(up_key if target > cur else down_key)
-        cur = get_cur()
+        cur = self._read_value(parser)
         if cur != target:
             raise RuntimeError(f'Could not set {what} to {target}; at {cur} ({self._lcd.text()!r})')
         return cur
@@ -863,13 +926,21 @@ class MenuNavigator:
                           self._MENU_MAX, self._SETTINGS_HDR)
 
     def fast_exit(self) -> None:
-        """Return to the Default display: MENU until 'Default Menu', then RIGHT."""
-        try:
-            self._press_until('MENU', lambda t: t == self._DEFAULT_MENU_HDR,
-                              self._MENU_MAX, self._DEFAULT_MENU_HDR)
-        except RuntimeError:
-            return  # best-effort; never raise out of a finally cleanup
-        self._send('RIGHT', expect_change=False)
+        """Return to the Default display: MENU until 'Default Menu', then RIGHT.
+
+        Holds _nav_lock for its duration. fast_exit runs from each operation's
+        `finally`, which executes *after* the operation's own `with _nav_lock`
+        block has released — so without re-acquiring here, two operations'
+        exits (or an exit racing the next operation) press keys concurrently
+        and corrupt each other's navigation. Acquire the lock to serialize.
+        """
+        with _nav_lock:
+            try:
+                self._press_until('MENU', lambda t: t == self._DEFAULT_MENU_HDR,
+                                  self._MENU_MAX, self._DEFAULT_MENU_HDR)
+            except RuntimeError:
+                return  # best-effort; never raise out of a finally cleanup
+            self._send('RIGHT', expect_change=False)
 
     # ── Value parsers (operate on the normalized full frame) ─────────────────
 
@@ -995,7 +1066,7 @@ class MenuNavigator:
                     # stored °F (§12.2: non-symmetric — MINUS would not undo it).
                     self._send('PLUS')
 
-                self._step_to(lambda: self._degf(self.text()), target_f,
+                self._step_to(self._degf, target_f,
                               'PLUS', 'MINUS', self._STEP_MAX, label)
 
                 if was_off:
@@ -1038,7 +1109,7 @@ class MenuNavigator:
                 previous_pct = self._pct(txt)
                 # Step PLUS/MINUS to the target, re-reading after each press so
                 # dropped presses re-press and any overshoot corrects itself.
-                self._step_to(lambda: self._pct(self.text()), target_pct,
+                self._step_to(self._pct, target_pct,
                               'PLUS', 'MINUS', self._STEP_MAX, label)
                 with state_lock:
                     state.chlorinator_percent = float(target_pct)
@@ -1084,7 +1155,7 @@ class MenuNavigator:
         try:
             with _nav_lock:
                 self._goto_vsp_slot4()
-                self._step_to(lambda: self._pct(self.text()), target_pct,
+                self._step_to(self._pct, target_pct,
                               'PLUS', 'MINUS', self._STEP_MAX, 'Filter Speed4')
                 with state_lock:
                     state.vsp_slot4_pct = target_pct
