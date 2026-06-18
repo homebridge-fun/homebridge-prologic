@@ -32,6 +32,7 @@ SIMULATION MODE
 import argparse
 import logging
 import random
+import re
 import threading
 import time
 from collections import deque
@@ -187,6 +188,20 @@ def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
+def _norm(text: str) -> str:
+    """Normalize a raw LCD frame for matching.
+
+    Real hardware sends the 16x2 display as one ~32-char string: the two
+    visual lines packed side by side, padded with spaces, no newline, often
+    with a trailing NUL. (Simulation emits clean 'Line1\\nLine2', which is why
+    the old two-line l1/l2 split worked in sim but never on hardware.) The
+    aqualogic library itself tokenizes with text.split(); we mirror that:
+    drop NULs and collapse every whitespace run to a single space. So
+    '     Pool Chlorinator        30%   \\x00' -> 'Pool Chlorinator 30%'.
+    """
+    return ' '.join((text or '').replace('\x00', '').split())
+
+
 # ---------------------------------------------------------------------------
 # LCD capture
 #
@@ -221,13 +236,22 @@ class LcdCapture:
         return self._event.wait(timeout)
 
     def lines(self) -> Tuple[str, str]:
-        """Return current (line1, line2) from the latest LCD frame."""
+        """Return current (line1, line2) from the latest LCD frame.
+
+        Kept for the simulation path (which emits a real newline). On hardware
+        there is no newline so l2 is empty — navigator code must use text().
+        """
         with self._lock:
             text = self._latest or ''
         parts = text.split('\n', 1)
         l1 = parts[0].strip()
         l2 = parts[1].strip() if len(parts) > 1 else ''
         return l1, l2
+
+    def text(self) -> str:
+        """Return the latest LCD frame normalized to a single matchable string."""
+        with self._lock:
+            return _norm(self._latest or '')
 
     def snapshot(self):
         with self._lock:
@@ -673,81 +697,145 @@ def simulate_thread() -> None:
 class MenuNavigator:
     _SETTINGS_HDR = 'Settings Menu'
     _DEFAULT_MENU_HDR = 'Default Menu'
-    _KEY_TIMEOUT = 4.0   # seconds; bus is slow (§3.2 rule 4)
-    _MENU_MAX = 8        # MENU presses before aborting anchor
+    _KEY_TIMEOUT = 4.0   # seconds to wait for the frame to change after a press
+    _MENU_MAX = 20       # MENU presses before aborting anchor (covers dropped presses)
+    _NAV_MAX = 24        # ring RIGHT presses before aborting an item search
+    _STEP_MAX = 90       # +/- presses before aborting a value adjust
 
     def __init__(self, p, l: LcdCapture):
         self._panel = p
         self._lcd = l
 
-    def _send(self, key: str) -> Tuple[str, str]:
-        # Clear the event BEFORE sending so we capture the update that follows,
-        # whether it arrives synchronously (sim) or async (real RS-485 bus).
+    def text(self) -> str:
+        """Current normalized LCD frame."""
+        return self._lcd.text()
+
+    def _send(self, key: str, expect_change: bool = True) -> str:
+        """Send one key and return the resulting normalized frame.
+
+        The panel re-broadcasts its display every ~2s, so the raw event fires
+        even when nothing changed. We therefore wait for the frame *content* to
+        differ from what it was before the press (up to _KEY_TIMEOUT). A press
+        that lands changes the frame and returns quickly; a dropped press (the
+        write only lands ~60% of the time over the WiFi bridge) times out with
+        the frame unchanged, which lets callers detect the miss and re-press.
+        Waiting for a real change also avoids acting on a stale re-broadcast.
+        """
+        before = self._lcd.text()
         self._lcd._event.clear()
         self._panel.send_key(key)
-        self._lcd._event.wait(self._KEY_TIMEOUT)
-        return self._lcd.lines()
+        deadline = time.time() + self._KEY_TIMEOUT
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            self._lcd._event.wait(remaining)
+            self._lcd._event.clear()
+            if not expect_change or self._lcd.text() != before:
+                break
+        return self._lcd.text()
+
+    def _press_until(self, key: str, ok, budget: int, what: str) -> str:
+        """Press `key` until ok(normalized_text) is True, re-pressing on misses.
+
+        Each landed press advances one menu position; a dropped press leaves us
+        where we were and is simply re-pressed. We stop the instant the target
+        appears, so this never overshoots a distinct, named target.
+        """
+        txt = self._lcd.text()
+        if ok(txt):
+            return txt
+        for _ in range(budget):
+            txt = self._send(key)
+            if ok(txt):
+                return txt
+        raise RuntimeError(f'Could not reach {what}; stuck at {self._lcd.text()!r}')
+
+    def _step_to(self, get_cur, target: int, up_key: str, down_key: str,
+                 budget: int, what: str) -> int:
+        """Drive a numeric setting to `target`, re-reading after every press.
+
+        Robust to the ~60% press-land rate: a dropped press leaves the value
+        unchanged and is re-pressed; an overshoot reverses direction next
+        iteration. Converges on the exact target because direction is chosen
+        fresh each step and we stop on equality.
+        """
+        for _ in range(budget):
+            cur = get_cur()
+            if cur is None:
+                raise RuntimeError(f'Cannot read {what} value at {self._lcd.text()!r}')
+            if cur == target:
+                return cur
+            self._send(up_key if target > cur else down_key)
+        cur = get_cur()
+        if cur != target:
+            raise RuntimeError(f'Could not set {what} to {target}; at {cur} ({self._lcd.text()!r})')
+        return cur
 
     def _anchor(self) -> None:
-        """Drive MENU until line 1 == 'Settings Menu' (§3.2 rule 1)."""
-        for _ in range(self._MENU_MAX):
-            l1, _ = self._lcd.lines()
-            if l1 == self._SETTINGS_HDR:
-                return
-            self._send('MENU')
-        raise RuntimeError('Could not anchor to Settings Menu')
+        """Drive MENU until the normalized frame is exactly 'Settings Menu'."""
+        self._press_until('MENU', lambda t: t == self._SETTINGS_HDR,
+                          self._MENU_MAX, self._SETTINGS_HDR)
 
     def fast_exit(self) -> None:
-        """Return to Default display: MENU until 'Default Menu', then RIGHT (§13.1)."""
-        for _ in range(self._MENU_MAX):
-            l1, _ = self._lcd.lines()
-            if l1 == self._DEFAULT_MENU_HDR:
-                break
-            self._send('MENU')
-        self._send('RIGHT')
+        """Return to the Default display: MENU until 'Default Menu', then RIGHT."""
+        try:
+            self._press_until('MENU', lambda t: t == self._DEFAULT_MENU_HDR,
+                              self._MENU_MAX, self._DEFAULT_MENU_HDR)
+        except RuntimeError:
+            return  # best-effort; never raise out of a finally cleanup
+        self._send('RIGHT', expect_change=False)
+
+    # ── Value parsers (operate on the normalized full frame) ─────────────────
+
+    _HEATER_LABEL = {'pool': 'Pool Heater1', 'spa': 'Spa Heater1'}
+    _CHLOR_LABEL = {'pool': 'Pool Chlorinator', 'spa': 'Spa Chlorinator'}
+
+    @staticmethod
+    def _pct(text: str):
+        """Extract an integer percent from a normalized frame, or None."""
+        m = re.search(r'(\d+)\s*%', text)
+        return int(m.group(1)) if m else None
+
+    @staticmethod
+    def _degf(text: str):
+        """Extract a heater setpoint °F, or None if Manual Off / unreadable.
+
+        Matches the digits immediately before the degree/F marker so it never
+        picks up the '1' in 'Heater1'.
+        """
+        if 'Manual Off' in text:
+            return None
+        m = re.search(r'(\d+)\s*(?:°|\xb0)?\s*F', text)
+        return int(m.group(1)) if m else None
 
     # ── Heater setpoints ─────────────────────────────────────────────────────
 
     def read_heater(self, which: str) -> dict:
-        """Navigate to a heater item and read its state without changing anything.
+        """Navigate to a heater item and read its state without changing it.
 
-        When the heater is 'Manual Off' the panel shows no temperature.  We
-        press PLUS to reveal the stored setpoint, record it, then re-disable
-        via HEATER_1 toggle so the state is unchanged on exit.
+        When the heater is 'Manual Off' the panel shows no temperature, so we
+        press PLUS to reveal the stored setpoint, record it, then re-disable via
+        the HEATER_1 toggle so the state is unchanged on exit.
         """
         if which not in ('pool', 'spa'):
-            raise ValueError(f'which must be "pool" or "spa"')
+            raise ValueError('which must be "pool" or "spa"')
+        label = self._HEATER_LABEL[which]
         try:
             with _nav_lock:
                 self._anchor()
-                presses = 1 if which == 'spa' else 2
-                for _ in range(presses):
-                    self._send('RIGHT')
-                l1, l2 = self._lcd.lines()
-                was_off = l2.strip() == 'Manual Off'
+                txt = self._press_until('RIGHT', lambda t: label in t,
+                                        self._NAV_MAX, label)
+                was_off = 'Manual Off' in txt
                 enabled = not was_off
-                setpoint_f = None
-
                 if was_off:
-                    # PLUS from Manual Off reveals the stored °F without a
-                    # visible confirmation step — panel immediately shows temp.
-                    l1, l2 = self._send('PLUS')
-
-                try:
-                    setpoint_f = int(l2.replace('\xb0F', '').replace('°F', '').strip())
-                except ValueError:
-                    pass
-
+                    # PLUS from Manual Off reveals (and enables at) the stored °F.
+                    txt = self._send('PLUS')
+                setpoint_f = self._degf(txt)
                 if was_off:
-                    # Restore Manual Off: navigate back to this item and toggle
-                    # HEATER_1 (same path as set_heater §13.3 restore).
-                    self._send('RIGHT')   # lock in (move off item)
-                    self._send('LEFT')    # return to item
-                    for _ in range(3):
-                        l1, l2 = self._send('HEATER_1')
-                        if 'Manual Off' in l2:
-                            break
-
+                    # Restore Manual Off: toggle HEATER_1 on the item until it shows.
+                    self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
+                                      4, 'Manual Off (restore)')
                 with state_lock:
                     if which == 'pool':
                         state.pool_heater_enabled = enabled
@@ -755,7 +843,8 @@ class MenuNavigator:
                     else:
                         state.spa_heater_enabled = enabled
                         state.spa_setpoint_f = setpoint_f
-                return {'which': which, 'enabled': enabled, 'setpoint_f': setpoint_f, 'raw': l2}
+                return {'which': which, 'enabled': enabled,
+                        'setpoint_f': setpoint_f, 'raw': txt}
         finally:
             self.fast_exit()
 
@@ -774,27 +863,21 @@ class MenuNavigator:
         Idempotent: if already in the requested state, does nothing.
         """
         if which not in ('pool', 'spa'):
-            raise ValueError(f'which must be "pool" or "spa"')
+            raise ValueError('which must be "pool" or "spa"')
+        label = self._HEATER_LABEL[which]
         try:
             with _nav_lock:
                 self._anchor()
-                presses = 1 if which == 'spa' else 2
-                for _ in range(presses):
-                    self._send('RIGHT')
-                l1, l2 = self._lcd.lines()
-                was_off = l2.strip() == 'Manual Off'
-
+                txt = self._press_until('RIGHT', lambda t: label in t,
+                                        self._NAV_MAX, label)
+                was_off = 'Manual Off' in txt
                 if on and was_off:
                     # PLUS from Manual Off enables at the stored setpoint.
                     self._send('PLUS')
-                    self._send('RIGHT')   # lock in / move off item
                 elif not on and not was_off:
                     # Toggle HEATER_1 on the item until 'Manual Off' appears.
-                    for _ in range(3):
-                        _, l2 = self._send('HEATER_1')
-                        if 'Manual Off' in l2:
-                            break
-
+                    self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
+                                      4, 'Manual Off')
                 with state_lock:
                     if which == 'pool':
                         state.pool_heater_enabled = on
@@ -813,44 +896,27 @@ class MenuNavigator:
         Adjusts in 1°F steps.  target_f is clamped to [65, 104].
         """
         if which not in ('pool', 'spa'):
-            raise ValueError(f'which must be "pool" or "spa"')
+            raise ValueError('which must be "pool" or "spa"')
         target_f = int(_clamp(target_f, 65, 104))
+        label = self._HEATER_LABEL[which]
         try:
             with _nav_lock:
                 self._anchor()
-                presses = 1 if which == 'spa' else 2
-                for _ in range(presses):
-                    self._send('RIGHT')
-                l1, l2 = self._lcd.lines()
-                was_off = l2.strip() == 'Manual Off'
+                txt = self._press_until('RIGHT', lambda t: label in t,
+                                        self._NAV_MAX, label)
+                was_off = 'Manual Off' in txt
+                if was_off:
+                    # PLUS from 'Manual Off' enables the heater and reveals the
+                    # stored °F (§12.2: non-symmetric — MINUS would not undo it).
+                    self._send('PLUS')
+
+                self._step_to(lambda: self._degf(self.text()), target_f,
+                              'PLUS', 'MINUS', self._STEP_MAX, label)
 
                 if was_off:
-                    # PLUS from 'Manual Off' enables the heater and reveals the stored °F.
-                    # Per §12.2 this is non-symmetric — MINUS would not undo it.
-                    l1, l2 = self._send('PLUS')
-
-                try:
-                    current_f = int(l2.replace('\xb0F', '').replace('°F', '').strip())
-                except ValueError:
-                    raise ValueError(f'Cannot parse heater setpoint: {l2!r}')
-
-                diff = target_f - current_f
-                key = 'PLUS' if diff > 0 else 'MINUS'
-                for _ in range(abs(diff)):
-                    l1, l2 = self._send(key)
-
-                # Move off the item to lock in the value (§3).
-                self._send('RIGHT')
-
-                if was_off:
-                    # Restore Manual Off.  Navigate back to the heater item, then
-                    # toggle HEATER_1 until the display confirms 'Manual Off'.
-                    # §12.2: may require up to 2 presses from PLUS-enabled state.
-                    self._send('LEFT')
-                    for _ in range(3):
-                        l1, l2 = self._send('HEATER_1')
-                        if 'Manual Off' in l2:
-                            break
+                    # Restore Manual Off: toggle HEATER_1 on the item until shown.
+                    self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
+                                      4, 'Manual Off (restore)')
 
                 with state_lock:
                     if which == 'pool':
@@ -874,48 +940,50 @@ class MenuNavigator:
         which = 'pool' | 'spa'
         """
         if which not in ('pool', 'spa'):
-            raise ValueError(f'which must be "pool" or "spa"')
+            raise ValueError('which must be "pool" or "spa"')
         target_pct = _chlor_snap(int(target_pct))
-        # Settings ring offsets from anchor: spa_chlorinator=5, pool_chlorinator=6
-        nav_presses = 5 if which == 'spa' else 6
+        label = self._CHLOR_LABEL[which]
         try:
             with _nav_lock:
                 self._anchor()
-                for _ in range(nav_presses):
-                    self._send('RIGHT')
-                l1, l2 = self._lcd.lines()
-                label = 'Spa Chlorinator' if which == 'spa' else 'Pool Chlorinator'
-                if label not in l1:
-                    raise RuntimeError(f'Expected {label}, got: {l1!r}')
-                try:
-                    current_pct = int(l2.replace('%', '').strip())
-                except ValueError:
-                    raise ValueError(f'Cannot parse chlorinator %: {l2!r}')
-                key, n = _chlor_presses(current_pct, target_pct)
-                for _ in range(n):
-                    self._send(key)
+                # Walk the Settings ring to the item by name (self-correcting
+                # against dropped RIGHT presses), not by a fixed press count.
+                txt = self._press_until('RIGHT', lambda t: label in t,
+                                        self._NAV_MAX, label)
+                previous_pct = self._pct(txt)
+                # Step PLUS/MINUS to the target, re-reading after each press so
+                # dropped presses re-press and any overshoot corrects itself.
+                self._step_to(lambda: self._pct(self.text()), target_pct,
+                              'PLUS', 'MINUS', self._STEP_MAX, label)
                 with state_lock:
                     state.chlorinator_percent = float(target_pct)
-                return {'which': which, 'target_pct': target_pct, 'previous_pct': current_pct}
+                return {'which': which, 'target_pct': target_pct,
+                        'previous_pct': previous_pct}
         finally:
             self.fast_exit()
 
     # ── VSP slot 4 ───────────────────────────────────────────────────────────
 
+    def _goto_vsp_slot4(self) -> str:
+        """Anchor, enter the VSP submenu, and land on Filter Speed4. Returns frame."""
+        self._anchor()
+        self._press_until('RIGHT', lambda t: 'VSP Speed Settings' in t,
+                          self._NAV_MAX, 'VSP Speed Settings')
+        # PLUS enters the inline sub-items (-> 'Filter Speed1 ..%'); re-press
+        # until we're actually inside, so a dropped PLUS doesn't leave us in the
+        # main ring (which RIGHT would then walk the wrong way).
+        self._press_until('PLUS', lambda t: 'Filter Speed' in t, 6, 'VSP submenu')
+        return self._press_until('RIGHT', lambda t: 'Filter Speed4' in t,
+                                 8, 'Filter Speed4')
+
     def read_vsp_slot4(self) -> dict:
         """Read Filter Speed4 (slot 4) without changing it."""
         try:
             with _nav_lock:
-                self._anchor()
-                for _ in range(3):     # RIGHT ×3 → VSP Speed Settings
-                    self._send('RIGHT')
-                self._send('PLUS')     # enter inline sub-items
-                for _ in range(3):     # RIGHT ×3 → past Speed1/2/3 → Speed4
-                    self._send('RIGHT')
-                l1, l2 = self._lcd.lines()
-                if 'Filter Speed4' not in l1:
-                    raise RuntimeError(f'Expected Filter Speed4, got: {l1!r}')
-                pct = int(l2.replace('%', '').strip())
+                txt = self._goto_vsp_slot4()
+                pct = self._pct(txt)
+                if pct is None:
+                    raise RuntimeError(f'Cannot parse Filter Speed4: {txt!r}')
                 with state_lock:
                     state.vsp_slot4_pct = pct
                 return {'slot': 4, 'speed_pct': pct}
@@ -930,24 +998,12 @@ class MenuNavigator:
         target_pct = int(_clamp(round(target_pct / 5) * 5, 0, 100))
         try:
             with _nav_lock:
-                self._anchor()
-                for _ in range(3):
-                    self._send('RIGHT')
-                self._send('PLUS')
-                for _ in range(3):
-                    self._send('RIGHT')
-                l1, l2 = self._lcd.lines()
-                if 'Filter Speed4' not in l1:
-                    raise RuntimeError(f'Expected Filter Speed4, got: {l1!r}')
-                current_pct = int(l2.replace('%', '').strip())
-                diff = (target_pct - current_pct) // 5
-                key = 'PLUS' if diff > 0 else 'MINUS'
-                for _ in range(abs(diff)):
-                    self._send(key)
-                _, l2_after = self._lcd.lines()
+                self._goto_vsp_slot4()
+                self._step_to(lambda: self._pct(self.text()), target_pct,
+                              'PLUS', 'MINUS', self._STEP_MAX, 'Filter Speed4')
                 with state_lock:
                     state.vsp_slot4_pct = target_pct
-                return {'slot': 4, 'target_pct': target_pct, 'result': l2_after}
+                return {'slot': 4, 'target_pct': target_pct, 'result': self.text()}
         finally:
             self.fast_exit()
 
@@ -965,40 +1021,36 @@ class MenuNavigator:
         prevent any concurrent keypad use during the activation window.
         """
         _SLOT_MAX_STEPS = 8   # 5 slots × up to 1 wrap = 5; 8 is generous
-        try:
-            with _nav_lock:
-                # Ensure filter is off first so the next FILTER press turns it on.
-                with state_lock:
-                    filter_on = state.circuits.get('FILTER', False)
-                if filter_on:
-                    self._send('FILTER')   # turn off
-                    l1, _ = self._lcd.lines()
-                    # Confirm off (default display or normal menu - no 'Filter On:')
-                    if 'Filter On:' in l1:
-                        raise RuntimeError(f'FILTER off did not clear window: {l1!r}')
+        with _nav_lock:
+            # Ensure filter is off first so the next FILTER press turns it on.
+            with state_lock:
+                filter_on = state.circuits.get('FILTER', False)
+            if filter_on:
+                txt = self._send('FILTER')   # turn off
+                if 'Filter On:' in txt:
+                    raise RuntimeError(f'FILTER off did not clear window: {txt!r}')
 
-                # Turn filter on → opens slot-selection window
-                l1, l2 = self._send('FILTER')
-                if 'Filter On:' not in l1:
+            # Turn filter on → opens slot-selection window
+            txt = self._send('FILTER')
+            if 'Filter On:' not in txt:
+                raise RuntimeError(
+                    f'Expected slot-selection window after FILTER on, got: {txt!r}')
+
+            # Cycle +/- until we see Spd4. The window can close on its own, so
+            # this is gated rather than retried: each PLUS must keep us in it.
+            for step in range(_SLOT_MAX_STEPS):
+                if 'Spd4' in txt:
+                    break
+                txt = self._send('PLUS')
+                if 'Filter On:' not in txt:
                     raise RuntimeError(
-                        f'Expected slot-selection window after FILTER on, got: {l1!r}')
+                        f'Slot-selection window closed early at step {step}: {txt!r}')
+            else:
+                raise RuntimeError('Could not find slot 4 in slot-selection window')
 
-                # Cycle +/- until we see Spd4 in l1.
-                for step in range(_SLOT_MAX_STEPS):
-                    if 'Spd4' in l1:
-                        break
-                    l1, l2 = self._send('PLUS')
-                    if 'Filter On:' not in l1:
-                        raise RuntimeError(
-                            f'Slot-selection window closed early at step {step}: {l1!r}')
-                else:
-                    raise RuntimeError('Could not find slot 4 in slot-selection window')
-
-                with state_lock:
-                    state.circuits['FILTER'] = True
-                return {'activated_slot': 4, 'line1': l1, 'line2': l2}
-        except Exception:
-            raise
+            with state_lock:
+                state.circuits['FILTER'] = True
+            return {'activated_slot': 4, 'frame': txt}
 
 
 def _get_panel():
