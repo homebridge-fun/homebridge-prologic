@@ -792,9 +792,12 @@ class MenuNavigator:
     _SETTINGS_HDR = 'Settings Menu'
     _DEFAULT_MENU_HDR = 'Default Menu'
     _KEY_TIMEOUT = 4.0   # seconds to wait for the frame to change after a press
-    _MENU_MAX = 30       # MENU presses before aborting anchor (×2 due to SHORT/LONG oscillation)
-    _NAV_MAX = 100       # ring RIGHT presses; oscillation burns ~7 per item, 11 items × 7 = 77 worst case
+    _MENU_MAX = 10       # MENU presses to find Settings Menu header
+    _NAV_MAX = 30        # RIGHT presses to walk the Settings ring (11 items + margin)
     _STEP_MAX = 90       # +/- presses before aborting a value adjust
+    # Settle delay after MENU before first RIGHT: the panel needs ~300ms after
+    # showing the Settings Menu header before it will accept RIGHT.
+    _POST_MENU_SETTLE_S = 0.35
 
     def __init__(self, p, l: LcdCapture):
         self._panel = p
@@ -804,8 +807,33 @@ class MenuNavigator:
         """Current normalized LCD frame."""
         return self._lcd.text()
 
+    def _send_key_remote(self, key: str) -> None:
+        """Queue a key using REMOTE_WIRED frame type (same as AquaConnect box).
+
+        Verified: RIGHT/LEFT/PLUS/MINUS only work with REMOTE frames. MENU
+        also works with LOCAL (and enters the menu in one press), but remote
+        works too. We use REMOTE for all navigation keys for consistency.
+        """
+        aq = self._panel._aq
+        Keys = self._panel._Keys
+        k = getattr(Keys, key)
+        frame = bytearray()
+        frame.append(aq.FRAME_DLE)
+        frame.append(aq.FRAME_STX)
+        aq._append_data(frame, aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT)
+        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+        crc = sum(frame)
+        aq._append_data(frame, crc.to_bytes(2, byteorder='big'))
+        frame.append(aq.FRAME_DLE)
+        frame.append(aq.FRAME_ETX)
+        aq._send_queue.put({'frame': frame})
+
     def _send(self, key: str, expect_change: bool = True) -> str:
         """Send one key and return the resulting normalized frame.
+
+        Uses REMOTE_WIRED frame type for all navigation keys — confirmed
+        empirically: RIGHT/LEFT/PLUS/MINUS are dead with LOCAL frames.
 
         Waits for a *meaningful* display change — one that represents a real
         navigation step or value change — and ignores transient noise:
@@ -821,7 +849,7 @@ class MenuNavigator:
         """
         before = self._lcd.text()
         t0 = time.time()
-        self._panel.send_key(key)
+        self._send_key_remote(key)
         if not expect_change:
             after = self._lcd.text()
             _trace_key(key, before, after, time.time() - t0, expect_change)
@@ -941,26 +969,36 @@ class MenuNavigator:
         return cur
 
     def _anchor(self) -> None:
-        """Drive MENU until the normalized frame is exactly 'Settings Menu'."""
+        """Drive MENU until the normalized frame is exactly 'Settings Menu'.
+
+        After landing on the header, wait _POST_MENU_SETTLE_S before returning:
+        the panel needs ~300ms to be ready to accept RIGHT after a MENU press.
+        """
         self._press_until('MENU', lambda t: t == self._SETTINGS_HDR,
                           self._MENU_MAX, self._SETTINGS_HDR)
+        time.sleep(self._POST_MENU_SETTLE_S)
+
+    # Status-cycle prefixes — any of these means we're back in the default display.
+    _STATUS_PREFIXES = ('Thursday', 'Pool Temp', 'Air Temp', 'Pool Chlorinator',
+                        'Salt Level', 'Heater1', 'Filter Speed', 'Spa Temp')
+
+    def _is_status(self, norm: str) -> bool:
+        return any(norm.startswith(p) for p in self._STATUS_PREFIXES)
 
     def fast_exit(self) -> None:
-        """Return to the Default display: MENU until 'Default Menu', then RIGHT.
+        """Return to the Default (status-cycle) display.
 
-        Holds _nav_lock for its duration. fast_exit runs from each operation's
-        `finally`, which executes *after* the operation's own `with _nav_lock`
-        block has released — so without re-acquiring here, two operations'
-        exits (or an exit racing the next operation) press keys concurrently
-        and corrupt each other's navigation. Acquire the lock to serialize.
+        Presses MENU until the display shows a status-cycle item. 'Default Menu'
+        header text was never observed on this panel — the status cycle restarts
+        directly after the last top-level menu item. Holds _nav_lock so it does
+        not race the next operation.
         """
         with _nav_lock:
             try:
-                self._press_until('MENU', lambda t: t == self._DEFAULT_MENU_HDR,
-                                  self._MENU_MAX, self._DEFAULT_MENU_HDR)
+                self._press_until('MENU', self._is_status,
+                                  self._MENU_MAX, 'Default display')
             except RuntimeError:
                 return  # best-effort; never raise out of a finally cleanup
-            self._send('RIGHT', expect_change=False)
 
     # ── Value parsers (operate on the normalized full frame) ─────────────────
 
