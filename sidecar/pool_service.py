@@ -33,6 +33,7 @@ import argparse
 import logging
 import random
 import re
+import socket
 import threading
 import time
 from collections import deque
@@ -366,11 +367,16 @@ _AC_KEY_CODES = {
     'HEATER1': '13',
 }
 
-# How long to wait (seconds) for the AquaConnect box to mirror the panel LCD
-# after a key is sent before we re-read the settled screen. The box reflects
-# the panel over the same slow RS-485 bus, so the immediate POST response can
-# still show the pre-keypress screen.
-_AC_SETTLE_S = 3.0
+# Minimum gap (seconds) between ANY two requests to the box — reads included.
+# Verified live: the panel ignores a key sent within ~0.5-1s of the previous
+# event, and a KeyId=00 *read* counts as an event. Reads issued immediately
+# before a press silently swallow the press. 1.8s sits safely past the window.
+_AC_MIN_GAP_S = 1.8
+
+# How long to wait after a key before reading back the settled screen. The box
+# mirrors the panel over the slow RS-485 bus, so the immediate response can
+# still show the pre-keypress screen. Also keeps the read past _AC_MIN_GAP_S.
+_AC_SETTLE_S = 2.0
 
 # LED nibble decode (each equipment LED is one 4-bit nibble in the state line).
 #   3 = absent / no key on this panel
@@ -436,14 +442,12 @@ class AquaConnectBackend:
     overlaps a key-send (two concurrent POSTs confuse the box).
     """
 
-    def __init__(self, host: str = '192.168.50.100', poll_s: float = 5.0):
-        import urllib.request
+    def __init__(self, host: str = '192.168.50.100', poll_s: float = 8.0):
         self._host = host
-        self._url = f'http://{host}/WNewSt.htm'
-        self._urllib = urllib.request
         self.lcd = LcdCapture()
-        self._http_lock = threading.Lock()
-        self._last_raw: Optional[str] = None   # last full body, for /debug calibration
+        self._http_lock = threading.Lock()   # serializes press+settle+read units
+        self._last_req = 0.0                  # ts of last request (gap enforcement)
+        self._last_raw: Optional[str] = None  # last full body, for /debug calibration
         self._last_led: dict = {}
         self._poll_s = poll_s
         self._poll_stop = threading.Event()
@@ -453,26 +457,73 @@ class AquaConnectBackend:
 
     # ── HTTP ────────────────────────────────────────────────────────────────
     def _post(self, key_code: str) -> Optional[str]:
-        """POST a key ('00' = no-op read) and return the raw response body.
+        """Send 'KeyId=NN&' ('00' = no-op read) and return the response body.
 
-        Body MUST be exactly "KeyId=NN&" — verbatim from the panel's own
-        WebsProcessKey() (WebsFuncs.js:690). The firmware's parser scans for
-        "KeyId=" up to the trailing '&'; urlencode() omits that '&' and the box
-        then silently ignores the key (verified live: keys did nothing without
-        it, reads worked fine). Serialized through _http_lock; callers needing
-        post+settle+reread as one unit hold the lock around the whole sequence.
+        Two hard-won, live-verified constraints:
+
+        - Transport: a byte-identical curl request over a RAW SOCKET. urllib's
+          extra headers (Accept-Encoding: identity, Connection, Python UA) make
+          the GoAhead 'Webs' server silently ignore the key — 0/20 landed —
+          while curl's lean header set works every time. So we hand-build the
+          exact request curl sends.
+        - Body: exactly "KeyId=NN&", verbatim from the panel's WebsProcessKey()
+          (WebsFuncs.js:690). The firmware scans "KeyId=" up to the trailing
+          '&'; without it the key is dropped.
+        - Timing: the panel ignores any key within ~0.5-1s of the previous
+          event, and a KeyId=00 read counts as an event. We enforce
+          _AC_MIN_GAP_S before EVERY request here. Callers hold _http_lock, so
+          _last_req is single-threaded and needs no extra guard.
         """
-        data = f'KeyId={key_code}&'.encode()
+        wait = _AC_MIN_GAP_S - (time.time() - self._last_req)
+        if wait > 0:
+            time.sleep(wait)
+        body = f'KeyId={key_code}&'
+        req = (f'POST /WNewSt.htm HTTP/1.1\r\n'
+               f'Host: {self._host}\r\n'
+               f'User-Agent: curl/7.88.1\r\n'
+               f'Accept: */*\r\n'
+               f'Content-Type: application/x-www-form-urlencoded\r\n'
+               f'Content-Length: {len(body)}\r\n\r\n{body}')
         try:
-            req = self._urllib.Request(
-                self._url, data=data,
-                headers={'Content-Type': 'application/x-www-form-urlencoded',
-                         'Connection': 'close'})
-            with self._urllib.urlopen(req, timeout=5) as resp:
-                return resp.read().decode('latin-1', errors='replace')
+            s = socket.create_connection((self._host, 80), timeout=5)
+            try:
+                s.sendall(req.encode('latin-1'))
+                s.settimeout(3)
+                buf = b''
+                # Read headers, then exactly Content-Length body bytes so we
+                # don't stall the full socket timeout on a keep-alive connection.
+                while b'\r\n\r\n' not in buf:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                head, _, rest = buf.partition(b'\r\n\r\n')
+                m = re.search(rb'Content-Length:\s*(\d+)', head, re.I)
+                if m:
+                    need = int(m.group(1))
+                    while len(rest) < need:
+                        chunk = s.recv(4096)
+                        if not chunk:
+                            break
+                        rest += chunk
+                else:
+                    # No Content-Length: drain until the socket times out.
+                    try:
+                        while True:
+                            chunk = s.recv(4096)
+                            if not chunk:
+                                break
+                            rest += chunk
+                    except socket.timeout:
+                        pass
+                return (head + b'\r\n\r\n' + rest).decode('latin-1', errors='replace')
+            finally:
+                s.close()
         except Exception as e:
-            log.warning('AquaConnect HTTP error: %s', e)
+            log.warning('AquaConnect socket error: %s', e)
             return None
+        finally:
+            self._last_req = time.time()
 
     # ── Parsing ───────────────────────────────────────────────────────────────
     @staticmethod
@@ -555,8 +606,12 @@ class AquaConnectBackend:
     # ── Background state poll ─────────────────────────────────────────────────
     def _poll_loop(self) -> None:
         while not self._poll_stop.is_set():
-            with self._http_lock:
-                self._apply(self._post('00'))
+            # Never poll during a navigation op: a KeyId=00 read mid-sequence
+            # counts as a key event and would swallow the next press (it also
+            # competes for the GoAhead server's single connection slot).
+            if not _nav_lock.locked():
+                with self._http_lock:
+                    self._apply(self._post('00'))
             self._poll_stop.wait(self._poll_s)
 
     def stop(self) -> None:
