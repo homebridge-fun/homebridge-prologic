@@ -91,6 +91,24 @@ Settings Menu → Timers Menu → Diagnostic Menu → Configuration Menu-Locked 
 - `Configuration Menu-Locked` appears but is locked (installer only).
 - `Default Menu` is the idle auto-scroll (clock, equipment status, temps). Display auto-returns here after ~2 min idle.
 
+### 3.2 Default (idle) status cycle `[VERIFIED]`
+
+Observed live with `lcd-watch` (120s, 2 full laps). Each item holds for **~6 seconds** before advancing automatically. Total cycle: 7 items × 6s = 42s.
+
+| Order | Normalized text (navigator sees) | Notes |
+|---|---|---|
+| 1 | `Thursday HH:MMA` | Date/time. Colon `:` oscillates to space in LONG frame (same item — canonical tokens match). |
+| 2 | `Pool Temp 77°F` | Degree char oscillates: SHORT frame sends `_`, LONG sends `°` (same item — canonical tokens `['Pool','Temp','77','F']` match). |
+| 3 | `Air Temp 70°F` | Same SHORT/LONG oscillation as Pool Temp. |
+| 4 | `Pool Chlorinator 40%` | LONG frame only; value on line 2, label on line 1. |
+| 5 | `Salt Level 3200 PPM` | LONG frame only. |
+| 6 | `Heater1 Manual Off` | LONG frame only. `Manual Off` = force-off state (see §5.2). |
+| 7 | `Filter Speed 50% Speed2` | LONG frame only. Speed name (`Speed2`) is part of the normalized text. |
+
+Occasional genuinely corrupted SHORT frames appear (~once per 60s); they contain control characters and start with a lowercase letter after normalization — the garbled-frame guard in `_same_item` ignores them.
+
+Pressing **MENU** from any point in this cycle should exit it and show `Settings Menu` (§3.1 top-level ring). [PENDING — not yet confirmed; map-menu test needed]
+
 ### 3.2 Navigation rules (for the state machine)
 1. **Anchor on text, not counts.** Drive `MENU` until LCD line 1 == `Settings Menu`, then count RIGHT from there. Do not trust blind key-counts past the first two items (conditional items + the Set Day/Time trap make counts fragile).
 2. **The header is a stop.** RIGHT cycles: header → item 1 → … → item 11 → header.
@@ -276,15 +294,20 @@ The single most important undocumented detail, found by byte-level bus tracing:
   arrive with bit 7 set (`char | 0x80`); mask it off (`& 0x7f`) or text won't
   match (upstream `swilson/aqualogic` PR #11).
 - **Degree symbol** is `0xdf` → render as `°` (same as the short handler).
-- **Cursor-position control bytes.** LONG frames carry leading LCD control
-  bytes (observed `\x03\x03`, `\x03\x02(\x03`) that appear on the *fresh*
-  frame and disappear on the next rebroadcast of the same screen. Strip every
-  control char (`< 0x20`) during normalization, otherwise the identical screen
-  reads as two different strings and the change-detector fires a spurious
-  "change" on every press.
-- **Occasional garbled frames** (e.g. `\x0f\x1a\x16\x03nx %`) appear
-  transiently; after control-byte stripping they normalize to non-matching
-  junk, and the text-anchored walk simply re-reads past them.
+- **Frame payload structure (verified by raw hex dump):**
+  - Two LONG frame variants exist with headers of different lengths (3 bytes: `83 00 03`; or 12 bytes: `83 00 02 28 00 00 00 00 00 00 00 03`).
+  - Both variants end identically: **40 LCD bytes** (20-char line 1 + 20-char line 2, bit-7 flashing on editable values) followed by a `0x00` null terminator.
+  - The panel uses a **20-character-wide** LCD (not 16), centring label text with leading spaces.
+  - Short frames (len < 41, e.g. 11-byte cursor/blink control packets) must be **skipped** — they do not contain LCD text. Previously they decoded as garbage like `'ju %'` which locked the navigator.
+  - **Correct extraction:** `frame[-41:-1]` always yields the 40 LCD bytes regardless of header length.
+- **SHORT vs LONG character differences.** Items that appear on both frame types show slight differences that are the **same screen content**:
+  - Degree symbol: SHORT frame sends `0x5F` (`_`), LONG frame sends `0xDF` (`°`). Tokens `['77','F']` match after stripping non-alphanumeric.
+  - Colon in time: SHORT frame sends `:`, LONG frame sends ` ` (space). Tokens `['9','26A']` match.
+  - Fix: `_same_item` compares canonical alphanumeric token lists, so these oscillations are invisible to the navigator.
+- **Occasional garbled SHORT frames** appear ~once per 60s on this bus; they
+  contain control characters and start with a lowercase letter after
+  normalization. The `_same_item` garbled-frame guard (non-uppercase first char
+  → same item) prevents the navigator from acting on them.
 
 ---
 
