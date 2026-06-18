@@ -53,6 +53,7 @@ logging.basicConfig(
 # would then clobber *our* logger to WARNING and silently drop every INFO line.
 # Use a distinct name so the two loggers never collide.
 log = logging.getLogger('pool_sidecar')
+logging.getLogger('pool.long_frame').setLevel(logging.DEBUG)
 log.setLevel(logging.INFO)
 
 
@@ -187,6 +188,10 @@ def _install_key_burst(AquaLogic) -> None:
     )
     new_body = (
         'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
+        '                    import logging as _lg\n'
+        '                    _lg.getLogger("pool.long_frame").debug(\n'
+        '                        "LONG raw hex: %s  len=%d",\n'
+        '                        frame.hex(" "), len(frame))\n'
         '                    # Preserve 0xDF (LCD degree char) before masking\n'
         '                    # bit 7; otherwise 0xDF & 0x7F = 0x5F = "_".\n'
         '                    raw = bytes(b if b == 0xdf else (b & 0x7f) for b in frame)\n'
