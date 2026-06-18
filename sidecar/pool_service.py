@@ -187,7 +187,9 @@ def _install_key_burst(AquaLogic) -> None:
     )
     new_body = (
         'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
-        '                    raw = bytes(b & 0x7f for b in frame)\n'
+        '                    # Preserve 0xDF (LCD degree char) before masking\n'
+        '                    # bit 7; otherwise 0xDF & 0x7F = 0x5F = "_".\n'
+        '                    raw = bytes(b if b == 0xdf else (b & 0x7f) for b in frame)\n'
         '                    text = raw.replace(b\'\\xdf\', b\'\\xc2\\xb0\').decode(\'utf-8\', errors=\'replace\')\n'
         '                    self._web.text_updated(text)'
     )
@@ -775,8 +777,8 @@ class MenuNavigator:
     _SETTINGS_HDR = 'Settings Menu'
     _DEFAULT_MENU_HDR = 'Default Menu'
     _KEY_TIMEOUT = 4.0   # seconds to wait for the frame to change after a press
-    _MENU_MAX = 20       # MENU presses before aborting anchor (covers dropped presses)
-    _NAV_MAX = 24        # ring RIGHT presses before aborting an item search
+    _MENU_MAX = 30       # MENU presses before aborting anchor (×2 due to SHORT/LONG oscillation)
+    _NAV_MAX = 100       # ring RIGHT presses; oscillation burns ~7 per item, 11 items × 7 = 77 worst case
     _STEP_MAX = 90       # +/- presses before aborting a value adjust
 
     def __init__(self, p, l: LcdCapture):
