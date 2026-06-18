@@ -1448,32 +1448,44 @@ def debug_keyburst() -> Response:
 
 @app.route('/debug/lcd-watch')
 def debug_lcd_watch() -> Response:
-    """Return the last N distinct normalized LCD frames seen (passive, no keys).
+    """Watch the LCD in real time and return one entry per distinct display change.
 
-    Query: ?n=N (default 30), ?secs=S (wait up to S seconds for new frames
-    before returning; default 0 = immediate snapshot).
+    Query:
+      ?secs=S   — how long to watch (default 90, max 300)
+      ?interval=I — sample period in seconds (default 1.0)
 
-    Each entry: {ts, raw, norm} where raw is the un-normalized text and norm
-    is what the navigator sees. Use this to observe the status-cycle ring
-    without touching the keypad.
+    Polls once per interval and records an entry whenever the normalized text
+    changes. This de-duplicates the ~2 Hz bus frames and shows only real
+    status-cycle transitions, giving a clean picture of the display ring.
+
+    Each entry: {elapsed_s, norm, raw_stripped}
     """
     try:
-        n = int(request.args.get('n', 30))
-        wait_secs = float(request.args.get('secs', 0))
+        secs = min(float(request.args.get('secs', 90)), 300.0)
+        interval = max(0.2, float(request.args.get('interval', 1.0)))
     except (TypeError, ValueError):
-        n, wait_secs = 30, 0.0
+        secs, interval = 90.0, 1.0
 
-    if wait_secs > 0:
-        deadline = time.time() + min(wait_secs, 120.0)
-        while time.time() < deadline:
-            lcd._event.clear()
-            lcd._event.wait(min(1.0, deadline - time.time()))
+    entries = []
+    t0 = time.time()
+    deadline = t0 + secs
+    last_norm = None
 
-    snap = lcd.snapshot()[-n:]
-    out = []
-    for ts, raw in snap:
-        out.append({'ts': round(ts, 3), 'raw': raw.strip(), 'norm': _norm(raw)})
-    return jsonify({'count': len(out), 'frames': out})
+    while time.time() < deadline:
+        cur_norm = lcd.text()
+        if cur_norm != last_norm:
+            with lcd._lock:
+                raw = (lcd._latest or '').strip()
+            entries.append({
+                'elapsed_s': round(time.time() - t0, 2),
+                'norm': cur_norm,
+                'raw_stripped': raw,
+            })
+            last_norm = cur_norm
+        lcd._event.clear()
+        lcd._event.wait(min(interval, max(0.0, deadline - time.time())))
+
+    return jsonify({'watch_secs': secs, 'count': len(entries), 'frames': entries})
 
 
 @app.route('/debug/map-menu', methods=['POST'])
