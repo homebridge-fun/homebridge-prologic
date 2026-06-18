@@ -1797,9 +1797,9 @@ def main() -> None:
     parser.add_argument('--api-host', default='127.0.0.1')
     parser.add_argument('--simulate', action='store_true',
                         help='Run full menu simulation without any hardware')
-    parser.add_argument('--heater-refresh', type=float, default=600.0,
+    parser.add_argument('--heater-refresh', type=float, default=0.0,
                         help='Seconds between background heater-state reads '
-                             '(menu navigation). 0 disables. Default 600.')
+                             '(menu navigation). 0 disables (default).')
     parser.add_argument('--key-burst', type=int, default=KEY_BURST,
                         help='Times to write each key frame per send. 1 = single '
                              'shot (correct for the W610; >1 is harmful — it '
