@@ -856,7 +856,12 @@ class MenuNavigator:
             return after
         deadline = t0 + self._KEY_TIMEOUT
         while time.time() < deadline:
-            if not self._same_item(self._lcd.text(), before):
+            cur = self._lcd.text()
+            # Exit as soon as the display is a genuinely different item.
+            # _same_item absorbs value-blank flash and SHORT/LONG oscillation
+            # so we don't misfire on those, but we DO exit if we've arrived at
+            # a completely new item (e.g. "VSP Speed Settings" after "Pool Heater1").
+            if not self._same_item(cur, before):
                 break
             self._lcd._event.clear()
             self._lcd._event.wait(min(0.5, max(0.0, deadline - time.time())))
@@ -933,17 +938,34 @@ class MenuNavigator:
     def _press_until(self, key: str, ok, budget: int, what: str) -> str:
         """Press `key` until ok(normalized_text) is True, re-pressing on misses.
 
-        Each landed press advances one menu position; a dropped press leaves us
-        where we were and is simply re-pressed. We stop the instant the target
-        appears, so this never overshoots a distinct, named target.
+        Each landed press should advance one menu position. If _send times out
+        (key dropped or value-flash stuck), we re-press. We stop the instant
+        the target appears, so this never overshoots a distinct, named target.
+
+        Special case for RIGHT: when stuck on the same item for two consecutive
+        presses, send an extra RIGHT — the panel may have the value cursor
+        selected (flashing), requiring one RIGHT to dismiss before another to
+        advance.
         """
         txt = self._lcd.text()
         if ok(txt):
             return txt
+        last_item = txt
+        stuck_count = 0
         for _ in range(budget):
             txt = self._send(key)
             if ok(txt):
                 return txt
+            # Detect stuck: if we land on the same item twice in a row,
+            # send one extra press to dismiss any value-cursor selection.
+            if key == 'RIGHT' and self._same_item(txt, last_item):
+                stuck_count += 1
+                if stuck_count >= 2:
+                    self._send(key)  # dismissal press; ignore result
+                    stuck_count = 0
+            else:
+                stuck_count = 0
+            last_item = txt
         raise RuntimeError(f'Could not reach {what}; stuck at {self._lcd.text()!r}')
 
     def _step_to(self, parser, target: int, up_key: str, down_key: str,
@@ -986,17 +1008,17 @@ class MenuNavigator:
         return any(norm.startswith(p) for p in self._STATUS_PREFIXES)
 
     def fast_exit(self) -> None:
-        """Return to the Default (status-cycle) display.
+        """Return to the Default (status-cycle) display via MENU until 'Default Menu'.
 
-        Presses MENU until the display shows a status-cycle item. 'Default Menu'
-        header text was never observed on this panel — the status cycle restarts
-        directly after the last top-level menu item. Holds _nav_lock so it does
-        not race the next operation.
+        'Default Menu' IS a real screen on this panel (verified seq 37 in trace).
+        After reaching it, one more MENU press enters the status cycle.
+        Holds _nav_lock so it does not race the next operation.
         """
         with _nav_lock:
             try:
-                self._press_until('MENU', self._is_status,
-                                  self._MENU_MAX, 'Default display')
+                self._press_until('MENU', lambda t: t == self._DEFAULT_MENU_HDR,
+                                  self._MENU_MAX, self._DEFAULT_MENU_HDR)
+                self._send('MENU', expect_change=False)
             except RuntimeError:
                 return  # best-effort; never raise out of a finally cleanup
 
