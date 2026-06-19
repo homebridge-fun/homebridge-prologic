@@ -104,8 +104,11 @@ _wedge_lock = threading.Lock()
 
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
 _WEDGE_CANARY_KEY = 'AUX2'
-# How often (seconds) to run the active canary probe while idle.
+# How often (seconds) to run the active canary probe while healthy.
 _WEDGE_PROBE_INTERVAL_S = 300.0
+# Faster probe cadence while wedged, so recovery after a power-cycle shows up
+# quickly (the box stays wedged until power-cycled, so frequent probing is safe).
+_WEDGE_RECOVERY_INTERVAL_S = 30.0
 
 
 def _record_command_success() -> None:
@@ -714,17 +717,22 @@ class AquaConnectBackend:
 
     def probe_wedge(self, retries: int = 3, gap_s: float = 3.0) -> dict:
         """Active command-path test: press the canary key and check whether the
-        equipment-state field actually changes.
+        canary's OWN equipment bit flips.
 
-        Compares the raw field-3 LED string (robust against per-circuit decode
-        questions): a working command path flips the canary's bit; a wedged box
-        ACKs the POST but the field never changes. Restores the canary on
-        success. Returns {'alive': bool, 'before': str, 'after': str,
-        'attempts': int}.
+        Compares only the AUX2 nibble of the field-3 LED line, NOT the whole
+        string: the full string changes on its own during routine operation
+        (e.g. a digit cycling), which would falsely read as 'recovered'. Only
+        the canary's own bit moving proves the keypress landed. Restores the
+        canary on success. Returns {'alive', 'before', 'after', 'attempts'}
+        where before/after are the canary bit ('on'|'off'|...).
         """
         code = _AC_KEY_CODES.get(_WEDGE_CANARY_KEY.replace('_', ''))
+
+        def canary_bit(line: Optional[str]):
+            return _decode_ac_led(line).get('aux2') if line else None
+
         with self._http_lock:
-            before = self._led_line(self._post('00'))
+            before = canary_bit(self._led_line(self._post('00')))
             self._apply(self._post(code))   # press canary
             after = before
             attempts = 0
@@ -733,7 +741,7 @@ class AquaConnectBackend:
                 time.sleep(gap_s)
                 body = self._post('00')
                 self._apply(body)
-                after = self._led_line(body)
+                after = canary_bit(self._led_line(body))
                 if after is not None and before is not None and after != before:
                     # Path alive — toggle the canary back to leave it unchanged.
                     self._apply(self._post(code))
@@ -2039,7 +2047,12 @@ def _ac_canary_probe() -> dict:
 
 
 def _canary_probe_loop() -> None:
-    """Background thread: periodically probe the command path when idle."""
+    """Background thread: periodically probe the command path when idle.
+
+    Healthy: probe every _WEDGE_PROBE_INTERVAL_S (cheap liveness check).
+    Wedged:  probe every _WEDGE_RECOVERY_INTERVAL_S so recovery after a
+             power-cycle is reflected quickly instead of waiting a full cycle.
+    """
     # Stagger first probe so it doesn't fire at startup during initial connect.
     time.sleep(60 + random.uniform(0, 30))
     while True:
@@ -2048,7 +2061,9 @@ def _canary_probe_loop() -> None:
                 _ac_canary_probe()
         except Exception as e:
             log.error('Canary probe loop error: %s', e)
-        time.sleep(_WEDGE_PROBE_INTERVAL_S)
+        with state_lock:
+            wedged = state.bridge_wedged
+        time.sleep(_WEDGE_RECOVERY_INTERVAL_S if wedged else _WEDGE_PROBE_INTERVAL_S)
 
 
 @app.route('/mode', methods=['POST'])
