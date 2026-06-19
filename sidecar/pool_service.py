@@ -2127,6 +2127,204 @@ def get_debug_log() -> Response:
                     headers={'Content-Disposition': 'attachment; filename="pool_sidecar_debug.log"'})
 
 
+# ---------------------------------------------------------------------------
+# Wedge-test harness  (GET/POST /debug/wedge-test)
+#
+# Goal: isolate WHICH stimulus pattern wedges the AquaConnect box. The wedge is
+# sticky until power-cycle, so each test is ONE-SHOT: run one scenario, probe,
+# record the verdict, then POWER-CYCLE before the next scenario. The harness
+# refuses to run if the box is already wedged (the result would be meaningless).
+#
+# Timing/volume/concurrency scenarios use the inert AUX2 canary so the box stays
+# on the idle screen and the post-test probe stays valid. The cross-function and
+# menu scenarios are opt-in and DO actuate equipment / navigate menus.
+# ---------------------------------------------------------------------------
+
+# Each scenario isolates ONE variable. Defaults are chosen to be aggressive
+# enough to provoke a wedge while staying recoverable.
+_WEDGE_SCENARIOS = {
+    'control':   'Sanity: 1 canary press, generous 2.0s gaps. Should NEVER wedge.',
+    'volume':    'Volume on one function: N canary presses at normal cadence.',
+    'tight_gap': 'Timing edge: N canary presses at a shortened gap (default 0.4s).',
+    'read_flood':'Reads alone: N KeyId=00 reads at a shortened gap.',
+    'race':      'Concurrency: canary presses + reads from 2 threads, no _http_lock (overlapping sockets).',
+    'cross_fn':  'DISRUPTIVE: cycle different equipment keys in even pairs (nets to no change).',
+    'menu_churn':'Deep nav: enable→disable a heater N times (multi-key Settings nav).',
+}
+
+
+def _wt_banner(msg: str) -> None:
+    """Stamp a clearly-greppable boundary line into the debug log."""
+    log.debug('===== WEDGE-TEST %s =====', msg)
+
+
+def _wt_raw_post(key_code: str) -> Optional[str]:
+    """Single raw POST through the backend, bypassing the high-level helpers.
+
+    Used by scenarios that need to drive the socket directly (tight_gap, race).
+    Gap enforcement still happens inside _post via self._last_req.
+    """
+    return _ac_backend._post(key_code)
+
+
+def _run_wedge_scenario(name: str, count: int, gap: float,
+                        keys: Optional[list] = None) -> dict:
+    """Run one scenario synchronously and return its verdict dict."""
+    global _AC_MIN_GAP_S
+    canary = _AC_KEY_CODES['AUX2']
+    steps = 0
+    t0 = time.time()
+    _wt_banner(f'scenario={name} count={count} gap={gap} START')
+
+    if name == 'control':
+        with _ac_backend._http_lock:
+            saved = _AC_MIN_GAP_S
+            _AC_MIN_GAP_S = 2.0
+            try:
+                _wt_raw_post(canary)
+                steps += 1
+            finally:
+                _AC_MIN_GAP_S = saved
+
+    elif name == 'volume':
+        # Real action path (press + 4 confirm reads) on the inert canary.
+        for _ in range(count):
+            _ac_backend.send_nav_key('AUX2')
+            steps += 1
+
+    elif name == 'tight_gap':
+        with _ac_backend._http_lock:
+            saved = _AC_MIN_GAP_S
+            _AC_MIN_GAP_S = gap
+            try:
+                for _ in range(count):
+                    _wt_raw_post(canary)
+                    steps += 1
+            finally:
+                _AC_MIN_GAP_S = saved
+
+    elif name == 'read_flood':
+        with _ac_backend._http_lock:
+            saved = _AC_MIN_GAP_S
+            _AC_MIN_GAP_S = gap
+            try:
+                for _ in range(count):
+                    _wt_raw_post('00')
+                    steps += 1
+            finally:
+                _AC_MIN_GAP_S = saved
+
+    elif name == 'race':
+        # Deliberately violate the locking discipline: two threads hammer the
+        # socket with NO _http_lock, so presses and reads genuinely overlap.
+        # Reproduces the worst-case race the production locks normally prevent.
+        stop = threading.Event()
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    _wt_raw_post('00')
+                except Exception as e:
+                    log.debug('race reader error: %s', e)
+
+        rt = threading.Thread(target=reader, daemon=True, name='wt-race-reader')
+        rt.start()
+        try:
+            for _ in range(count):
+                _wt_raw_post(canary)
+                steps += 1
+        finally:
+            stop.set()
+            rt.join(timeout=5)
+
+    elif name == 'cross_fn':
+        # Even pairs per key → net-zero equipment change. DISRUPTIVE.
+        seq = keys or ['LIGHTS', 'FILTER', 'AUX1', 'AUX2']
+        for _ in range(count):
+            for k in seq:
+                _ac_backend.send_nav_key(k)
+                _ac_backend.send_nav_key(k)   # press twice → back to original
+                steps += 2
+
+    elif name == 'menu_churn':
+        nav = _get_navigator()
+        if nav is None:
+            raise RuntimeError('no navigator for menu_churn')
+        which = 'pool'
+        for _ in range(count):
+            nav.set_heater_enabled(which, True)
+            nav.set_heater_enabled(which, False)
+            steps += 2
+
+    else:
+        raise ValueError(f'unknown scenario: {name}')
+
+    elapsed = round(time.time() - t0, 1)
+    _wt_banner(f'scenario={name} STIMULUS DONE steps={steps} elapsed={elapsed}s — probing')
+
+    # Verdict: probe the command path now.
+    with _nav_lock:
+        probe = _ac_backend.probe_wedge()
+    wedged = not probe.get('alive', False)
+    _wt_banner(f'scenario={name} VERDICT wedged={wedged} probe={probe}')
+
+    return {
+        'scenario': name,
+        'wedged': wedged,
+        'steps': steps,
+        'elapsed_s': elapsed,
+        'probe': probe,
+        'params': {'count': count, 'gap': gap, 'keys': keys},
+    }
+
+
+@app.route('/debug/wedge-test', methods=['GET'])
+def list_wedge_scenarios() -> Response:
+    """List available wedge-test scenarios and how to run them."""
+    return jsonify({
+        'usage': "POST /debug/wedge-test  body: {\"scenario\":\"volume\",\"count\":30,\"gap\":0.4}",
+        'note': ('Wedge is sticky until power-cycle: run ONE scenario, read the '
+                 'verdict + /debug/log, then power-cycle before the next. Refuses '
+                 'to run if already wedged (pass force=true to override).'),
+        'scenarios': _WEDGE_SCENARIOS,
+        'defaults': {'count': 30, 'gap': 0.4},
+    })
+
+
+@app.route('/debug/wedge-test', methods=['POST'])
+def run_wedge_test() -> Response:
+    """Run a single wedge-test scenario synchronously and return the verdict."""
+    if _ac_backend is None:
+        return jsonify({'error': 'wedge-test requires the aquaconnect backend'}), 400
+    body = request.get_json(force=True, silent=True) or {}
+    name = body.get('scenario')
+    if name not in _WEDGE_SCENARIOS:
+        return jsonify({'error': f'unknown scenario: {name}',
+                        'scenarios': list(_WEDGE_SCENARIOS)}), 400
+    count = int(body.get('count', 30))
+    gap = float(body.get('gap', 0.4))
+    keys = body.get('keys')
+    force = body.get('force') in (True, '1', 'true', 'yes')
+
+    # Refuse if already wedged — a poisoned starting state makes the result lie.
+    with state_lock:
+        already = state.bridge_wedged
+    if already and not force:
+        return jsonify({
+            'error': 'box is already wedged — power-cycle first (or pass force=true)',
+            'bridge_wedged': True,
+        }), 409
+
+    try:
+        result = _run_wedge_scenario(name, count, gap, keys)
+    except Exception as e:
+        log.error('wedge-test %s failed: %s', name, e)
+        _wt_banner(f'scenario={name} ERROR {e}')
+        return jsonify({'error': str(e), 'scenario': name}), 500
+    code = 200 if not result['wedged'] else 503
+    return jsonify(result), code
+
+
 @app.route('/bridge/health/reset', methods=['POST'])
 def reset_bridge_wedge() -> Response:
     """Manually clear the wedge flag after power-cycling the box."""
