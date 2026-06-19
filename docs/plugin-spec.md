@@ -1,47 +1,166 @@
 # Homebridge ProLogic Plugin — Authoritative Specification
 
-> **Version**: 2.0 — unified from original brief + all hardware bring-up learnings  
-> **Updated**: 2026-06-17  
-> **Status**: Implemented and running on hardware
+> **Version**: 3.0 — full rewrite reflecting dual-backend model, AquaConnect polling fix,
+> frame reader architecture, wedge detection, and current HomeKit accessory set
+> **Updated**: 2026-06-19
+> **Status**: Implemented and running on hardware (v0.1.0)
 
 ---
 
 ## 1. Project Goal
 
 A Homebridge 2.0 platform plugin that controls a **Hayward Goldline AquaPlus PS-8** pool
-controller via direct **RS-485 serial protocol** through a **USR-W610 WiFi-to-RS485 bridge**.
+controller via a Python sidecar that supports two interchangeable backends:
 
-The existing Hayward ACHN (AquaConnect) local HTTP interface is end-of-life and control
-writes are permanently disabled — Hayward inserted a bare `return;` in `WebsFuncs.js` before
-the `xhr.send()` call, and the Webster embedded server discards all `KeyId` POSTs regardless
-of format. The ACHN is bypassed entirely. Cloud support ends December 31, 2026.
+- **AquaConnect** (primary): Hayward's own local web interface on a ACHN box at
+  `192.168.50.100`. The embedded GoAhead "Webs" HTTP server handles polling reads and
+  keypress commands over TCP/IP. No cloud dependency; all traffic is LAN-only.
+- **RS-485** (alternative): Direct serial protocol via a USR-W610 WiFi-to-RS-485 bridge
+  connected to the panel's J2/J4 RS-485 port, using the `aqualogic` Python library.
+
+The active backend is selected in plugin config and persisted by the sidecar. Both backends
+expose the same REST API to the Homebridge plugin. Switching backends restarts the sidecar
+automatically via systemd.
 
 ---
 
 ## 2. System Architecture
 
 ```
-[AquaPlus panel] ←RS-485→ [USR-W610 @ pool pad] ←WiFi/TCP→ [Pi 4: pool_service.py]
-                                                                      ↕ localhost:5757 REST
-                                                         [Pi 4: Homebridge + TS plugin]
-                                                                      ↕ HAP
-                                                              [HomeKit / iPhone]
+                ┌─ AquaConnect backend ──────────────────────────────────┐
+                │  POST /WNewSt.htm (Update Local Server&)  ←read poll   │
+[Hayward ACHN]  │  POST /WNewSt.htm (KeyId=NN&)            ←keypress     │
+[192.168.50.100]└────────────────────────────────────────────────────────┘
+       OR                           ↕ TCP/HTTP (picky GoAhead server)
+                ┌─ RS-485 backend ────────────────────────────────────────┐
+[AquaPlus panel]│  RS-485 broadcast frames (status)                       │
+[J2/J4]         │  RS-485 key commands (circuit toggles, menu nav)        │
+[USR-W610 bridge└────────────────────────────────────────────────────────┘
+@ 192.168.68.101]           ↕ TCP (raw RS-485 byte stream)
+
+                     [Pi 4: pool_service.py  ← systemd: pool-sidecar]
+                              ↕ localhost:5757 REST
+                     [Pi 4: Homebridge + TypeScript plugin]
+                              ↕ HAP
+                     [HomeKit / iPhone]
 ```
 
-The Python sidecar (`pool_service.py`) runs as a systemd service and maintains a persistent
-TCP connection to the USR-W610. The Homebridge TypeScript plugin polls the sidecar's `/status`
-REST endpoint. This separation avoids Python↔Node.js process lifetime coupling and keeps
-the RS-485 protocol handling in Python where the `aqualogic` library lives.
+The Python sidecar (`pool_service.py`) runs as a systemd service. The Homebridge TypeScript
+plugin polls the sidecar's `/status` REST endpoint every `pollInterval` ms (default 5000).
+This separation avoids Python↔Node.js process lifetime coupling and keeps protocol handling
+in Python.
 
 ---
 
-## 3. Hardware
+## 3. AquaConnect Backend
 
-### 3.1 RS-485 Physical Connection
+### 3.1 The Two POST Bodies — Critical Distinction
+
+The AquaConnect embedded firmware (`WebsFuncs.js`) routes `POST /WNewSt.htm` through
+**two entirely separate code paths** depending on the POST body:
+
+| Body | Firmware path | Effect |
+|---|---|---|
+| `KeyId=NN&` | `WebsProcessKey()` | Registers a keypad event; controls circuits/menu |
+| `Update Local Server&` | `ReqWebsData()` | Pure read; returns current LCD frame and LED state |
+
+**`Update Local Server&` is how the native web UI refreshes its live LCD display.**
+It was discovered by inspecting the firmware's JavaScript (`WebsFuncs.js`, `setInterval`
+calling `ReqWebsData()`). The response format is identical to a `KeyId=` POST.
+
+This distinction is not documented by Hayward. The sidecar enforces it via two separate
+methods:
+
+```python
+def _read(self) -> Optional[str]:
+    return self._request('Update Local Server&')   # pure read, no event
+
+def _post(self, key_code: str) -> Optional[str]:
+    return self._request(f'KeyId={key_code}&')     # keypress event
+```
+
+### 3.2 Why `KeyId=00&` Was Causing the Wedge
+
+Previous versions of the sidecar polled with `KeyId=00&` as a "no-op read." This was wrong:
+`KeyId=00` is processed by `WebsProcessKey()` like any other key, injecting a phantom
+keypad event into the firmware's event queue. At a 3-second poll interval, this produced
+~29,000 phantom events per day. The firmware's event queue was never designed for this volume;
+after several hours it would enter a stuck state where:
+
+- HTTP requests continued returning `200 OK`
+- Read responses (`Update Local Server&`) continued working
+- Keypress events (`KeyId=NN&`) were silently dropped (no RS-485 relay)
+- Only a power-cycle restored command function
+
+Switching the poll to `Update Local Server&` eliminates phantom event injection entirely.
+
+### 3.3 Request Format
+
+The GoAhead server is picky about headers. Extra headers (`Accept-Encoding`, `Connection`,
+Python user-agent strings) cause it to silently ignore the request. The sidecar hand-builds
+the raw HTTP request over a plain socket with a minimal header set:
+
+```
+POST /WNewSt.htm HTTP/1.1\r\n
+Host: {host}\r\n
+Content-Type: application/x-www-form-urlencoded\r\n
+Content-Length: {len}\r\n
+\r\n
+{body}
+```
+
+Requests are not pipelined; each opens a fresh connection. A minimum gap of ~0.9 seconds
+between requests is enforced (`_last_request_time` + `_AC_MIN_GAP_S = 0.9`).
+
+### 3.4 Response Format
+
+The response body contains an HTML-ish block. Meaningful data lives inside `<body>…</body>`,
+CRLF-separated, each line terminated with the literal string `xxx`. Example:
+
+```
+Thursday
+5:47P
+TECD4C333333
+```
+
+- **Lines 1–N-1**: LCD text (panel screen content; rotates through Pool Temp / Air Temp /
+  Salt Level / Chlorinator % / etc.)
+- **Last line before closing tags**: 12-character equipment-state field (e.g. `TECD4C333333`)
+  — each LED is one 4-bit nibble: `3`=absent, `4`=off, `5`=on, `6`=blink
+
+The sidecar's `_apply()` method parses this response and updates shared `PoolState`.
+
+### 3.5 AquaConnect Key Codes
+
+| Button | KeyId |
+|---|---|
+| RIGHT | 01 |
+| MENU | 02 |
+| LEFT | 03 |
+| MINUS | 05 |
+| PLUS | 06 |
+| POOL/SPA | 07 |
+| FILTER | 08 |
+| LIGHTS | 09 |
+| AUX_1 | 0A |
+| AUX_2 | 0B |
+| HEATER_1 | 0D |
+
+### 3.6 Settings Menu (AquaConnect)
+
+The AquaConnect navigates the same physical panel Settings menu as the RS-485 backend,
+but via HTTP keypresses instead of RS-485 frames. The same menu ring applies (§4.3).
+After any keypress that changes state (heater enable/setpoint, etc.), the frame reader
+delivers the confirmation screen within one poll cycle (~0.9s gap).
+
+---
+
+## 4. RS-485 Backend
+
+### 4.1 Hardware Connection
 
 - **Connector**: J2 or J4 on the AquaPlus main PCB (parallel, either works)
 - **PCB label**: "Remote DSP comm (RS485 – 10VDC)"
-- **Pins used** (two-wire differential + ground):
 
 | J2/J4 pin | Label | Wire color | USR-W610 terminal |
 |---|---|---|---|
@@ -49,13 +168,12 @@ the RS-485 protocol handling in Python where the `aqualogic` library lives.
 | Pin 3 | DATA− | yellow | B− |
 | Pin 4 | GND | green | GND |
 
-**⚠ Critical wiring notes from bring-up:**
-- Pin 1 is **not a data line**. Wiring A/B to pin 1 and pin 4 produces ~8.5 B/s of garbage (oversampled noise), not real RS-485 data.
-- Pin 3 carries **7.6 V DC power** on some variants — never connect it to the USR-W610.
-- If frames arrive but CRC errors persist, **swap A and B** at the bridge terminals. RS-485 polarity is system-dependent; one of the two orientations will produce valid frames.
+**⚠ Wiring notes:**
+- Pin 1 is not a data line. Wiring A/B to pin 1 produces garbage (~8.5 B/s noise).
+- If frames arrive but CRC errors persist, swap A and B at the bridge terminals.
 - The USR-W610 is USB-powered. Do not draw panel power.
 
-### 3.2 USR-W610 Configuration
+### 4.2 USR-W610 Configuration
 
 | Setting | Value |
 |---|---|
@@ -65,125 +183,58 @@ the RS-485 protocol handling in Python where the `aqualogic` library lives.
 | Baud rate | 19200 |
 | Data bits | 8 |
 | Parity | None |
-| Stop bits | **2** (8N2) ← critical; 1 stop bit produces framing errors |
+| Stop bits | **2** (8N2) ← critical |
 | Transparent mode | Enabled |
-| 485 Switch interval | 100 µs (verified working) |
+| 485 Switch interval | 100 µs |
 
-The Pi connects to the USR-W610 at its DHCP-assigned IP + port 8899 and treats the
-TCP stream as a raw RS-485 byte stream.
-
-### 3.3 Bring-Up Diagnostic Procedure
-
-Use a raw socket capture to verify signal health before running the sidecar:
-
-```python
-# /tmp/cap.py — measure byte rate and count valid frame starts
-import socket, time
-s = socket.create_connection(('192.168.68.101', 8899), timeout=15)
-buf, t0 = b'', time.time()
-while time.time() - t0 < 12:
-    buf += s.recv(4096)
-elapsed = time.time() - t0
-print(f'{len(buf)} bytes  {len(buf)/elapsed:.1f} B/s  10 02 count = {buf.count(bytes([0x10, 0x02]))}')
-```
-
-Expected result with correct wiring and 19200 8N2: ~190–290 B/s with `10 02 count > 100`.
-- **< 10 B/s**: wrong pins (noise, not signal)
-- **~190 B/s but 0 frame starts**: polarity inverted — swap A and B
-- **frames but bad CRC**: wrong stop bits — set to 2
-- **socket timeout, 0 bytes**: bridge not reachable (check DHCP / power)
-
----
-
-## 4. RS-485 Protocol
-
-### 4.1 Frame Format
+### 4.3 RS-485 Frame Format
 
 ```
 DLE(0x10) STX(0x02) [command] [data] [cksum_hi] [cksum_lo] DLE(0x10) ETX(0x03)
 ```
 
-Checksum = sum of all bytes from DLE through end of data, inclusive.
+Do not re-implement framing — use the `aqualogic` Python library.
 
-### 4.2 Key ID Map
+### 4.4 What the `aqualogic` Library Provides from Broadcasts
 
-| Button | KeyId (hex) | KeyId (dec) |
-|---|---|---|
-| RIGHT | 0x01 | 1 |
-| MENU | 0x02 | 2 |
-| LEFT | 0x03 | 3 |
-| MINUS | 0x05 | 5 |
-| PLUS | 0x06 | 6 |
-| POOL/SPA | 0x07 | 7 |
-| FILTER | 0x08 | 8 |
-| LIGHTS | 0x09 | 9 |
-| VALVE3 | 0x0B | 11 |
-| HEATER1 | 0x0D | 13 |
+These values are decoded from the continuous RS-485 status broadcast:
 
-Press + release are both required. Do not re-implement framing — use the `aqualogic` library.
+- Pool water temp, air temp, salt level, chlorinator output %
+- Pump speed / mode (read-only from broadcast)
+- State of every circuit: POOL, SPA, FILTER, LIGHTS, AUX1, AUX2, SPILLOVER, HEATER1
 
----
+**NOT available from broadcasts** (require menu navigation):
+- Heater setpoints (pool °F target, spa °F target)
+- Heater enable/disable state (Auto vs Manual Off)
+- Chlorinator % writes
+- VSP slot speed % values and active slot selection
 
-## 5. Python Library — `aqualogic`
+### 4.5 Settings Menu Ring (RS-485, verified on hardware)
 
-```bash
-pip3 install aqualogic
+```
+Settings Menu → Spa Heater1 → Pool Heater1 → VSP Speed Settings → Super Chlorinate →
+Spa Chlorinator → Pool Chlorinator → Configuration Menu-Locked → (wraps)
 ```
 
-### 5.1 What the Library Provides from Broadcast Frames (No Menu Navigation)
-
-These values are decoded from the continuous RS-485 status broadcast and available
-immediately after connect:
-
-**Read (broadcast, always current):**
-- Pool water temperature
-- Air temperature
-- Salt level (ppm)
-- Current chlorinator output (%)
-- Pump speed / mode (read-only from broadcast)
-- State of every circuit (POOL, SPA, FILTER, LIGHTS, AUX1, AUX2, SPILLOVER, HEATER1, VALVE3)
-
-**Write (direct key commands, no menu navigation):**
-- Toggle any named circuit on/off (`aq.set_state(States.X, bool)`)
-- HEATER1 is routed through `HEATER_AUTO_MODE` internally by the library
-
-### 5.2 ⚠ What the Library Does NOT Provide from Broadcasts
-
-**Critical correction from empirical testing:**
-
-The following values are **NOT** available from RS-485 broadcast frames and **require
-menu navigation** to read or write:
-
-- **Heater setpoints** (pool °F target, spa °F target) — the panel does not broadcast these
-- **Individual heater enable/disable state** — "Manual Off" vs enabled is a menu state, not a circuit bit
-- **Chlorinator % target writes** — read-only from broadcast; setting requires menu navigation
-- **Pump speed slot selection** (which VSP slot is active) — requires FILTER off→on activation window
-- **VSP slot speed % values** — stored in Settings menu, require navigation to read/write
-
-Any spec or documentation claiming heater setpoints are available from broadcast frames is
-incorrect for this controller. If `pool_setpoint_f` and `spa_setpoint_f` are null, the sidecar
-has not yet completed a menu navigation read — this is expected until the background refresher
-fires (approximately 10 seconds after connect).
-
-### 5.3 LCD Text Access (LcdCapture)
-
-The `aqualogic` library calls `self._web.text_updated(text)` on every display frame but does
-not store the text. We construct `AquaLogic(web_port=0)` (suppresses the built-in web server)
-then set `aq._web = lcd` to intercept every frame via `LcdCapture`.
-
-`LcdCapture` stores the latest text, fires a threading `Event` on each update (used by
-`MenuNavigator._send()` to wait for panel responses), and keeps a 60-frame rolling history
-accessible at `GET /display/history`.
-
-**Important**: On this hardware the LCD text arrives as a single 32-character string with no
-newline — the entire frame lands in `lines()[0]` and `lines()[1]` is empty. Match patterns
-against `f'{l1} {l2}'` (the joined frame), not `l2` alone.
+RIGHT advances, LEFT retreats. PLUS/MINUS adjust values.
 
 ---
 
-## 6. Sidecar Architecture (`sidecar/pool_service.py`)
+## 5. Sidecar Architecture (`sidecar/pool_service.py`)
 
-### 6.1 Shared State
+### 5.1 Backend Selectability
+
+The active backend is stored in `backend.json` adjacent to the script:
+
+```json
+{"backend": "aquaconnect", "aquaconnect_host": "192.168.50.100"}
+```
+
+`POST /backend` persists the new config and calls `os._exit(0)`; systemd restarts the
+sidecar into the new backend. The Homebridge plugin's `reconcileBackend()` checks
+`GET /backend` on launch and switches if the active backend doesn't match config.
+
+### 5.2 Shared State
 
 ```python
 @dataclass
@@ -194,155 +245,212 @@ class PoolState:
     spa_temp: float | None
     salt_level: float | None
     chlorinator_percent: float | None
-    pump_speed: int | None
+    vsp_slot4_pct: int | None
     pool_setpoint_f: int | None   # null until menu read
     spa_setpoint_f: int | None    # null until menu read
-    pool_heater_enabled: bool | None
+    pool_heater_enabled: bool | None  # True=Auto, False=Manual Off
     spa_heater_enabled: bool | None
-    valve_mode: str | None        # 'pool' | 'spa' — from cycling display
-    vsp_slot4_pct: int | None
+    valve_mode: str | None        # 'pool' | 'spa'
+    bridge_wedged: bool           # AquaConnect command path stuck
     connected: bool
     last_update: float
 ```
 
-All mutations go through `state_lock`. `panel_lock` guards the `panel` object (real or sim).
+### 5.3 AquaConnect Frame Reader Architecture
 
-### 6.2 Valve Mode Detection
+The AquaConnect backend runs a single background `_poll_loop` thread that calls
+`_read()` (`Update Local Server&`) continuously. This is the **only** thread that
+ever reads from the box during idle operation.
 
-The panel's cycling default display includes a "Filter Speed  NN% Spa Mode" or
-"Filter Speed  NN% Pool Mode" frame. The `on_change()` callback matches this against
-the joined frame (`f'{l1} {l2}'`) because this hardware sends LCD text without newlines,
-leaving `l2` empty.
+Two threading primitives coordinate keypress confirmation:
 
+- **`_frame_cond`** (`threading.Condition`): notified by `_poll_loop` after each
+  successful frame parse. Writers wait on this for confirmation.
+- **`_read_wake`** (`threading.Event`): set by `send_nav_key()` after each keypress.
+  Wakes `_poll_loop` early to fetch the confirmation frame without waiting for the
+  full poll interval.
+
+**`_poll_loop`:**
 ```python
-frame = f'{l1} {l2}'
-if 'Pool Mode' in frame:
-    state.valve_mode = 'pool'
-elif 'Spa Mode' in frame:
-    state.valve_mode = 'spa'
+def _poll_loop(self) -> None:
+    while not self._poll_stop.is_set():
+        with self._http_lock:
+            body = self._read()
+        if body:
+            self._apply(body)
+            with self._frame_cond:
+                self._frame_cond.notify_all()
+        self._read_wake.wait(timeout=self._poll_s)
+        self._read_wake.clear()
 ```
 
-This updates every time that frame rotates through the cycling display (~every 10–30 seconds),
-and immediately after any POOL/SPA mode switch that the next rotation catches.
-
-### 6.3 Menu Navigator
-
-`MenuNavigator` drives keypad keys over RS-485 and reads the LCD after each press.
-All operations are text-anchored (never blind key-counts). A single `_nav_lock` serializes
-all menu operations so they cannot interleave.
-
-**Entry/exit discipline:**
-- `_anchor()`: press MENU until `line1 == 'Settings Menu'` (up to 8 presses)
-- `fast_exit()`: press MENU until `'Default Menu'`, then RIGHT — always called in `finally`
-
-**Settings menu ring** (verified on hardware):
-
-```
-Settings Menu → Spa Heater1 → Pool Heater1 → VSP Speed Settings → Super Chlorinate →
-Spa Chlorinator → Pool Chlorinator → Configuration Menu-Locked → (wraps)
+**`send_nav_key()` (one keypress):**
+```python
+def send_nav_key(self, key_name: str) -> None:
+    code = _AC_KEY_CODES[key_name.upper()]
+    with self._http_lock:
+        self._apply(self._post(code))
+    self._read_wake.set()          # wake poll loop early
+    with self._frame_cond:
+        self._frame_cond.wait(timeout=3.0)   # wait for confirmation frame
 ```
 
-Navigation: RIGHT advances, LEFT retreats. PLUS/MINUS adjust values while on an item.
+This replaces the previous pattern of 4 explicit "confirm burst" reads per keypress
+(5 requests, ~1.6s blocked). Now each keypress costs 2 requests (~0.9s): the keypress
+itself plus one subsequent `_read()` from the poll loop.
 
-### 6.4 Heater Read (Menu Navigation)
+### 5.4 `_PriorityLock`
 
-When heater is "Manual Off", the panel shows no temperature. To read the stored setpoint:
+Wraps `threading.Lock`, tracking queued waiters. `busy()` returns `True` when the lock
+is held OR has queued waiters. Background loops call `busy()` to defer non-urgent work
+when a navigation sequence is in progress.
 
-1. Navigate to the heater item (RIGHT ×1 for spa, RIGHT ×2 for pool from Settings Menu anchor)
-2. If display shows "Manual Off": press PLUS to enable and reveal the stored °F
-3. Parse the setpoint from `l2` (or joined frame)
-4. If we enabled it to peek: RIGHT (lock in), LEFT (back to item), then toggle HEATER_1
-   until "Manual Off" re-appears (restores prior state)
-5. `fast_exit()`
+### 5.5 Heater Enabled vs Heater Active
 
-### 6.5 Heater Write (Menu Navigation — §13.3 Restore Discipline)
+Two distinct concepts, both tracked in `PoolState`:
 
+| Field | What it means | Source |
+|---|---|---|
+| `pool_heater_enabled` | Heater is in Auto mode (armed) | Menu navigation / scroll parsing |
+| `spa_heater_enabled` | Heater is in Auto mode (armed) | Menu navigation / scroll parsing |
+| `circuits['HEATER_1']` | Heater is actively calling for heat (LED lit) | LED field nibble |
+
+The **HEATER_1 switch** in HomeKit shows `pool_heater_enabled` or `spa_heater_enabled`
+depending on the current valve mode. This is the correct field: the switch should be on
+when the heater is armed (Auto), off when disarmed (Manual Off), regardless of whether
+it is currently calling for heat.
+
+The **thermostat** `CurrentHeatingCoolingState` uses `circuits['HEATER_1']` to indicate
+active heating. `TargetHeatingCoolingState` reflects `pool/spa_heater_enabled`.
+
+### 5.6 Bridge Wedge Detection
+
+The AquaConnect command path can enter a stuck state where reads return normally but
+keypresses are silently dropped (see §3.2). Two detection paths:
+
+**Passive** (`_record_command_failure`): called when a write (keypress response) looks
+wrong. Increments a failure counter; after `_WEDGE_FAIL_THRESHOLD=2` failures, fires an
+immediate active probe via a daemon thread.
+
+**Active** (`_ac_canary_probe`): sends a keypress on a known-inert circuit (AUX2 on this
+system), then checks whether the AUX2 nibble in the LED field actually flips. Compares
+only the specific nibble position, not the whole LED string, to avoid false recovery
+detection during normal state changes. Sets `state.bridge_wedged = True` immediately on
+failure (no debounce).
+
+**Probe scheduling**: healthy state → probe every 300s. Wedged state → probe every 30s for
+fast recovery detection. On recovery, `bridge_wedged` clears automatically.
+
+**Manual probe**: `GET /bridge/health?probe=1` runs `_ac_canary_probe()` synchronously and
+returns the result. Used by the `BridgeHealthAccessory` tile.
+
+### 5.7 Debug Logging
+
+All POST/read requests are traced to `/tmp/pool_sidecar_debug.log` with body prefix,
+response length, timing, and any errors. The file rotates hourly with 1 backup kept
+(`TimedRotatingFileHandler`).
+
+`GET /debug/log` downloads the current log; `?all=1` includes the previous hour's file.
+
+### 5.8 RS-485 Backend Menu Navigation
+
+The RS-485 backend navigates the physical panel Settings menu via RS-485 key commands.
+A single `_nav_lock` serializes all navigation. `LcdCapture` intercepts every LCD frame
+(fires a `threading.Event` on each update) and is used by `MenuNavigator._send()` to
+wait for panel responses.
+
+**Heater read/write follows §13.3 restore discipline:**
 1. Navigate to heater item
 2. If "Manual Off": PLUS to enable (reveals stored °F)
-3. Adjust in 1°F steps with PLUS/MINUS to reach `target_f` (clamped to [65, 104])
-4. RIGHT to lock in value
-5. If heater was off before: LEFT back to item, toggle HEATER_1 until "Manual Off" (restore)
-6. `fast_exit()`
+3. Adjust setpoint with PLUS/MINUS, RIGHT to lock in
+4. If heater was off before: restore "Manual Off" state before exiting
+5. `fast_exit()` (MENU until default display, then RIGHT)
 
-### 6.6 VSP Slot 4 Activation (§6.2/§6.4)
-
-Activating VSP slot 4 uses a transient panel window that appears only when FILTER turns on:
-
-1. Ensure FILTER is off (send FILTER key if currently on)
-2. Send FILTER to turn on → panel shows `Filter On:SpdN / +/- to change` (~5-10s window)
-3. Press PLUS until `Spd4` appears in `l1`; gate every press on `'Filter On:' in l1`
-4. Window closes automatically; FILTER remains on in slot 4
-
-This is the **only** way to change the active VSP slot. It is not a Settings menu operation.
-
-### 6.7 Background Refresher Thread
-
-A daemon thread reads heater state for both pool and spa bodies after connect, then
-periodically thereafter:
-
-- **Initial read**: 10 seconds after first connect (waits for `state.connected`)
-- **Subsequent reads**: every 600 seconds (configurable via `--heater-refresh`, 0 disables)
-- Logs `'Initial heater state read complete.'` after the first successful read
-
-This ensures `pool_setpoint_f`, `spa_setpoint_f`, `pool_heater_enabled`, and
-`spa_heater_enabled` are populated at startup without requiring HomeKit interaction.
-
-### 6.8 Simulation Mode
-
-`--simulate` skips the `aqualogic` library entirely and instantiates `SimPanel`, a full
-state machine emulating the verified Settings menu ring and VSP activation window.
-Only Flask is required. All navigator code paths exercise identically to real hardware.
-
-SimPanel defaults: pool heater off (Manual Off, 87°F stored), spa heater off (Manual Off,
-99°F stored), VSP slots [95%, 60%, 50%, 50%], mode=pool.
+**VSP slot 4 activation** uses the FILTER off→on transient window (§6.2 of RS-485 spec).
 
 ---
 
-## 7. REST API (`localhost:5757`)
+## 6. REST API (`localhost:5757`)
 
-### 7.1 Status and Display
+### 6.1 Status and Display
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/status` | Full pool state JSON (all fields from PoolState) |
-| GET | `/display` | Current LCD line1, line2 |
-| GET | `/display/history` | Last 60 LCD frames with timestamps |
+| GET | `/status` | Full pool state JSON |
+| GET | `/display` | Current LCD line1, line2 (RS-485 backend) |
+| GET | `/display/history` | Last 60 LCD frames (RS-485 backend) |
 
-### 7.2 Circuit Control
-
-| Method | Path | Body | Notes |
-|---|---|---|---|
-| POST | `/circuit/{name}` | `{"on": bool}` | Circuit names: POOL, SPA, FILTER, LIGHTS, AUX_1, AUX_2, HEATER_1 |
-
-SUPER_CHLORINATE and SPILLOVER have no keypad key and return 422.
-HEATER_1 is routed through `HEATER_AUTO_MODE` internally by the library.
-
-### 7.3 Heater (Menu Navigation)
+### 6.2 Circuit Control
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| GET | `/heater/{which}/state` | — | Read setpoint via menu; `which` = pool\|spa |
-| POST | `/heater/{which}/setpoint` | `{"temp_f": int}` | Write setpoint; handles Manual Off restore |
+| POST | `/circuit/{name}` | `{"on": bool}` | POOL, SPA, FILTER, LIGHTS, AUX_1, AUX_2, HEATER_1 |
 
-### 7.4 VSP Slot 4
+HEATER_1 routes through `set_heater_enabled()` (menu navigation). For other circuits,
+the AquaConnect backend sends the matching `KeyId`, the RS-485 backend sends the key command.
+
+### 6.3 Heater (Menu Navigation)
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| GET | `/vsp/slot4` | — | Read Speed4 % via menu navigation |
-| POST | `/vsp/slot4` | `{"speed_pct": int}` | Write Speed4 %; snaps to 5% grid |
+| GET | `/heater/{which}/state` | — | Read setpoint + enabled state via menu |
+| POST | `/heater/{which}/setpoint` | `{"temp_f": int}` | Write setpoint [65–104°F] |
+| POST | `/heater/{which}/enable` | `{"on": bool}` | Enable/disable (Auto / Manual Off) |
+
+### 6.4 VSP Slot 4
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| GET | `/vsp/slot4` | — | Read slot 4 speed % |
+| POST | `/vsp/slot4` | `{"speed_pct": int}` | Write slot 4 speed % |
 | POST | `/vsp/slot4/activate` | — | Activate slot 4 via FILTER off→on window |
 
-### 7.5 Diagnostics
+### 6.5 Chlorinator
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| POST | `/chlorinator/{which}` | `{"percent": int}` | Set pool or spa chlorinator % |
+
+### 6.6 Super Chlorinate
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| POST | `/superchlorinate` | `{"on": bool}` | Enable/disable super chlorinate |
+
+### 6.7 Bridge Health
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/keypad/{key}` | Send raw key (diagnostics only; do not use from automation) |
+| GET | `/bridge/health` | Returns `{"bridge_wedged": bool}` (cached state) |
+| GET | `/bridge/health?probe=1` | Runs live canary probe, returns result |
+| POST | `/bridge/health/reset` | Clears wedge flag manually |
+
+### 6.8 Backend Selection
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| GET | `/backend` | — | Returns `{"active": "aquaconnect"\|"rs485", "config": {...}}` |
+| POST | `/backend` | `{"backend": str, "aquaconnect_host"?: str, "rs485_host"?: str, "rs485_port"?: int}` | Persists and self-exits (systemd restarts) |
+
+### 6.9 Mode
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| POST | `/mode` | `{"mode": "pool"\|"spa"}` | Switch valve mode |
+
+### 6.10 Debug
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/debug/log` | Download current trace log; `?all=1` includes previous hour |
+| POST | `/debug/wedge-test` | One-shot wedge scenario test harness |
+| GET | `/debug/wedge-test` | Poll result of running wedge test |
 
 ---
 
-## 8. Homebridge Plugin (TypeScript)
+## 7. Homebridge Plugin (TypeScript)
 
-### 8.1 Platform Config
+### 7.1 Platform Config
 
 ```json
 {
@@ -351,132 +459,172 @@ HEATER_1 is routed through `HEATER_AUTO_MODE` internally by the library.
   "sidecarHost": "127.0.0.1",
   "sidecarPort": 5757,
   "pollInterval": 5000,
-  "circuits": ["POOL", "SPA", "FILTER", "LIGHTS", "HEATER_1"],
+  "backend": "aquaconnect",
+  "aquaconnectHost": "192.168.50.100",
+  "rs485Host": "192.168.68.101",
+  "rs485Port": 8899,
+  "circuits": ["FILTER", "LIGHTS", "HEATER_1"],
   "activeBodies": ["pool", "spa"],
   "enableActiveHeaterThermostat": true,
   "enablePoolHeaterThermostat": true,
   "enableSpaHeaterThermostat": true,
-  "enableTemperatureSensors": true
+  "enableTemperatureSensors": true,
+  "enableSpaModeSwitch": true,
+  "enableChlorinatorFan": true,
+  "enablePumpSpeedFan": true
 }
 ```
 
-### 8.2 HomeKit Accessories
+`backend` is pushed to the sidecar via `reconcileBackend()` on launch. If the sidecar is
+already on the right backend, this is a no-op. If it differs, the sidecar restarts.
 
-| HomeKit type | Name | Notes |
+### 7.2 HomeKit Accessories
+
+| HomeKit type | Name | Enabled by |
 |---|---|---|
-| Switch | Pool | Mutually exclusive with Spa/Spillover |
-| Switch | Spa | Mutually exclusive with Pool/Spillover |
-| Switch | Filter | FILTER circuit |
-| Switch | Lights | LIGHTS circuit |
-| Switch | Aux 1 | AUX_1 circuit |
-| Switch | Aux 2 | AUX_2 circuit |
-| Switch | Heater | HEATER_1 — gates `pool_heater_enabled` / `spa_heater_enabled` for active body |
-| Switch | Super Chlorinate | SUPER_CHLORINATE (no keypad key — 422; remove or mark read-only) |
-| Thermostat | Active Heat | Accessory A — mode-following; see §8.4 |
-| Thermostat | Pool Heat | Accessory B — always pool setpoint; see §8.4 |
-| Thermostat | Spa Heat | Accessory C — always spa setpoint; see §8.4 |
-| TemperatureSensor | Pool Temperature | Read-only; current pool water temp |
-| TemperatureSensor | Air Temperature | Read-only; current air temp |
+| Switch | Spa | `enableSpaModeSwitch` — On=spa, Off=pool |
+| Switch | Filter | `circuits` includes FILTER |
+| Switch | Lights | `circuits` includes LIGHTS |
+| Switch | Heater | `circuits` includes HEATER_1 |
+| Switch | Aux 1 | `circuits` includes AUX_1 |
+| Switch | Aux 2 | `circuits` includes AUX_2 |
+| Thermostat | Active Heat | `enableActiveHeaterThermostat` — mode-following |
+| Thermostat | Pool Heat | `enablePoolHeaterThermostat` + pool in `activeBodies` |
+| Thermostat | Spa Heat | `enableSpaHeaterThermostat` + spa in `activeBodies` |
+| TemperatureSensor | Pool Temperature | `enableTemperatureSensors` |
+| TemperatureSensor | Air Temperature | `enableTemperatureSensors` |
+| Fan | Chlorinator | `enableChlorinatorFan` — rotation speed = chlorinator % |
+| Fan | Pump Speed Override | `enablePumpSpeedFan` — rotation speed = VSP slot4 % |
+| Switch | Bridge Needs Rebooting | Always registered |
 
-### 8.3 Pool/Spa Mode Selection
+### 7.3 HEATER_1 Switch Semantics
 
-The physical panel has **one** POOL/SPA/SPILLOVER cycle button — not independent switches.
-Pressing it advances through mutually exclusive states. The RS-485 library `set_state`
-for POOL (0x07) cycles; there is no separate "Spa on" command.
-
-In HomeKit: expose Pool, Spa (and optionally Spillover) as three Switch accessories.
-When one is turned on, calculate how many cycle presses are needed to reach the target
-mode from the current `valve_mode`, fire them, then reflect the other two as OFF on the
-next poll. Turning a switch off with no other mode specified defaults to Pool.
-
-Valve mode is read from `status.valve_mode` (`'pool'` | `'spa'` | `null`), which the
-sidecar updates from the LCD cycling display. See §6.2 for detection.
-
-### 8.4 Three-Thermostat Model
-
-One physical heater serves both pool and spa bodies, with two independent setpoints.
-HomeKit has no native "dual-setpoint" thermostat, so three accessories are used:
-
-**Accessory A — "Active Heat"** (`body = 'auto'`)
-- Always reflects whichever body is active per `valve_mode`
-- Dynamic name: "Heat — Pool" when valve_mode=pool, "Heat — Spa" when valve_mode=spa
-- `CurrentTemperature`: temp of the active body
-- `TargetTemperature`: setpoint of the active body
-- Setpoint writes go to the active body's menu slot
-
-**Accessory B — "Pool Heat"** (`body = 'pool'`)
-- Always reflects the pool setpoint, regardless of current valve mode
-- Dynamic name: "Pool Heat — Heating" | "— Standby" | "— Off"
-- "Heating" = heater enabled AND valve_mode=pool
-- "Standby" = heater enabled but valve_mode=spa (pool setpoint armed but not active)
-- "Off" = heater disabled (Manual Off)
-
-**Accessory C — "Spa Heat"** (`body = 'spa'`)
-- Mirror of B for the spa setpoint
-
-**TargetHeatingCoolingState pinned to Heat:**
-HomeKit collapses the temperature dial when `TargetHeatingCoolingState = 0` (Off),
-hiding the setpoint even when it's populated. To keep the dial always visible, pin
-`TargetHeatingCoolingState` getter to `1` (Heat). The real on/off state is truthfully
-conveyed by `CurrentHeatingCoolingState` (0 when not actively heating) and the dynamic
-accessory name. The mode toggle still writes HEATER_1.
-
-**Setpoint range**: 65°F–104°F (18.3°C–40.0°C), 0.5°C step.
-
-**Display units**: set `TemperatureDisplayUnits = 1` (Fahrenheit). HomeKit internally
-always stores Celsius; convert with `C = round(((F - 32) * 5/9) * 10) / 10`.
-
-### 8.5 Temperature Conversion
+The Heater switch reflects **enabled state** (Auto vs Manual Off), not active-heating state.
+It shows the correct body's enabled field based on current valve mode:
 
 ```typescript
-export function fahrenheitToCelsius(f: number): number {
-  return Math.round(((f - 32) * 5 / 9) * 10) / 10;
-}
-export function celsiusToFahrenheit(c: number): number {
-  return c * 9 / 5 + 32;
+const heaterEnabled = status.valve_mode === 'spa'
+  ? (status.spa_heater_enabled ?? status.circuits['HEATER_1'] ?? false)
+  : (status.pool_heater_enabled ?? status.circuits['HEATER_1'] ?? false);
+```
+
+Falls back to the `HEATER_1` LED bit only until the first menu navigation confirms the
+enabled state. This means: switch on = heater armed and will heat when the pump is running;
+switch off = heater disarmed (Manual Off). The switch does not pulse when actively heating —
+that is shown by the thermostat tile's `CurrentHeatingCoolingState`.
+
+### 7.4 Spa Mode Switch
+
+`SpaModeAccessory` is a dedicated switch (On=spa, Off=pool). Toggling it calls
+`POST /mode`. On poll, it reads `status.valve_mode` and updates accordingly.
+
+This is separate from the Spa circuit switch. The Spa circuit switch (if configured)
+controls the POOL/SPA/SPILLOVER cycle key; the Spa Mode switch provides a cleaner
+HomeKit affordance for toggling between pool and spa heating contexts.
+
+### 7.5 Three-Thermostat Model
+
+One physical heater serves both pool and spa bodies, with two independent setpoints.
+Three thermostat accessories provide full control:
+
+**Accessory A — "Active Heat"** (`body = 'auto'`): follows whichever body is active per
+`valve_mode`. Shows the active body's temp and setpoint. Setpoint writes go to the active
+body's menu slot. Useful for Siri/automation ("set pool heat to 82") without specifying
+pool vs spa.
+
+**Accessory B — "Pool Heat"** (`body = 'pool'`): always shows pool setpoint, regardless
+of current valve mode. Shows "Heating" when pool heater is enabled AND in pool mode.
+
+**Accessory C — "Spa Heat"** (`body = 'spa'`): always shows spa setpoint.
+
+`TargetHeatingCoolingState` is **pinned to Heat (1)** — setting it to 0 (Off) collapses
+the temperature dial in HomeKit, hiding the setpoint even when populated. The actual
+enabled/disabled state is conveyed by `CurrentHeatingCoolingState` (0=off, 1=heating)
+and the tile's dynamic name. The mode toggle on the tile writes `HEATER_1`.
+
+Setpoint range: 65°F–104°F (18.3°C–40.0°C). All HomeKit temperatures are Celsius internally;
+the sidecar speaks Fahrenheit. Display units set to Fahrenheit.
+
+### 7.6 Fan Accessories
+
+Two `FanAccessory` instances (`FanRole = 'chlorinator' | 'pump'`):
+- `RotationSpeed` = current % (chlorinator output or VSP slot4 speed)
+- `Active` = 1 always (tile is always shown)
+- Setting speed: chlorinator → `POST /chlorinator/pool`, pump → `POST /vsp/slot4`
+
+### 7.7 BridgeHealthAccessory
+
+A Switch tile that surfaces the AquaConnect command-path wedge state:
+- **Off** = command path healthy
+- **On** = command path wedged; power-cycle needed
+
+Tapping the tile in either direction runs a live canary probe (`GET /bridge/health?probe=1`)
+and snaps the tile to the true result. This makes it a "test button": tap it, and the tile
+reflects the real bridge health. A `testing` flag prevents concurrent probes.
+
+The tile state is also updated passively on every poll from `status.bridge_wedged`.
+
+### 7.8 Polling
+
+On each poll (`/status`, default 5000ms interval):
+
+1. Update valve mode (`currentValveMode`), push to Spa Mode switch
+2. Update circuit switches — HEATER_1 uses enabled state logic (§7.3), others use LED bit
+3. Push `ThermostatState` to all three thermostat accessories
+4. Update pool and air temperature sensors
+5. Update chlorinator fan speed
+6. Update pump speed fan
+7. Update bridge health wedge state
+
+No optimistic updates. All state reflects confirmed sidecar values.
+
+### 7.9 Backend Reconciliation
+
+On `didFinishLaunching`, before polling starts:
+
+```typescript
+const cur = await this.sidecar.getBackend();
+if (cur.active !== this.cfg.backend) {
+  await this.sidecar.setBackend({ backend: this.cfg.backend, ... });
 }
 ```
 
-### 8.6 Polling
-
-Default 5000 ms poll interval. The sidecar maintains the persistent RS-485 connection;
-Homebridge polls `/status` via `SidecarClient` (HTTP, 30s timeout). On each poll:
-
-1. Update all circuit switch states from `status.circuits`
-2. Update `currentValveMode` (used by Accessory A setpoint writes)
-3. Push `ThermostatState` to all three thermostat accessories
-4. Update temperature sensors
-
-State reflects confirmed sidecar values; commands are fire-and-confirm (no optimistic updates).
+If the sidecar is already on the right backend, no-op. If it switches, the sidecar
+restarts (systemd); the plugin will fail a few polls while it comes back up, then
+resume normally.
 
 ---
 
-## 9. File Structure
+## 8. File Structure
 
 ```
 homebridge-prologic/
-├── package.json
+├── package.json                    (version 0.1.0)
 ├── config.schema.json
 ├── docs/
 │   ├── plugin-spec.md              ← this file
-│   └── aqualogic-automation-spec.md  ← detailed menu navigation spec
+│   ├── aquaconnect-screen-refresh-handoff.md   ← research handoff (archived)
+│   └── aquaconnect-screen-refresh-findings.md  ← Update Local Server& discovery
 ├── sidecar/
-│   ├── pool_service.py             ← aqualogic wrapper + Flask REST API
-│   ├── requirements.txt            ← aqualogic, flask
-│   └── install.sh                  ← pip venv + systemd service setup
+│   ├── pool_service.py             ← dual-backend sidecar + Flask REST API
+│   ├── requirements.txt
+│   └── install.sh
 └── src/
     ├── index.ts
-    ├── platform.ts                 ← accessory registration + poll loop
+    ├── platform.ts                 ← accessory registration, reconcileBackend, poll loop
     ├── switchAccessory.ts          ← generic circuit switch
+    ├── spaModeAccessory.ts         ← Spa Mode switch (On=spa, Off=pool)
     ├── thermostatAccessory.ts      ← three-body thermostat model
-    ├── temperatureAccessory.ts     ← read-only sensor
+    ├── temperatureAccessory.ts     ← read-only temperature sensor
+    ├── fanAccessory.ts             ← chlorinator % / pump speed % fan tiles
+    ├── bridgeHealthAccessory.ts    ← wedge indicator + live test button
     ├── sidecarClient.ts            ← HTTP client for sidecar REST API
-    └── settings.ts                 ← constants, types, unit conversion
+    └── settings.ts                 ← constants, types, PoolStatus interface
 ```
 
 ---
 
-## 10. Confirmed Observations on Target Hardware
+## 9. Confirmed Hardware Observations
 
 | Field | Observed value |
 |---|---|
@@ -485,22 +633,26 @@ homebridge-prologic/
 | Salt level | 3100 PPM |
 | Spa chlorinator | 1% |
 | Filter speed | 80% (Spa mode) / 60% Speed 2 (Pool mode) |
-| Pool heater | Manual Off (default); stored setpoint readable via PLUS peek |
-| Spa heater | Manual Off (default); stored setpoint readable via PLUS peek |
-| LCD frame format | 32-char string, **no newline** — entire frame in line1, line2 empty |
-| Valve mode frame | "Filter Speed  NN% Spa/Pool Mode" (appears in cycling display) |
+| Pool heater | Manual Off default; stored setpoint readable via PLUS peek |
+| Spa heater | Manual Off default |
+| AquaConnect LED field | 12-char alphanumeric (e.g. `TECD4C333333`), nibbles: 3=absent, 4=off, 5=on, 6=blink |
+| AquaConnect scroll rate | One frame rotation ~10–30s on default cycling display |
+| AUX_2 (canary circuit) | Inert on this installation; safe for wedge probe |
+| RS-485 LCD frame format | 32-char string, no newline — entire frame in line1, line2 empty |
 | Fault observed | "Check System / Inspect Cell" — T-Cell-15 salt cell comm fault |
 
 ---
 
-## 11. Known Limitations and Future Work
+## 10. Known Limitations and Future Work
 
 | Item | Status | Notes |
 |---|---|---|
-| Pump speed display | Not implemented | `pump_speed` in `/status` but no HomeKit accessory yet |
-| VSP speed override | Endpoint exists (`/vsp/slot4`) | No HomeKit Fan accessory yet |
-| Chlorinator % write | Not implemented | Requires menu navigation; read-only for now |
-| System fault indicator | Not implemented | "Check System" frames appear in LCD history; could surface as ContactSensor |
-| Spillover mode | Config option exists | Not tested on this system (pool+spa only) |
-| Valve mode lag | ~10–30s | Updates only when "Filter Speed … Mode" frame rotates into view |
-| Signature on commits | Environment limitation | SSH signing key is 0-byte in this container; commits show Unverified on GitHub |
+| FILTER circuit as Fanv2 | Not implemented | Could expose pump on/off + rotation speed read-only |
+| RS-485 backend parity | Partial | Navigation exists but AquaConnect is primary; RS-485 not verified end-to-end in current codebase |
+| LIGHTS / AUX_1 write verify | Not tested | Never tested on healthy bridge; keycode table should be correct |
+| VSP slots 1–3 speed write | Not implemented | Only slot 4 currently controllable |
+| Chlorinator % HomeKit write | Not wired | Endpoint exists; no HomeKit affordance yet |
+| Super Chlorinate | Not wired | Endpoint exists; no HomeKit switch wired |
+| Spillover mode | Not tested | POOL/SPA/SPILLOVER cycle not present on this installation |
+| Valve mode detection lag | ~10–30s on AquaConnect | Depends on scroll position when mode changes |
+| System fault indicator | Not implemented | "Check System" LCD frames not surfaced to HomeKit |
