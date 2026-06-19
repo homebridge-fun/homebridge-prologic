@@ -99,6 +99,7 @@ class PoolState:
     spa_heater_enabled: Optional[bool] = None
     valve_mode: Optional[str] = None   # 'pool' | 'spa'
     vsp_slot4_pct: Optional[int] = None
+    vsp_active_slot: Optional[int] = None  # 1-4; set on activate, None = unknown
     connected: bool = False
     last_update: float = 0.0
     # True when the AquaConnect box has entered read-only mode (commands ACKed
@@ -896,6 +897,7 @@ _AC_SCROLL_PATTERNS = (
     ('salt_level',          re.compile(r'Salt Level\s+(\d+)', re.I)),
     ('chlorinator_percent', re.compile(r'Pool Chlorinator\s+(\d+)\s*%', re.I)),
     ('pump_speed',          re.compile(r'Filter Speed\s+(\d+)\s*%', re.I)),
+    ('vsp_active_slot',     re.compile(r'Filter Speed\s+\d+\s*%\s+Speed\s*(\d)', re.I)),
 )
 
 
@@ -1969,6 +1971,7 @@ class MenuNavigator:
 
             with state_lock:
                 state.circuits['FILTER'] = True
+                state.vsp_active_slot = 4
             return {'activated_slot': 4, 'frame': txt}
 
 
@@ -2011,6 +2014,7 @@ def get_status() -> Response:
             'spa_heater_enabled':  state.spa_heater_enabled,
             'valve_mode':          state.valve_mode,
             'vsp_slot4_pct':       state.vsp_slot4_pct,
+            'vsp_active_slot':     state.vsp_active_slot,
             'connected':           state.connected,
             'last_update':         state.last_update,
             'bridge_wedged':       state.bridge_wedged,

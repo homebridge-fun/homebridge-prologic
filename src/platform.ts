@@ -245,6 +245,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
         this.pumpFan?.updateSpeed(status.pump_speed);
+        this.pumpFan?.updateActiveSlot(status.vsp_active_slot);
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);

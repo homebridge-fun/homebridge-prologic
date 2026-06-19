@@ -30,6 +30,7 @@ export interface PoolStatus {
   spa_heater_enabled: boolean | null;
   valve_mode: 'pool' | 'spa' | null;
   vsp_slot4_pct: number | null;
+  vsp_active_slot: number | null;
   connected: boolean;
   last_update: number;
   bridge_wedged: boolean;

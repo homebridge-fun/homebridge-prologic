@@ -10,6 +10,7 @@ export type FanRole = 'chlorinator' | 'pump';
 export class FanAccessory {
   private readonly service: Service;
   private currentPct = 0;
+  private activeSlot: number | null = null;
 
   constructor(
     private readonly platform: ProLogicPlatform,
@@ -66,5 +67,15 @@ export class FanAccessory {
       this.currentPct = rounded;
       this.service.updateCharacteristic(this.platform.Characteristic.RotationSpeed, rounded);
     }
+  }
+
+  updateActiveSlot(slot: number | null): void {
+    if (this.role !== 'pump') return;
+    if (this.activeSlot === slot) return;
+    this.activeSlot = slot;
+    const label = slot !== null
+      ? `${this.accessory.displayName} · Speed ${slot}`
+      : this.accessory.displayName;
+    this.service.updateCharacteristic(this.platform.Characteristic.Name, label);
   }
 }
