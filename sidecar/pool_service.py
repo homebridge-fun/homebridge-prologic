@@ -635,14 +635,33 @@ _AC_SCROLL_PATTERNS = (
 )
 
 
+# Heater enable state appears in the idle scroll ('Heater1 Auto Control' /
+# 'Heater1 Manual Off') and in the Settings menu with a Pool/Spa prefix. The
+# scroll form has no prefix, so it applies to whichever heater the active valve
+# mode selects. (When enabled, the menu shows the setpoint °F instead of 'Auto
+# Control', so this only flips the flag on the explicit Auto/Manual screens.)
+_AC_HEATER_STATE_RE = re.compile(
+    r'(Pool |Spa )?Heater1\s+(Auto Control|Manual Off)', re.I)
+
+
 def _apply_ac_scroll_to_state(lcd: str) -> None:
-    """Pull numeric readings out of an idle-scroll LCD screen into PoolState."""
+    """Pull numeric readings + heater enable out of a scroll/menu LCD screen."""
     with state_lock:
         for field, pat in _AC_SCROLL_PATTERNS:
             m = pat.search(lcd)
             if m:
                 setattr(state, field, int(m.group(1)))
                 state.last_update = time.time()
+        hm = _AC_HEATER_STATE_RE.search(lcd)
+        if hm:
+            prefix = (hm.group(1) or '').strip().lower()
+            which = prefix or state.valve_mode or 'pool'
+            enabled = 'auto' in hm.group(2).lower()
+            if which == 'spa':
+                state.spa_heater_enabled = enabled
+            else:
+                state.pool_heater_enabled = enabled
+            state.last_update = time.time()
 
 
 def _apply_ac_led_to_state(led: dict) -> None:
