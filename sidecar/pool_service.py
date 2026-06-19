@@ -32,6 +32,7 @@ SIMULATION MODE
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import random
 import re
@@ -57,6 +58,25 @@ logging.basicConfig(
 # Use a distinct name so the two loggers never collide.
 log = logging.getLogger('pool_sidecar')
 log.setLevel(logging.INFO)
+
+# ---------------------------------------------------------------------------
+# Rotating debug log — /tmp/pool_sidecar_debug.log, replaced every hour.
+# Keeps 1 backup so the previous hour is still readable while the new one grows.
+# ---------------------------------------------------------------------------
+_DEBUG_LOG_PATH = '/tmp/pool_sidecar_debug.log'
+_debug_file_handler = logging.handlers.TimedRotatingFileHandler(
+    _DEBUG_LOG_PATH,
+    when='h',         # rotate every hour
+    interval=1,
+    backupCount=1,    # keep one previous hour
+    encoding='utf-8',
+)
+_debug_file_handler.setLevel(logging.DEBUG)
+_debug_file_handler.setFormatter(
+    logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+)
+log.addHandler(_debug_file_handler)
+log.setLevel(logging.DEBUG)   # file gets DEBUG; console handler keeps INFO via basicConfig root level
 
 
 # ---------------------------------------------------------------------------
@@ -624,9 +644,12 @@ class AquaConnectBackend:
           _AC_MIN_GAP_S before EVERY request here. Callers hold _http_lock, so
           _last_req is single-threaded and needs no extra guard.
         """
-        wait = _AC_MIN_GAP_S - (time.time() - self._last_req)
+        now = time.time()
+        elapsed = now - self._last_req
+        wait = _AC_MIN_GAP_S - elapsed
         if wait > 0:
             time.sleep(wait)
+        t_send = time.time()
         body = f'KeyId={key_code}&'
         req = (f'POST /WNewSt.htm HTTP/1.1\r\n'
                f'Host: {self._host}\r\n'
@@ -666,11 +689,33 @@ class AquaConnectBackend:
                             rest += chunk
                     except socket.timeout:
                         pass
-                return (head + b'\r\n\r\n' + rest).decode('latin-1', errors='replace')
+                full = (head + b'\r\n\r\n' + rest).decode('latin-1', errors='replace')
+                # ── Per-POST trace (always goes to debug log file) ───────────
+                status_line = head.decode('latin-1', errors='replace').split('\r\n')[0]
+                # Extract LED/equipment-state line from the body for wedge diagnosis
+                led_line = 'none'
+                for ln in self._body_lines(full):
+                    if _AC_LED_RE.match(ln):
+                        led_line = ln
+                        break
+                gap_actual = t_send - self._last_req if self._last_req else 0.0
+                rtt = time.time() - t_send
+                log.debug(
+                    'AC POST key=%s gap=%.3fs rtt=%.3fs thread=%s http=%s led=%s',
+                    key_code, gap_actual, rtt,
+                    threading.current_thread().name,
+                    status_line.split(' ', 2)[1] if ' ' in status_line else status_line,
+                    led_line,
+                )
+                return full
             finally:
                 s.close()
         except Exception as e:
-            log.warning('AquaConnect socket error: %s', e)
+            log.warning('AquaConnect socket error key=%s gap=%.3fs thread=%s: %s',
+                        key_code,
+                        t_send - self._last_req if self._last_req else 0.0,
+                        threading.current_thread().name,
+                        e)
             return None
         finally:
             self._last_req = time.time()
@@ -2052,6 +2097,34 @@ def get_bridge_health() -> Response:
     if probe_result is not None:
         body['probe'] = probe_result
     return jsonify(body), code
+
+
+@app.route('/debug/log')
+def get_debug_log() -> Response:
+    """Return the current debug log file as plain text for download.
+
+    Also includes the previous hour's rotated file (if present) so you get
+    full context across a rotation boundary.
+    GET /debug/log          → current hour
+    GET /debug/log?all=1    → current + previous hour concatenated
+    """
+    import glob as _glob
+    want_all = request.args.get('all') in ('1', 'true', 'yes')
+    paths = [_DEBUG_LOG_PATH]
+    if want_all:
+        # TimedRotatingFileHandler appends a timestamp suffix to rotated files
+        rotated = sorted(_glob.glob(_DEBUG_LOG_PATH + '.*'))
+        paths = rotated + [_DEBUG_LOG_PATH]
+    content_parts = []
+    for p in paths:
+        try:
+            with open(p, 'r', encoding='utf-8', errors='replace') as f:
+                content_parts.append(f.read())
+        except FileNotFoundError:
+            pass
+    content = '\n'.join(content_parts) if content_parts else '(no log yet)\n'
+    return Response(content, mimetype='text/plain',
+                    headers={'Content-Disposition': 'attachment; filename="pool_sidecar_debug.log"'})
 
 
 @app.route('/bridge/health/reset', methods=['POST'])
