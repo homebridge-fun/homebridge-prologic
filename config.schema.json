@@ -32,6 +32,34 @@
         "minimum": 1000,
         "description": "How often to poll the sidecar for state updates."
       },
+      "backend": {
+        "title": "Sidecar Backend",
+        "type": "string",
+        "default": "aquaconnect",
+        "oneOf": [
+          { "title": "AquaConnect (HTTP web box)", "enum": ["aquaconnect"] },
+          { "title": "RS-485 (USR-W610 serial bridge)", "enum": ["rs485"] }
+        ],
+        "description": "Which navigation backend the sidecar should use. Changing this restarts the sidecar to apply."
+      },
+      "aquaconnectHost": {
+        "title": "AquaConnect Host",
+        "type": "string",
+        "default": "192.168.50.100",
+        "description": "IP of the AquaConnect web box (used when backend = aquaconnect)."
+      },
+      "rs485Host": {
+        "title": "RS-485 Bridge Host",
+        "type": "string",
+        "default": "192.168.68.101",
+        "description": "IP of the USR-W610 WiFi serial bridge (used when backend = rs485)."
+      },
+      "rs485Port": {
+        "title": "RS-485 Bridge Port",
+        "type": "integer",
+        "default": 8899,
+        "description": "TCP port of the USR-W610 serial bridge (used when backend = rs485)."
+      },
       "circuits": {
         "title": "Circuit switches to expose",
         "type": "array",

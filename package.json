@@ -1,6 +1,6 @@
 {
   "name": "homebridge-prologic",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "Homebridge platform plugin for Hayward ProLogic/AquaPlus pool controllers via RS-485 serial bridge",
   "license": "MIT",
   "main": "dist/index.js",

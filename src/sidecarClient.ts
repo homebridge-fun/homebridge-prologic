@@ -37,6 +37,41 @@ export class SidecarClient {
     await this.http.post('/mode', { mode });
   }
 
+  // ── Bridge health ─────────────────────────────────────────────────────────
+
+  /**
+   * Run a live active command-path probe on the AquaConnect box and return
+   * whether it is wedged. This physically presses the canary output and checks
+   * the equipment-state field actually moves, so it can take several seconds
+   * (longer when wedged, since it retries). Updates the sidecar's cached flag
+   * as a side effect.
+   */
+  async testBridge(): Promise<boolean> {
+    const res = await this.http.get('/bridge/health', { params: { probe: 1 } });
+    return Boolean((res.data as { bridge_wedged?: boolean })?.bridge_wedged);
+  }
+
+  // ── Backend selection ─────────────────────────────────────────────────────
+
+  async getBackend(): Promise<{ active: string | null; config: Record<string, unknown> }> {
+    const res = await this.http.get('/backend');
+    return res.data;
+  }
+
+  /**
+   * Switch the sidecar navigation backend. The sidecar persists the choice and
+   * restarts itself (systemd) to apply, so this call may be followed by a brief
+   * window where the sidecar is unreachable. No-op if already on that backend.
+   */
+  async setBackend(opts: {
+    backend: 'aquaconnect' | 'rs485';
+    aquaconnect_host?: string;
+    rs485_host?: string;
+    rs485_port?: number;
+  }): Promise<void> {
+    await this.http.post('/backend', opts);
+  }
+
   // ── Heater setpoints (menu navigation) ────────────────────────────────────
 
   async getHeaterState(which: 'pool' | 'spa'): Promise<HeaterState> {

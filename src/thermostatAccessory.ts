@@ -108,11 +108,11 @@ export class ThermostatAccessory {
   async handleSetMode(value: CharacteristicValue): Promise<void> {
     const on = (value as number) !== 0;
     this.platform.log.info(`[Thermostat ${this.body}] mode → ${on ? 'Heat' : 'Off'} (HEATER_1 circuit)`);
-    this.heaterEnabled = on; // optimistic update
+    this.heaterEnabled = on;
     try {
       await this.platform.sidecar.setCircuit('HEATER_1', on);
     } catch (err) {
-      this.heaterEnabled = !on; // revert on failure
+      this.heaterEnabled = !on;
       this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);
       throw new this.platform.api.hap.HapStatusError(
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
@@ -155,12 +155,15 @@ export class ThermostatAccessory {
       }
     }
 
-    // HEATER_1 broadcast circuit is the single source of truth for enabled state.
-    const enabled = s.heater1Circuit;
+    // Body-specific Auto-mode flag: is the heater set to fire when temp < setpoint?
+    // Falls back to the HEATER_1 LED circuit if the sidecar hasn't seen the scroll
+    // screen yet (e.g. RS-485 backend which doesn't expose the Auto/Manual field).
+    const enabledByBody = which === 'spa' ? s.spaHeaterEnabled : s.poolHeaterEnabled;
+    const enabled = enabledByBody ?? s.heater1Circuit;
 
     // HomeKit has no "standby"; the current-heating-state field is HEAT only
-    // when enabled AND this body is the active valve mode (§10.2). Otherwise OFF.
-    const isActiveNow = enabled && (s.valveMode === which || this.body === 'auto');
+    // when the heater is actually calling for heat right now (HEATER_1 LED).
+    const isActiveNow = s.heater1Circuit && (s.valveMode === which || this.body === 'auto');
     if (this.heatingActive !== isActiveNow) {
       this.heatingActive = isActiveNow;
       this.service.updateCharacteristic(C.CurrentHeatingCoolingState, isActiveNow ? 1 : 0);

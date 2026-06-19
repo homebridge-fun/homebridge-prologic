@@ -91,6 +91,24 @@ Settings Menu → Timers Menu → Diagnostic Menu → Configuration Menu-Locked 
 - `Configuration Menu-Locked` appears but is locked (installer only).
 - `Default Menu` is the idle auto-scroll (clock, equipment status, temps). Display auto-returns here after ~2 min idle.
 
+### 3.2 Default (idle) status cycle `[VERIFIED]`
+
+Observed live with `lcd-watch` (120s, 2 full laps). Each item holds for **~6 seconds** before advancing automatically. Total cycle: 7 items × 6s = 42s.
+
+| Order | Normalized text (navigator sees) | Notes |
+|---|---|---|
+| 1 | `Thursday HH:MMA` | Date/time. Colon `:` oscillates to space in LONG frame (same item — canonical tokens match). |
+| 2 | `Pool Temp 77°F` | Degree char oscillates: SHORT frame sends `_`, LONG sends `°` (same item — canonical tokens `['Pool','Temp','77','F']` match). |
+| 3 | `Air Temp 70°F` | Same SHORT/LONG oscillation as Pool Temp. |
+| 4 | `Pool Chlorinator 40%` | LONG frame only; value on line 2, label on line 1. |
+| 5 | `Salt Level 3200 PPM` | LONG frame only. |
+| 6 | `Heater1 Manual Off` | LONG frame only. `Manual Off` = force-off state (see §5.2). |
+| 7 | `Filter Speed 50% Speed2` | LONG frame only. Speed name (`Speed2`) is part of the normalized text. |
+
+Occasional genuinely corrupted SHORT frames appear (~once per 60s); they contain control characters and start with a lowercase letter after normalization — the garbled-frame guard in `_same_item` ignores them.
+
+Pressing **MENU** from any point in this cycle should exit it and show `Settings Menu` (§3.1 top-level ring). [PENDING — not yet confirmed; map-menu test needed]
+
 ### 3.2 Navigation rules (for the state machine)
 1. **Anchor on text, not counts.** Drive `MENU` until LCD line 1 == `Settings Menu`, then count RIGHT from there. Do not trust blind key-counts past the first two items (conditional items + the Set Day/Time trap make counts fragile).
 2. **The header is a stop.** RIGHT cycles: header → item 1 → … → item 11 → header.
@@ -252,6 +270,45 @@ One physical heater with two mode-driven setpoints is exposed as **three thermos
 - All setpoint reads/writes go through the §5 paths; all VSP through §6; all gated by §7 guards and the §8 scope.
 - VSP activation: gate every slot-select `+`/`-` on LCD line 1 reading `Filter On:` (§6.4 post-timeout hazard).
 
+### 11.1 RS-485 frame type carries the menu display `[VERIFIED]`
+The single most important undocumented detail, found by byte-level bus tracing:
+
+- The panel sends the LCD over **two different frame types**:
+  - `DISPLAY_UPDATE` (`0x01 0x03`) — the short single-line frames used by the
+    **Default cycling screen** (clock, temps, equipment status). The
+    `swilson/aqualogic` library parses these and calls `text_updated()`.
+  - `LONG_DISPLAY_UPDATE` (`0x04 0x0a`) — the full 2×16 frame used by **all
+    menu navigation** (Settings ring, submenus, value items). The library
+    **ignores this frame type** (`# Not currently parsed / pass`) and never
+    calls `text_updated()` for it.
+- **Consequence:** an unpatched library is *blind during menu navigation* — the
+  closed-loop read in §11 never sees the screen change, every keypress looks
+  dropped, and the navigator spins until it exhausts its retry budget. This
+  masqueraded as "the panel ignores RIGHT" for a long time. The keypress was
+  landing fine; we just couldn't see the result.
+- **Fix:** parse `LONG_DISPLAY_UPDATE` with the same decode the short handler
+  uses and forward it to the LCD capture.
+
+### 11.2 LONG frame decoding quirks `[VERIFIED]`
+- **Bit 7 = flashing.** Characters shown flashing on the physical display
+  arrive with bit 7 set (`char | 0x80`); mask it off (`& 0x7f`) or text won't
+  match (upstream `swilson/aqualogic` PR #11).
+- **Degree symbol** is `0xdf` → render as `°` (same as the short handler).
+- **Frame payload structure (verified by raw hex dump):**
+  - Two LONG frame variants exist with headers of different lengths (3 bytes: `83 00 03`; or 12 bytes: `83 00 02 28 00 00 00 00 00 00 00 03`).
+  - Both variants end identically: **40 LCD bytes** (20-char line 1 + 20-char line 2, bit-7 flashing on editable values) followed by a `0x00` null terminator.
+  - The panel uses a **20-character-wide** LCD (not 16), centring label text with leading spaces.
+  - Short frames (len < 41, e.g. 11-byte cursor/blink control packets) must be **skipped** — they do not contain LCD text. Previously they decoded as garbage like `'ju %'` which locked the navigator.
+  - **Correct extraction:** `frame[-41:-1]` always yields the 40 LCD bytes regardless of header length.
+- **SHORT vs LONG character differences.** Items that appear on both frame types show slight differences that are the **same screen content**:
+  - Degree symbol: SHORT frame sends `0x5F` (`_`), LONG frame sends `0xDF` (`°`). Tokens `['77','F']` match after stripping non-alphanumeric.
+  - Colon in time: SHORT frame sends `:`, LONG frame sends ` ` (space). Tokens `['9','26A']` match.
+  - Fix: `_same_item` compares canonical alphanumeric token lists, so these oscillations are invisible to the navigator.
+- **Occasional garbled SHORT frames** appear ~once per 60s on this bus; they
+  contain control characters and start with a lowercase letter after
+  normalization. The `_same_item` garbled-frame guard (non-uppercase first char
+  → same item) prevents the navigator from acting on them.
+
 ---
 
 ## 12. Live menu examples & behavior `[VERIFIED]`
@@ -364,3 +421,89 @@ The AquaConnect bridge's network address must be a **user setting**, not hardcod
 - The plugin should fail gracefully / surface a clear connection error if the bridge is unreachable, rather than silently stalling on the slow bus.
 
 > Default the config to this system's values (pool+spa active; AUX2 + VALVE3 hidden; bridge `192.168.50.100`) but keep every item user-overridable so the plugin ports to other AquaLogic/ProLogic setups.
+
+---
+
+## 15. AquaConnect HTTP backend (dual-backend architecture) `[VERIFIED-REF]`
+
+The navigator runs over **either** of two interchangeable backends, selectable
+at runtime (`--backend rs485|aquaconnect`). Both feed the **same**
+`MenuNavigator` and `LcdCapture`, so all menu logic (§3–§13) is shared; only the
+transport differs.
+
+- **`rs485`** (default) — raw RS-485 frames over the USR-W610 WiFi serial bridge
+  (§0, §11). Fast; the validated primary path.
+- **`aquaconnect`** — HTTP to the AquaConnect web box. No RS-485 wiring needed;
+  useful as a fallback and for A/B testing navigation logic.
+
+`[VERIFIED-REF]` below = matches the working `SteveTheGeekHA/AquaConnectDeviceHandler`
+reference implementation; confirm once against the live box with `GET
+/debug/aquaconnect?raw=1` before relying on byte offsets.
+
+### 15.1 Wire protocol
+- **Endpoint:** `POST http://<host>/WNewSt.htm` (default host `192.168.50.100`).
+- **Key press:** form body `KeyId=NN`, `Content-Type: application/x-www-form-urlencoded`,
+  where `NN` is the §2 web key code (`MENU=02`, `RIGHT=01`, `LEFT=03`, `PLUS=06`,
+  `MINUS=05`, `POOL/SPA/SPILLOVER=07`, `FILTER=08`, `LIGHTS=09`, `AUX1=0A`,
+  `AUX2=0B`, `VALVE3=11`, `HEATER1=13`).
+- **No-op read:** `KeyId=00` returns current state without pressing anything.
+- **No auth.**
+
+### 15.2 Response format
+HTML page; the payload is between `<body>` and `</body>`, split on `\n`. The
+**first line is a header and is dropped**; then:
+
+| Line | Content |
+|---|---|
+| 0 | LCD display **line 1** (e.g. `Pool Chlorinator`) |
+| 1 | LCD display **line 2** / value (e.g. `35%`) |
+| 2 | **LED/equipment state** — 6 ASCII chars (see §15.3) |
+
+- The degree symbol arrives HTML-encoded as `&#176` (no trailing `;`); render to `°`.
+- **Blank-line-2 hazard:** on the idle temp screen line 2 is empty and gets
+  dropped by the newline tokenizer, shifting the LED line up into the line-2
+  slot. The parser therefore locates the LED line by **pattern** (6 chars, both
+  nibbles ∈ {3,4,5,6}), not by position, and treats the remainder as LCD text.
+
+### 15.3 Equipment-state decode (the 6-char LED line) `[VERIFIED-REF]`
+Each character carries **two** equipment LEDs, one per nibble (high nibble =
+"first" LED, low nibble = "second"). Nibble value → state:
+
+| Nibble | State |
+|---|---|
+| `3` | absent / no key on this panel |
+| `4` | off |
+| `5` | on |
+| `6` | blink (transitioning / attention) |
+
+Position map:
+
+| Char | First LED (high nibble) | Second LED (low nibble) |
+|---|---|---|
+| 0 | Pool mode | Spa mode |
+| 1 | Spillover mode | Filter |
+| 2 | Lights | — |
+| 3 | Heater | — |
+| 4 | — | Aux1 |
+| 5 | Aux2 | — |
+
+Example: char 0 = `T` (`0x54`) → high `5` = Pool **on**, low `4` = Spa **off**.
+This is the source for the cached state model (§13.2): valve mode, filter,
+lights, heater, aux on/off — without waiting for the Default screen to cycle.
+
+### 15.4 Timing & concurrency
+- The box mirrors the panel over the **same slow RS-485 bus**, so the immediate
+  POST response can still show the pre-keypress screen. After each key the
+  backend waits `_AC_SETTLE_S` (default **3 s**) and re-reads (`KeyId=00`).
+- All HTTP is serialized through one lock; a key-send holds it across
+  post→settle→reread so the background state poller never issues an overlapping
+  POST (concurrent POSTs confuse the box).
+- A background poller (`KeyId=00`, default every 5 s) keeps the cached state
+  fresh when idle.
+
+### 15.5 Calibration & debug
+- `GET /debug/aquaconnect` — one no-op read; returns parsed LCD, decoded LED
+  state, and the extracted body lines. Add `?raw=1` for the full HTML body
+  (use this to confirm §15.2 offsets against the live box on first connect).
+- `POST /debug/aquaconnect {"keys":["MENU","RIGHT",...]}` — drive a key
+  sequence and see the LCD + equipment state after each press.

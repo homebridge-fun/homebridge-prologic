@@ -4,12 +4,8 @@ import type { ProLogicPlatform } from './platform';
 export type FanRole = 'chlorinator' | 'pump';
 
 /**
- * Generic Fan accessory used for percentage-based controls that have no
- * native HomeKit service: pool chlorinator output % and VSP pump speed %.
- *
- * RotationSpeed (0–100%) maps directly to the underlying % value.
- * Active is always reported as true (the Fan tile shows the speed ring
- * when active; off would hide it).  On/off writes are no-ops.
+ * Fan accessory for percentage-based controls: pool chlorinator output % and
+ * VSP pump speed %. Active is always 1 so the speed ring stays visible at 0%.
  */
 export class FanAccessory {
   private readonly service: Service;
@@ -20,18 +16,20 @@ export class FanAccessory {
     private readonly accessory: PlatformAccessory,
     private readonly role: FanRole,
   ) {
-    const serial = role === 'chlorinator' ? 'fan-chlorinator' : 'fan-pump';
+    const serials: Record<FanRole, string> = {
+      chlorinator: 'fan-chlorinator',
+      pump: 'fan-pump',
+    };
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Hayward')
       .setCharacteristic(this.platform.Characteristic.Model, 'ProLogic/AquaPlus')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, serial);
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, serials[role]);
 
     this.service = this.accessory.getService(this.platform.Service.Fanv2)
       ?? this.accessory.addService(this.platform.Service.Fanv2);
 
     const { Characteristic: C } = this.platform;
 
-    // Always active so the speed ring is visible in Home app
     this.service.getCharacteristic(C.Active)
       .onGet(() => 1)
       .onSet(() => { /* no-op */ });
