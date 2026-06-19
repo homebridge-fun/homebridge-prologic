@@ -153,9 +153,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.chlorinatorFan = new FanAccessory(this, acc, 'chlorinator');
     }
 
-    // Fan: VSP pump speed (slot 4 %)
+    // Fan: live filter/pump running speed from scroll
     if (this.cfg.enablePumpSpeedFan) {
-      const acc = register('Pump Speed Override',
+      const acc = register('Filter Speed',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-fan-pump`));
       this.pumpFan = new FanAccessory(this, acc, 'pump');
     }
@@ -244,7 +244,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.airTempSensor?.updateTemperature(status.air_temp);
 
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
-        this.pumpFan?.updateSpeed(status.vsp_slot4_pct);
+        this.pumpFan?.updateSpeed(status.pump_speed);
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);

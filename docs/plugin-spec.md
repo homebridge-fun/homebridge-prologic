@@ -495,7 +495,7 @@ already on the right backend, this is a no-op. If it differs, the sidecar restar
 | TemperatureSensor | Pool Temperature | `enableTemperatureSensors` |
 | TemperatureSensor | Air Temperature | `enableTemperatureSensors` |
 | Fan | Chlorinator | `enableChlorinatorFan` — rotation speed = chlorinator % |
-| Fan | Pump Speed Override | `enablePumpSpeedFan` — rotation speed = VSP slot4 % |
+| Fan | Filter Speed | `enablePumpSpeedFan` — rotation speed = live `pump_speed` from scroll |
 | Fan | Speed 1–4 | `enableVspSlotTiles` — 4× Fan tiles, not shown on Home tab; see §10.1 |
 | Switch | Bridge Needs Rebooting | Always registered |
 
@@ -655,7 +655,7 @@ homebridge-prologic/
 
 | Item | Status | Notes |
 |---|---|---|
-| Pump tile shows live speed | Not yet | `RotationSpeed` should read `filter_speed_pct` (current running %) from scroll, not `vsp_slot4_pct` (configured slot 4 %) |
+| Pump tile shows live speed | Done | Fan tile reads `pump_speed` (live scroll value); labeled "Filter Speed" |
 | VSP slot tiles | Not implemented | See §10.1 below |
 | FILTER circuit as Fanv2 | Not implemented | Could expose pump on/off + rotation speed read-only alongside slot tiles |
 | RS-485 backend parity | Partial | Navigation exists but AquaConnect is primary; RS-485 not verified end-to-end in current codebase |
@@ -666,7 +666,7 @@ homebridge-prologic/
 | Valve mode detection lag | ~10–30s on AquaConnect | Depends on scroll position when mode changes |
 | System fault indicator | Not implemented | "Check System" LCD frames not surfaced to HomeKit |
 | Salt level sensor | Not wired | `salt_level` present in `/status`; no HomeKit sensor (no native salt type; could use AirQuality or custom) |
-| `filter_speed_pct` scroll parsing | Not implemented | AquaConnect scroll contains "Filter Speed  NN%" frame; needs to be parsed into `PoolStatus` as prerequisite for live pump tile and VSP slot tiles |
+| `pump_speed` scroll parsing | Done | Already parsed via `_AC_SCROLL_PATTERNS` → `state.pump_speed`; present in `/status` |
 
 ### 10.1 VSP Filter Speed Slots
 
