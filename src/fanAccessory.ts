@@ -48,6 +48,7 @@ export class FanAccessory {
         await this.platform.sidecar.setChlorinatorPercent('pool', pct);
       } else {
         await this.platform.sidecar.setVspSlot4(pct);
+        await this.platform.sidecar.activateVspSlot4();
       }
       this.currentPct = pct;
     } catch (err) {
