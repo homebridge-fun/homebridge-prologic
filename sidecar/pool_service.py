@@ -897,7 +897,7 @@ _AC_SCROLL_PATTERNS = (
     ('salt_level',          re.compile(r'Salt Level\s+(\d+)', re.I)),
     ('chlorinator_percent', re.compile(r'Pool Chlorinator\s+(\d+)\s*%', re.I)),
     ('pump_speed',          re.compile(r'Filter Speed\s+(\d+)\s*%', re.I)),
-    ('vsp_active_slot',     re.compile(r'Filter Speed\s+\d+\s*%\s+Speed\s*(\d)', re.I)),
+    ('vsp_active_slot',     re.compile(r'Filter On:Spd(\d)', re.I)),
 )
 
 
