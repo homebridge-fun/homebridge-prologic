@@ -674,7 +674,6 @@ class AquaConnectBackend:
         if wait > 0:
             time.sleep(wait)
         t_send = time.time()
-        body = f'KeyId={key_code}&'
         req = (f'POST /WNewSt.htm HTTP/1.1\r\n'
                f'Host: {self._host}\r\n'
                f'User-Agent: curl/7.88.1\r\n'
@@ -687,8 +686,6 @@ class AquaConnectBackend:
                 s.sendall(req.encode('latin-1'))
                 s.settimeout(3)
                 buf = b''
-                # Read headers, then exactly Content-Length body bytes so we
-                # don't stall the full socket timeout on a keep-alive connection.
                 while b'\r\n\r\n' not in buf:
                     chunk = s.recv(4096)
                     if not chunk:
@@ -704,7 +701,6 @@ class AquaConnectBackend:
                             break
                         rest += chunk
                 else:
-                    # No Content-Length: drain until the socket times out.
                     try:
                         while True:
                             chunk = s.recv(4096)
@@ -714,9 +710,7 @@ class AquaConnectBackend:
                     except socket.timeout:
                         pass
                 full = (head + b'\r\n\r\n' + rest).decode('latin-1', errors='replace')
-                # ── Per-POST trace (always goes to debug log file) ───────────
                 status_line = head.decode('latin-1', errors='replace').split('\r\n')[0]
-                # Extract LED/equipment-state line from the body for wedge diagnosis
                 led_line = 'none'
                 for ln in self._body_lines(full):
                     if _AC_LED_RE.match(ln):
@@ -725,8 +719,8 @@ class AquaConnectBackend:
                 gap_actual = t_send - self._last_req if self._last_req else 0.0
                 rtt = time.time() - t_send
                 log.debug(
-                    'AC POST key=%s gap=%.3fs rtt=%.3fs thread=%s http=%s led=%s',
-                    key_code, gap_actual, rtt,
+                    'AC POST body=%r gap=%.3fs rtt=%.3fs thread=%s http=%s led=%s',
+                    body[:30], gap_actual, rtt,
                     threading.current_thread().name,
                     status_line.split(' ', 2)[1] if ' ' in status_line else status_line,
                     led_line,
@@ -735,8 +729,8 @@ class AquaConnectBackend:
             finally:
                 s.close()
         except Exception as e:
-            log.warning('AquaConnect socket error key=%s gap=%.3fs thread=%s: %s',
-                        key_code,
+            log.warning('AquaConnect socket error body=%r gap=%.3fs thread=%s: %s',
+                        body[:30],
                         t_send - self._last_req if self._last_req else 0.0,
                         threading.current_thread().name,
                         e)
