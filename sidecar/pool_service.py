@@ -594,7 +594,9 @@ class AquaConnectBackend:
         interleave a second POST. Returns only once self.lcd reflects the
         post-keypress screen, so the navigator's _send sees the change at once.
         """
-        code = _AC_KEY_CODES.get(key_name.upper())
+        # Normalize underscores so navigator names (HEATER_1, AUX_1, …) match
+        # the underscore-free table keys (HEATER1, AUX1, …).
+        code = _AC_KEY_CODES.get(key_name.upper().replace('_', ''))
         if code is None:
             raise ValueError(f'No AquaConnect code for key: {key_name}')
         with self._http_lock:
