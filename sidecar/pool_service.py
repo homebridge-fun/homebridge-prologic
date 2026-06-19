@@ -122,13 +122,6 @@ _WEDGE_FAIL_THRESHOLD = 2
 _wedge_fail_streak: int = 0
 _wedge_lock = threading.Lock()
 
-# After set_heater_enabled() writes a new enable state, the passive scroll
-# will cycle past the OLD "Heater1 Manual Off / Auto Control" line within
-# seconds and overwrite state.pool/spa_heater_enabled back to the stale value.
-# Block scroll-driven overwrites for this many seconds after a nav write.
-_HEATER_WRITE_GRACE_S = 35.0
-_heater_write_grace: dict = {'pool': 0.0, 'spa': 0.0}  # body -> expiry timestamp
-_heater_write_lock = threading.Lock()
 
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
 _WEDGE_CANARY_KEY = 'AUX2'
@@ -934,18 +927,11 @@ def _apply_ac_scroll_to_state(lcd: str) -> None:
             prefix = (hm.group(1) or '').strip().lower()
             which = prefix or state.valve_mode or 'pool'
             enabled = 'auto' in hm.group(2).lower()
-            # Don't overwrite a just-written enable state with the stale scroll
-            # value — the scroll cycles the OLD state past within seconds of a
-            # nav write. Grace expires after _HEATER_WRITE_GRACE_S.
-            with _heater_write_lock:
-                grace_until = _heater_write_grace.get(which, 0.0)
-                grace_active = time.time() < grace_until
-            if not grace_active:
-                if which == 'spa':
-                    state.spa_heater_enabled = enabled
-                else:
-                    state.pool_heater_enabled = enabled
-                state.last_update = time.time()
+            if which == 'spa':
+                state.spa_heater_enabled = enabled
+            else:
+                state.pool_heater_enabled = enabled
+            state.last_update = time.time()
 
 
 def _apply_ac_led_to_state(led: dict) -> None:
@@ -1822,10 +1808,6 @@ class MenuNavigator:
                         state.pool_heater_enabled = on
                     else:
                         state.spa_heater_enabled = on
-                # Block the passive scroll from overwriting this for 35s —
-                # the scroll cycles the OLD state past within seconds of the write.
-                with _heater_write_lock:
-                    _heater_write_grace[which] = time.time() + _HEATER_WRITE_GRACE_S
                 return {'which': which, 'enabled': on, 'was_off': was_off}
         finally:
             self.fast_exit()
@@ -2510,6 +2492,11 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
             _record_command_failure()
             _immediate_wedge_probe()
             return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
+        # The panel immediately shows "Heater1 Auto Control" / "Heater1 Manual Off"
+        # after the nav completes. Read it now so the confirmation lands in
+        # pool/spa_heater_enabled before any poll can see a stale scroll frame.
+        with _ac_backend._http_lock:
+            _ac_backend._apply(_ac_backend._read())
         _record_command_success()
         log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
         return jsonify({'ok': True, 'which': which, **result})

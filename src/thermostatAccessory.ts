@@ -40,12 +40,6 @@ export class ThermostatAccessory {
   private heatingActive = false;
   private heaterEnabled = false;
   private currentName = '';
-  // After a user-initiated mode write, block the poll from overwriting
-  // heaterEnabled for this many ms. The idle scroll can take 15–30s to cycle
-  // back to "Heater1 Auto Control", so we hold the optimistic state until
-  // the sidecar has had time to read the confirmation back.
-  private static readonly HEATER_WRITE_GRACE_MS = 35_000;
-  private heaterWriteAt = 0;
 
   constructor(
     private readonly platform: ProLogicPlatform,
@@ -115,12 +109,10 @@ export class ThermostatAccessory {
     const on = (value as number) !== 0;
     this.platform.log.info(`[Thermostat ${this.body}] mode → ${on ? 'Heat' : 'Off'} (HEATER_1 circuit)`);
     this.heaterEnabled = on;
-    this.heaterWriteAt = Date.now(); // hold optimistic state until scroll confirms
     try {
       await this.platform.sidecar.setCircuit('HEATER_1', on);
     } catch (err) {
       this.heaterEnabled = !on;
-      this.heaterWriteAt = 0;
       this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);
       throw new this.platform.api.hap.HapStatusError(
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
@@ -176,19 +168,9 @@ export class ThermostatAccessory {
       this.heatingActive = isActiveNow;
       this.service.updateCharacteristic(C.CurrentHeatingCoolingState, isActiveNow ? 1 : 0);
     }
-    // Don't overwrite a user-initiated enable/disable until the idle scroll has
-    // had time to confirm it. poolHeaterEnabled / spaHeaterEnabled only update
-    // when the scroll cycles past "Heater1 Auto Control" / "Heater1 Manual Off",
-    // which can take up to 30s. Without this guard the first poll after a write
-    // (where enabled is still null→heater1Circuit=false) flips the tile back off.
-    const graceActive = Date.now() - this.heaterWriteAt < ThermostatAccessory.HEATER_WRITE_GRACE_MS;
-    const scrollConfirmed = (which === 'spa' ? s.spaHeaterEnabled : s.poolHeaterEnabled) !== null;
-    if (!graceActive || scrollConfirmed) {
-      if (this.heaterEnabled !== enabled) {
-        this.heaterEnabled = enabled;
-        this.service.updateCharacteristic(C.TargetHeatingCoolingState, enabled ? 1 : 0);
-      }
-      if (scrollConfirmed) this.heaterWriteAt = 0; // grace no longer needed
+    if (this.heaterEnabled !== enabled) {
+      this.heaterEnabled = enabled;
+      this.service.updateCharacteristic(C.TargetHeatingCoolingState, enabled ? 1 : 0);
     }
 
     // Dynamic, role-clear name (§10.1 / §10.2)
