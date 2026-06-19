@@ -377,6 +377,13 @@ _AC_MIN_GAP_S = 0.9
 # still show the pre-keypress screen. 1.0s is well above the ~230ms read RTT.
 _AC_SETTLE_S = 1.0
 
+# After a toggle the panel briefly flashes the new state before reverting to the
+# idle scroll. Sample a few frames across that window so we catch the flash
+# whichever moment it lands on, rather than waiting for the passive cycle. The
+# total span (READS × GAP) covers ~1.6s, comfortably wider than a typical flash.
+_AC_CONFIRM_READS = 4
+_AC_CONFIRM_GAP_S = 0.4
+
 # LED nibble decode (each equipment LED is one 4-bit nibble in the state line).
 #   3 = absent / no key on this panel
 #   4 = off
@@ -602,8 +609,15 @@ class AquaConnectBackend:
             raise ValueError(f'No AquaConnect code for key: {key_name}')
         with self._http_lock:
             self._apply(self._post(code))
-            time.sleep(_AC_SETTLE_S)
-            self._apply(self._post('00'))
+            # The panel flashes a transient confirmation of the new state right
+            # after a toggle (e.g. 'Filter ON', 'Heater1 Auto Control') before
+            # reverting to the idle scroll. A single read at the settle mark can
+            # land before or after that flash, so sample a short burst and apply
+            # each frame; whichever one carries the confirmation updates state at
+            # once instead of waiting for the passive scroll to come back around.
+            for _ in range(_AC_CONFIRM_READS):
+                time.sleep(_AC_CONFIRM_GAP_S)
+                self._apply(self._post('00'))
 
     # ── Background state poll ─────────────────────────────────────────────────
     def _poll_loop(self) -> None:
