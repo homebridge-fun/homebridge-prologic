@@ -703,6 +703,45 @@ class AquaConnectBackend:
                 time.sleep(_AC_CONFIRM_GAP_S)
                 self._apply(self._post('00'))
 
+    def _led_line(self, body: Optional[str]) -> Optional[str]:
+        """Extract the raw field-3 LED/equipment-state line from a body."""
+        if not body:
+            return None
+        for ln in self._body_lines(body):
+            if _AC_LED_RE.match(ln):
+                return ln
+        return None
+
+    def probe_wedge(self, retries: int = 3, gap_s: float = 3.0) -> dict:
+        """Active command-path test: press the canary key and check whether the
+        equipment-state field actually changes.
+
+        Compares the raw field-3 LED string (robust against per-circuit decode
+        questions): a working command path flips the canary's bit; a wedged box
+        ACKs the POST but the field never changes. Restores the canary on
+        success. Returns {'alive': bool, 'before': str, 'after': str,
+        'attempts': int}.
+        """
+        code = _AC_KEY_CODES.get(_WEDGE_CANARY_KEY.replace('_', ''))
+        with self._http_lock:
+            before = self._led_line(self._post('00'))
+            self._apply(self._post(code))   # press canary
+            after = before
+            attempts = 0
+            for _ in range(retries):
+                attempts += 1
+                time.sleep(gap_s)
+                body = self._post('00')
+                self._apply(body)
+                after = self._led_line(body)
+                if after is not None and before is not None and after != before:
+                    # Path alive — toggle the canary back to leave it unchanged.
+                    self._apply(self._post(code))
+                    return {'alive': True, 'before': before, 'after': after,
+                            'attempts': attempts}
+        return {'alive': False, 'before': before, 'after': after,
+                'attempts': attempts}
+
     # ── Background state poll ─────────────────────────────────────────────────
     def _poll_loop(self) -> None:
         while not self._poll_stop.is_set():
@@ -1921,18 +1960,32 @@ def set_backend() -> Response:
 
 @app.route('/bridge/health')
 def get_bridge_health() -> Response:
-    """Return the AquaConnect command-path health status."""
+    """Return the AquaConnect command-path health status.
+
+    By default reports the cached flag (cheap). Pass ?probe=1 to actively run
+    the canary command-path test right now — this physically toggles the canary
+    output and confirms the equipment-state field changes, giving a true live
+    answer instead of the cached flag.
+    """
+    do_probe = request.args.get('probe') in ('1', 'true', 'yes')
+    probe_result = None
+    if do_probe and _ac_backend is not None:
+        probe_result = _ac_canary_probe()  # updates the flag as a side effect
+
     with state_lock:
         wedged = state.bridge_wedged
     with _wedge_lock:
         streak = _wedge_fail_streak
     status = 'wedged' if wedged else 'ok'
     code = 503 if wedged else 200
-    return jsonify({
+    body = {
         'status': status,
         'bridge_wedged': wedged,
         'consecutive_failures': streak,
-    }), code
+    }
+    if probe_result is not None:
+        body['probe'] = probe_result
+    return jsonify(body), code
 
 
 @app.route('/bridge/health/reset', methods=['POST'])
@@ -1947,43 +2000,34 @@ def reset_bridge_wedge() -> Response:
     return jsonify({'ok': True, 'bridge_wedged': False})
 
 
-def _ac_canary_probe() -> bool:
-    """Active command-path probe: toggle AUX2 and confirm the LED bit flips.
+def _ac_canary_probe() -> dict:
+    """Active command-path probe via the canary output (AUX2, inert here).
 
-    AUX2 is confirmed unused/inert on this system — toggling it is harmless.
-    Returns True if the command path is alive, False if wedged.
-    Called by the background probe thread when the box is otherwise idle.
+    Presses the canary and checks the raw equipment-state field actually
+    changes. Records success/failure (debounced flag) and returns the probe
+    detail dict {'alive', 'before', 'after', 'attempts'}.
     """
     if _ac_backend is None:
-        return True  # no AC backend, nothing to probe
+        return {'alive': True, 'skipped': 'no aquaconnect backend'}
     try:
         with _nav_lock:
-            with state_lock:
-                before = state.circuits.get('AUX_2')
-            _ac_backend.send_nav_key(_WEDGE_CANARY_KEY)
-            with state_lock:
-                after = state.circuits.get('AUX_2')
-        if before != after:
-            # Canary flipped — path alive, toggle it back
-            log.debug('Canary probe: AUX2 %s→%s (path OK); restoring', before, after)
-            with _nav_lock:
-                _ac_backend.send_nav_key(_WEDGE_CANARY_KEY)
-                with state_lock:
-                    state.circuits['AUX_2'] = before  # best-effort restore
+            result = _ac_backend.probe_wedge()
+        if result.get('alive'):
+            log.debug('Canary probe: path OK (%s→%s)',
+                      result.get('before'), result.get('after'))
             _record_command_success()
-            return True
         else:
-            log.warning('Canary probe: AUX2 did not flip (before=%s after=%s) — path may be wedged', before, after)
+            log.warning('Canary probe: equipment-state field did not change '
+                        '(field=%s) — command path appears wedged', result.get('before'))
             _record_command_failure()
-            return False
+        return result
     except Exception as e:
         log.error('Canary probe error: %s', e)
-        return False
+        return {'alive': False, 'error': str(e)}
 
 
 def _canary_probe_loop() -> None:
     """Background thread: periodically probe the command path when idle."""
-    import random
     # Stagger first probe so it doesn't fire at startup during initial connect.
     time.sleep(60 + random.uniform(0, 30))
     while True:
