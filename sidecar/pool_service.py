@@ -544,13 +544,6 @@ _AC_MIN_GAP_S = 0.9
 # still show the pre-keypress screen. 1.0s is well above the ~230ms read RTT.
 _AC_SETTLE_S = 1.0
 
-# After a toggle the panel briefly flashes the new state before reverting to the
-# idle scroll. Sample a few frames across that window so we catch the flash
-# whichever moment it lands on, rather than waiting for the passive cycle. The
-# total span (READS × GAP) covers ~1.6s, comfortably wider than a typical flash.
-_AC_CONFIRM_READS = 4
-_AC_CONFIRM_GAP_S = 0.4
-
 # LED nibble decode (each equipment LED is one 4-bit nibble in the state line).
 #   3 = absent / no key on this panel
 #   4 = off
@@ -618,12 +611,18 @@ class AquaConnectBackend:
     def __init__(self, host: str = '192.168.50.100', poll_s: float = 3.0):
         self._host = host
         self.lcd = LcdCapture()
-        self._http_lock = threading.Lock()   # serializes press+settle+read units
+        self._http_lock = threading.Lock()   # serializes all socket access
         self._last_req = 0.0                  # ts of last request (gap enforcement)
         self._last_raw: Optional[str] = None  # last full body, for /debug calibration
         self._last_led: dict = {}
         self._poll_s = poll_s
         self._poll_stop = threading.Event()
+        # Shared frame notification: signaled after every successful read so
+        # send_nav_key can wait for confirmation instead of doing burst reads.
+        self._frame_cond = threading.Condition()
+        # Set by send_nav_key to wake the poll loop immediately after a keypress
+        # so confirmation arrives in ~1 read latency rather than up to poll_s.
+        self._read_wake = threading.Event()
         self._poll_thread = threading.Thread(
             target=self._poll_loop, daemon=True, name='ac-poll')
         self._poll_thread.start()
@@ -803,28 +802,24 @@ class AquaConnectBackend:
 
     # ── Public navigator surface ──────────────────────────────────────────────
     def send_nav_key(self, key_name: str) -> None:
-        """Send one navigation key and block until the box has settled.
+        """Send one navigation key and wait for the frame reader to confirm.
 
-        Holds _http_lock across post → settle → reread so the poller cannot
-        interleave a second POST. Returns only once self.lcd reflects the
-        post-keypress screen, so the navigator's _send sees the change at once.
+        Sends the keypress under _http_lock, then releases it and signals the
+        frame reader to run immediately. Waits on _frame_cond for the next
+        frame — the panel shows the confirmation state right away, so one read
+        is enough. The frame reader (not this method) applies the frame to state,
+        so self.lcd reflects the post-keypress screen before we return.
         """
-        # Normalize underscores so navigator names (HEATER_1, AUX_1, …) match
-        # the underscore-free table keys (HEATER1, AUX1, …).
         code = _AC_KEY_CODES.get(key_name.upper().replace('_', ''))
         if code is None:
             raise ValueError(f'No AquaConnect code for key: {key_name}')
         with self._http_lock:
             self._apply(self._post(code))
-            # The panel flashes a transient confirmation of the new state right
-            # after a toggle (e.g. 'Filter ON', 'Heater1 Auto Control') before
-            # reverting to the idle scroll. A single read at the settle mark can
-            # land before or after that flash, so sample a short burst and apply
-            # each frame; whichever one carries the confirmation updates state at
-            # once instead of waiting for the passive scroll to come back around.
-            for _ in range(_AC_CONFIRM_READS):
-                time.sleep(_AC_CONFIRM_GAP_S)
-                self._apply(self._read())
+        # Wake the frame reader so it reads confirmation immediately rather than
+        # waiting up to poll_s seconds.
+        self._read_wake.set()
+        with self._frame_cond:
+            self._frame_cond.wait(timeout=3.0)
 
     def _led_line(self, body: Optional[str]) -> Optional[str]:
         """Extract the raw field-3 LED/equipment-state line from a body."""
@@ -873,12 +868,19 @@ class AquaConnectBackend:
     # ── Background state poll ─────────────────────────────────────────────────
     def _poll_loop(self) -> None:
         while not self._poll_stop.is_set():
-            # Skip during navigation ops (or when one is queued) so we don't
-            # compete for the single GoAhead connection slot mid-sequence.
-            if not _nav_lock.busy():
-                with self._http_lock:
-                    self._apply(self._read())  # pure status read, no keypad event
-            self._poll_stop.wait(self._poll_s)
+            # Reads use 'Update Local Server&' which carries no keypad-event
+            # side-effect, so they are safe to interleave between nav keypresses.
+            # _http_lock serializes access to the socket; nav holds it only for
+            # the duration of each individual keypress, not the whole sequence.
+            with self._http_lock:
+                body = self._read()
+            if body:
+                self._apply(body)
+                with self._frame_cond:
+                    self._frame_cond.notify_all()
+            # Sleep for poll_s, but wake early if send_nav_key signals us.
+            self._read_wake.wait(timeout=self._poll_s)
+            self._read_wake.clear()
 
     def stop(self) -> None:
         self._poll_stop.set()
@@ -2486,11 +2488,10 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
             _record_command_failure()
             _immediate_wedge_probe()
             return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
-        # The panel immediately shows "Heater1 Auto Control" / "Heater1 Manual Off"
-        # after the nav completes. Read it now so the confirmation lands in
-        # pool/spa_heater_enabled before any poll can see a stale scroll frame.
-        with _ac_backend._http_lock:
-            _ac_backend._apply(_ac_backend._read())
+        # Frame reader wakes immediately after set_heater_enabled releases
+        # _nav_lock (send_nav_key signals _read_wake on each keypress), so the
+        # confirmation screen lands in pool/spa_heater_enabled within one read
+        # cycle — no explicit read needed here.
         _record_command_success()
         log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
         return jsonify({'ok': True, 'which': which, **result})
