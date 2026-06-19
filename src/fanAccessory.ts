@@ -1,15 +1,18 @@
 import type { PlatformAccessory, Service, CharacteristicValue } from 'homebridge';
 import type { ProLogicPlatform } from './platform';
 
-export type FanRole = 'chlorinator' | 'pump';
+export type FanRole = 'chlorinator' | 'pump' | 'heater';
 
 /**
  * Generic Fan accessory used for percentage-based controls that have no
- * native HomeKit service: pool chlorinator output % and VSP pump speed %.
+ * native HomeKit service: pool chlorinator output %, VSP pump speed %, and
+ * heater active state (0% = idle/off, 100% = actively calling for heat).
  *
  * RotationSpeed (0–100%) maps directly to the underlying % value.
  * Active is always reported as true (the Fan tile shows the speed ring
  * when active; off would hide it).  On/off writes are no-ops.
+ * For 'heater': speed writes are no-ops — the value is read-only from the
+ * HEATER_1 LED circuit bit.
  */
 export class FanAccessory {
   private readonly service: Service;
@@ -20,11 +23,15 @@ export class FanAccessory {
     private readonly accessory: PlatformAccessory,
     private readonly role: FanRole,
   ) {
-    const serial = role === 'chlorinator' ? 'fan-chlorinator' : 'fan-pump';
+    const serials: Record<FanRole, string> = {
+      chlorinator: 'fan-chlorinator',
+      pump: 'fan-pump',
+      heater: 'fan-heater-active',
+    };
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Hayward')
       .setCharacteristic(this.platform.Characteristic.Model, 'ProLogic/AquaPlus')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, serial);
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, serials[role]);
 
     this.service = this.accessory.getService(this.platform.Service.Fanv2)
       ?? this.accessory.addService(this.platform.Service.Fanv2);
@@ -36,13 +43,15 @@ export class FanAccessory {
       .onGet(() => 1)
       .onSet(() => { /* no-op */ });
 
+    const minStep = role === 'chlorinator' ? 1 : role === 'pump' ? 5 : 100;
     this.service.getCharacteristic(C.RotationSpeed)
-      .setProps({ minValue: 0, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })
+      .setProps({ minValue: 0, maxValue: 100, minStep })
       .onGet(() => this.currentPct)
       .onSet(this.handleSetSpeed.bind(this));
   }
 
   private async handleSetSpeed(value: CharacteristicValue): Promise<void> {
+    if (this.role === 'heater') return; // read-only
     const pct = Math.round(value as number);
     this.platform.log.info(`[Fan ${this.role}] speed → ${pct}%`);
     try {

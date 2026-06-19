@@ -31,6 +31,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private spaModeSwitch?: SpaModeAccessory;
   private chlorinatorFan?: FanAccessory;
   private pumpFan?: FanAccessory;
+  private heaterActiveFan?: FanAccessory;
   private bridgeHealth?: BridgeHealthAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
 
@@ -60,6 +61,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableSpaModeSwitch: config['enableSpaModeSwitch'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
+      enableHeaterActiveFan: config['enableHeaterActiveFan'] ?? true,
     };
 
     this.sidecar = new SidecarClient(this.cfg.sidecarHost, this.cfg.sidecarPort);
@@ -160,7 +162,14 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.pumpFan = new FanAccessory(this, acc, 'pump');
     }
 
-    // Contact sensor: open when AC box command path is wedged
+    // Fan: heater actively calling for heat (spins when HEATER_1 LED is on)
+    if (this.cfg.enableHeaterActiveFan) {
+      const acc = register('Heater Active',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-fan-heater-active`));
+      this.heaterActiveFan = new FanAccessory(this, acc, 'heater');
+    }
+
+    // Switch: open when AC box command path is wedged
     {
       const acc = register('Bridge Needs Rebooting',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-bridge-health`));
@@ -212,7 +221,18 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.spaModeSwitch?.updateMode(status.valve_mode);
 
         for (const [circuit, sw] of this.switches) {
-          sw.updateState(status.circuits[circuit] ?? false);
+          if (circuit === 'HEATER_1') {
+            // Show enabled (Auto mode) not active-heating so the switch
+            // stays on whenever the heater is armed, regardless of whether
+            // it is currently calling for heat. Falls back to the LED bit
+            // until the scroll has confirmed the enabled state.
+            const heaterEnabled = status.valve_mode === 'spa'
+              ? (status.spa_heater_enabled ?? status.circuits['HEATER_1'] ?? false)
+              : (status.pool_heater_enabled ?? status.circuits['HEATER_1'] ?? false);
+            sw.updateState(heaterEnabled);
+          } else {
+            sw.updateState(status.circuits[circuit] ?? false);
+          }
         }
 
         const ts: ThermostatState = {
@@ -234,6 +254,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
         this.pumpFan?.updateSpeed(status.vsp_slot4_pct);
+        // 100% when actively calling for heat, 0% when enabled but idle or off
+        this.heaterActiveFan?.updateSpeed(status.circuits['HEATER_1'] ? 100 : 0);
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);

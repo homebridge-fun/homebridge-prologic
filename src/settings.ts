@@ -53,6 +53,7 @@ export interface PlatformConfig {
   enableSpaModeSwitch: boolean;
   enableChlorinatorFan: boolean;
   enablePumpSpeedFan: boolean;
+  enableHeaterActiveFan: boolean;
 }
 
 export function celsiusToFahrenheit(c: number): number {
