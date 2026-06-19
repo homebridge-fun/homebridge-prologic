@@ -499,8 +499,10 @@ _nav_lock = _PriorityLock()
 # AquaConnect HTTP backend (§2 key codes; protocol verified against the
 # SteveTheGeekHA/AquaConnectDeviceHandler reference implementation)
 #
-# Sends keypad presses via POST /WNewSt.htm  body "KeyId=NN" and polls the same
-# endpoint (KeyId=00 = no-op read) to read the current LCD + equipment state.
+# Sends keypad presses via POST /WNewSt.htm  body "KeyId=NN&".
+# Status reads use body "Update Local Server&" — the native UI's refresh body
+# (WebsFuncs.js:ReqWebsData). Unlike "KeyId=00&", this never touches
+# WebsProcessKey() so it carries no keypad-event side-effect.
 # Feeds the standard LcdCapture so the MenuNavigator sees no difference.
 #
 # Response format (WNewSt.htm):
@@ -627,7 +629,7 @@ class AquaConnectBackend:
 
     # ── HTTP ────────────────────────────────────────────────────────────────
     def _post(self, key_code: str) -> Optional[str]:
-        """Send 'KeyId=NN&' ('00' = no-op read) and return the response body.
+        """Send 'KeyId=NN&' and return the response body.
 
         Two hard-won, live-verified constraints:
 
@@ -640,10 +642,31 @@ class AquaConnectBackend:
           (WebsFuncs.js:690). The firmware scans "KeyId=" up to the trailing
           '&'; without it the key is dropped.
         - Timing: the panel ignores any key within ~0.5-1s of the previous
-          event, and a KeyId=00 read counts as an event. We enforce
-          _AC_MIN_GAP_S before EVERY request here. Callers hold _http_lock, so
-          _last_req is single-threaded and needs no extra guard.
+          keypress event. We enforce _AC_MIN_GAP_S before EVERY request here.
+          Callers hold _http_lock, so _last_req is single-threaded.
+
+        NOTE: use _read() for status reads. _post('00') goes through the
+        firmware's WebsProcessKey() handler and counts as a keypad event.
         """
+        return self._request(f'KeyId={key_code}&')
+
+    def _read(self) -> Optional[str]:
+        """Fetch the current screen state WITHOUT injecting a keypad event.
+
+        The native web UI uses 'Update Local Server&' (not 'KeyId=00&') for
+        its 300ms screen-refresh loop (WebsFuncs.js:ReqWebsData). The firmware
+        routes these two body strings to different handlers: 'Update Local
+        Server&' never touches WebsProcessKey(), so it is a pure read with no
+        side-effects on the keypad event queue. Using 'KeyId=00&' for reads
+        injects ~29,000 phantom keypad events/day and wedges the box.
+
+        Use this everywhere we only want the current state (poll, confirm burst).
+        Use _post(code) only when we actually intend a keypress.
+        """
+        return self._request('Update Local Server&')
+
+    def _request(self, body: str) -> Optional[str]:
+        """Send a POST /WNewSt.htm with the given body and return the response."""
         now = time.time()
         elapsed = now - self._last_req
         wait = _AC_MIN_GAP_S - elapsed
@@ -806,7 +829,7 @@ class AquaConnectBackend:
             # once instead of waiting for the passive scroll to come back around.
             for _ in range(_AC_CONFIRM_READS):
                 time.sleep(_AC_CONFIRM_GAP_S)
-                self._apply(self._post('00'))
+                self._apply(self._read())
 
     def _led_line(self, body: Optional[str]) -> Optional[str]:
         """Extract the raw field-3 LED/equipment-state line from a body."""
@@ -855,13 +878,11 @@ class AquaConnectBackend:
     # ── Background state poll ─────────────────────────────────────────────────
     def _poll_loop(self) -> None:
         while not self._poll_stop.is_set():
-            # Never poll during a navigation op, nor when one is queued: a
-            # KeyId=00 read mid-sequence counts as a key event and would swallow
-            # the next press (it also competes for the GoAhead server's single
-            # connection slot). busy() covers both held and waiting-to-acquire.
+            # Skip during navigation ops (or when one is queued) so we don't
+            # compete for the single GoAhead connection slot mid-sequence.
             if not _nav_lock.busy():
                 with self._http_lock:
-                    self._apply(self._post('00'))
+                    self._apply(self._read())  # pure status read, no keypad event
             self._poll_stop.wait(self._poll_s)
 
     def stop(self) -> None:
@@ -2146,7 +2167,7 @@ _WEDGE_SCENARIOS = {
     'control':   'Sanity: 1 canary press, generous 2.0s gaps. Should NEVER wedge.',
     'volume':    'Volume on one function: N canary presses at normal cadence.',
     'tight_gap': 'Timing edge: N canary presses at a shortened gap (default 0.4s).',
-    'read_flood':'Reads alone: N KeyId=00 reads at a shortened gap.',
+    'read_flood':'Reads alone: N "Update Local Server&" reads at a shortened gap (should never wedge).',
     'race':      'Concurrency: canary presses + reads from 2 threads, no _http_lock (overlapping sockets).',
     'cross_fn':  'DISRUPTIVE: cycle different equipment keys in even pairs (nets to no change).',
     'menu_churn':'Deep nav: enable→disable a heater N times (multi-key Settings nav).',
@@ -2209,7 +2230,7 @@ def _run_wedge_scenario(name: str, count: int, gap: float,
             _AC_MIN_GAP_S = gap
             try:
                 for _ in range(count):
-                    _wt_raw_post('00')
+                    _ac_backend._request('Update Local Server&')
                     steps += 1
             finally:
                 _AC_MIN_GAP_S = saved
