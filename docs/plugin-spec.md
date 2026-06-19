@@ -552,6 +552,12 @@ Two `FanAccessory` instances (`FanRole = 'chlorinator' | 'pump'`):
 - `Active` = 1 always (tile is always shown)
 - Setting speed: chlorinator → `POST /chlorinator/pool`, pump → `POST /vsp/slot4`
 
+The **Pump Speed** tile currently shows slot 4's configured speed %. It should instead show
+the **currently running filter speed** (the speed the pump is actually operating at now),
+which appears in the AquaConnect scroll as "Filter Speed  NN%". This value is already parsed
+into `PoolState` from the scroll and available in `/status`. The fan tile should read this
+field rather than `vsp_slot4_pct`. See §10 backlog.
+
 ### 7.7 BridgeHealthAccessory
 
 A Switch tile that surfaces the AquaConnect command-path wedge state:
@@ -647,12 +653,42 @@ homebridge-prologic/
 
 | Item | Status | Notes |
 |---|---|---|
-| FILTER circuit as Fanv2 | Not implemented | Could expose pump on/off + rotation speed read-only |
+| Pump tile shows live speed | Not yet | `RotationSpeed` should read `filter_speed_pct` (current running %) from scroll, not `vsp_slot4_pct` (configured slot 4 %) |
+| VSP slot tiles | Not implemented | See §10.1 below |
+| FILTER circuit as Fanv2 | Not implemented | Could expose pump on/off + rotation speed read-only alongside slot tiles |
 | RS-485 backend parity | Partial | Navigation exists but AquaConnect is primary; RS-485 not verified end-to-end in current codebase |
 | LIGHTS / AUX_1 write verify | Not tested | Never tested on healthy bridge; keycode table should be correct |
-| VSP slots 1–3 speed write | Not implemented | Only slot 4 currently controllable |
 | Chlorinator % HomeKit write | Not wired | Endpoint exists; no HomeKit affordance yet |
 | Super Chlorinate | Not wired | Endpoint exists; no HomeKit switch wired |
 | Spillover mode | Not tested | POOL/SPA/SPILLOVER cycle not present on this installation |
 | Valve mode detection lag | ~10–30s on AquaConnect | Depends on scroll position when mode changes |
 | System fault indicator | Not implemented | "Check System" LCD frames not surfaced to HomeKit |
+
+### 10.1 VSP Filter Speed Slots
+
+The variable-speed pump supports up to 4 named speed slots (Speed1–Speed4), each with an
+independently configurable % target stored in the panel's Settings menu. Currently only
+slot 4 is read/writable via the sidecar (`/vsp/slot4`).
+
+**Desired behavior:**
+
+- **Pump Speed tile** (existing): show `filter_speed_pct` — the speed the pump is actually
+  running at right now, as read from the AquaConnect scroll frame. Not shown on the Home
+  tab; visible when tapping into the accessory detail. Setting the slider activates slot 4
+  (the "override" slot) at that speed.
+
+- **Speed slot tiles** (new, 4×): one Fan tile per slot (Speed1–Speed4), each showing that
+  slot's configured % and allowing it to be adjusted via menu navigation. Not shown on the
+  Home tab (`addCategory: BRIDGE` or similar). Tapping a slot tile "activates" that slot
+  (runs `/vsp/slot4/activate` equivalent for that slot number).
+
+**Sidecar work required:**
+- Read all 4 slot speeds from VSP Speed Settings menu (currently only slot 4 is read)
+- Expose `/vsp/slot{1-4}` endpoints for read/write/activate
+- Parse `filter_speed_pct` from AquaConnect scroll and add to `PoolStatus`
+
+**HomeKit work required:**
+- Add `filter_speed_pct` to `PoolStatus` TypeScript interface in `settings.ts`
+- Update Pump Speed Fan tile to read `filter_speed_pct` instead of `vsp_slot4_pct`
+- Add 4× `VspSlotAccessory` tiles (Fan service, read-only speed + activate button)
+- Config option `enableVspSlotTiles: bool` (default false until implemented)
