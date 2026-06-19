@@ -2007,6 +2007,7 @@ def _ac_canary_probe() -> dict:
     changes. Records success/failure (debounced flag) and returns the probe
     detail dict {'alive', 'before', 'after', 'attempts'}.
     """
+    global _wedge_fail_streak
     if _ac_backend is None:
         return {'alive': True, 'skipped': 'no aquaconnect backend'}
     try:
@@ -2017,9 +2018,20 @@ def _ac_canary_probe() -> dict:
                       result.get('before'), result.get('after'))
             _record_command_success()
         else:
+            # An active canary probe is deterministic: N presses with zero
+            # equipment-state change is conclusive, so flag immediately rather
+            # than waiting for the debounce threshold (that guards the flaky
+            # passive signal, not this).
             log.warning('Canary probe: equipment-state field did not change '
-                        '(field=%s) — command path appears wedged', result.get('before'))
-            _record_command_failure()
+                        '(field=%s) — command path wedged', result.get('before'))
+            with _wedge_lock:
+                _wedge_fail_streak = max(_wedge_fail_streak + 1, _WEDGE_FAIL_THRESHOLD)
+                already = state.bridge_wedged
+            if not already:
+                with state_lock:
+                    state.bridge_wedged = True
+                log.warning('Bridge command path wedged (active canary probe). '
+                            'Power-cycle the AquaConnect box to recover.')
         return result
     except Exception as e:
         log.error('Canary probe error: %s', e)
