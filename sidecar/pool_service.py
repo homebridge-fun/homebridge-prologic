@@ -368,15 +368,14 @@ _AC_KEY_CODES = {
 }
 
 # Minimum gap (seconds) between ANY two requests to the box — reads included.
-# Verified live: the panel ignores a key sent within ~0.5-1s of the previous
-# event, and a KeyId=00 *read* counts as an event. Reads issued immediately
-# before a press silently swallow the press. 1.8s sits safely past the window.
-_AC_MIN_GAP_S = 1.8
+# Characterization (2026-06-19): bare press threshold ~0.5s; read-then-press
+# threshold ~0.9s (reads count as events). 0.9s sits reliably above the edge.
+_AC_MIN_GAP_S = 0.9
 
 # How long to wait after a key before reading back the settled screen. The box
 # mirrors the panel over the slow RS-485 bus, so the immediate response can
-# still show the pre-keypress screen. Also keeps the read past _AC_MIN_GAP_S.
-_AC_SETTLE_S = 2.0
+# still show the pre-keypress screen. 1.0s is well above the ~230ms read RTT.
+_AC_SETTLE_S = 1.0
 
 # LED nibble decode (each equipment LED is one 4-bit nibble in the state line).
 #   3 = absent / no key on this panel
@@ -442,7 +441,7 @@ class AquaConnectBackend:
     overlaps a key-send (two concurrent POSTs confuse the box).
     """
 
-    def __init__(self, host: str = '192.168.50.100', poll_s: float = 8.0):
+    def __init__(self, host: str = '192.168.50.100', poll_s: float = 3.0):
         self._host = host
         self.lcd = LcdCapture()
         self._http_lock = threading.Lock()   # serializes press+settle+read units
