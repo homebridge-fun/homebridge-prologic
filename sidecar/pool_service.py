@@ -582,6 +582,7 @@ class AquaConnectBackend:
         lcd, led = self._parse(body)
         if lcd:
             self.lcd.text_updated(lcd)
+            _apply_ac_scroll_to_state(lcd)
         if led:
             self._last_led = led
             _apply_ac_led_to_state(led)
@@ -617,6 +618,31 @@ class AquaConnectBackend:
 
     def stop(self) -> None:
         self._poll_stop.set()
+
+
+# Idle-scroll screens carry the numeric readings the LED line can't: the panel
+# cycles through these one at a time (~every few seconds), so the background
+# poll captures them over successive reads. Each pattern pulls one PoolState
+# field. Temps may carry a degree entity ('77°F') and trailing NBSP; \d+ skips
+# both. These are anchored on the label so heater/menu screens never match.
+_AC_SCROLL_PATTERNS = (
+    ('pool_temp',           re.compile(r'Pool Temp\s+(-?\d+)', re.I)),
+    ('air_temp',            re.compile(r'Air Temp\s+(-?\d+)', re.I)),
+    ('spa_temp',            re.compile(r'Spa Temp\s+(-?\d+)', re.I)),
+    ('salt_level',          re.compile(r'Salt Level\s+(\d+)', re.I)),
+    ('chlorinator_percent', re.compile(r'Pool Chlorinator\s+(\d+)\s*%', re.I)),
+    ('pump_speed',          re.compile(r'Filter Speed\s+(\d+)\s*%', re.I)),
+)
+
+
+def _apply_ac_scroll_to_state(lcd: str) -> None:
+    """Pull numeric readings out of an idle-scroll LCD screen into PoolState."""
+    with state_lock:
+        for field, pat in _AC_SCROLL_PATTERNS:
+            m = pat.search(lcd)
+            if m:
+                setattr(state, field, int(m.group(1)))
+                state.last_update = time.time()
 
 
 def _apply_ac_led_to_state(led: dict) -> None:
