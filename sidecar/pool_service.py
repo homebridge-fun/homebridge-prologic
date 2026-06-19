@@ -1697,6 +1697,54 @@ def set_mode() -> Response:
         return jsonify({'error': str(e)}), 500
 
 
+# Equipment circuits that toggle with a single AquaConnect keypad key. Maps the
+# circuit name to its _AC_KEY_CODES entry. POOL/SPA/SPILLOVER are valve-mode
+# controls (handled via /mode) and HEATER_1 routes through the navigator below,
+# so neither appears here.
+_AC_CIRCUIT_KEYS = {
+    'FILTER': 'FILTER', 'LIGHTS': 'LIGHTS', 'AUX_1': 'AUX1', 'AUX_2': 'AUX2',
+}
+
+
+def _ac_set_circuit(key: str, on: bool) -> Response:
+    """Drive a circuit on/off through the AquaConnect backend.
+
+    HEATER_1 is the shared heater: it follows the active valve mode (pool heater
+    in pool mode, spa heater in spa mode) and goes through the navigator's
+    Settings-menu enable toggle — the keypad HEATER_1 key is unreliable from the
+    idle screen. The simple equipment circuits send their keypad key once (only
+    if not already in the desired state) and confirm via the re-read LED state.
+    """
+    if key == 'HEATER_1':
+        nav = _get_navigator()
+        if nav is None:
+            return jsonify({'error': 'Not connected'}), 503
+        with state_lock:
+            which = 'spa' if state.valve_mode == 'spa' else 'pool'
+        result = nav.set_heater_enabled(which, on)
+        log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
+        return jsonify({'ok': True, 'which': which, **result})
+
+    keypad = _AC_CIRCUIT_KEYS.get(key)
+    if keypad is None:
+        return jsonify({'error': f'{key} cannot be toggled in AquaConnect mode'}), 422
+
+    # Idempotent: only press if not already where we want it (the key is a
+    # toggle, so a redundant press would flip us away from the target).
+    with _nav_lock:
+        with state_lock:
+            cur = state.circuits.get(key)
+        if cur == on:
+            return jsonify({'ok': True, 'already': True})
+        _ac_backend.send_nav_key(keypad)   # press + settle + re-read (updates state)
+        with state_lock:
+            new = state.circuits.get(key)
+    if new == on:
+        log.info('Circuit %s -> %s (AquaConnect)', key, 'ON' if on else 'OFF')
+        return jsonify({'ok': True})
+    return jsonify({'error': f'{key} toggle not confirmed (now={new})'}), 502
+
+
 @app.route('/circuit/<name>', methods=['POST'])
 def set_circuit(name: str) -> Response:
     body = request.get_json(force=True)
@@ -1704,6 +1752,14 @@ def set_circuit(name: str) -> Response:
     key = name.upper()
     if key not in CIRCUIT_NAMES:
         return jsonify({'error': f'Unknown circuit: {name}'}), 400
+    if _ac_backend is not None:
+        try:
+            return _ac_set_circuit(key, on)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        except Exception as e:
+            log.error(f'ac set_circuit {key}: {e}')
+            return jsonify({'error': str(e)}), 500
     p = _get_panel()
     if p is None:
         return jsonify({'error': 'Not connected'}), 503
