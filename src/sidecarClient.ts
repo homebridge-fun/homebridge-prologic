@@ -37,6 +37,20 @@ export class SidecarClient {
     await this.http.post('/mode', { mode });
   }
 
+  // ── Bridge health ─────────────────────────────────────────────────────────
+
+  /**
+   * Run a live active command-path probe on the AquaConnect box and return
+   * whether it is wedged. This physically presses the canary output and checks
+   * the equipment-state field actually moves, so it can take several seconds
+   * (longer when wedged, since it retries). Updates the sidecar's cached flag
+   * as a side effect.
+   */
+  async testBridge(): Promise<boolean> {
+    const res = await this.http.get('/bridge/health', { params: { probe: 1 } });
+    return Boolean((res.data as { bridge_wedged?: boolean })?.bridge_wedged);
+  }
+
   // ── Backend selection ─────────────────────────────────────────────────────
 
   async getBackend(): Promise<{ active: string | null; config: Record<string, unknown> }> {
