@@ -415,7 +415,54 @@ class LcdCapture:
 lcd = LcdCapture()
 
 # One menu operation at a time — keypad navigation is not re-entrant.
-_nav_lock = threading.Lock()
+class _PriorityLock:
+    """A mutex that tracks how many threads are blocked waiting on it.
+
+    Real actions (circuit/heater/setpoint writes) acquire it normally. Low-
+    priority background work — the canary probe and the KeyId=00 read poll —
+    checks `waiters`/`locked()` first and defers when a real action is queued,
+    so background traffic never stomps on user commands. Supports the same
+    `with`/`.locked()` surface as threading.Lock so existing call sites are
+    unchanged.
+    """
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._waiters = 0
+        self._wlock = threading.Lock()
+
+    def acquire(self) -> bool:
+        with self._wlock:
+            self._waiters += 1
+        try:
+            return self._lock.acquire()
+        finally:
+            with self._wlock:
+                self._waiters -= 1
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    @property
+    def waiters(self) -> int:
+        with self._wlock:
+            return self._waiters
+
+    def busy(self) -> bool:
+        """True if held or if any thread is waiting to acquire it."""
+        return self._lock.locked() or self.waiters > 0
+
+    def __enter__(self) -> '_PriorityLock':
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+_nav_lock = _PriorityLock()
 
 
 # ---------------------------------------------------------------------------
@@ -753,10 +800,11 @@ class AquaConnectBackend:
     # ── Background state poll ─────────────────────────────────────────────────
     def _poll_loop(self) -> None:
         while not self._poll_stop.is_set():
-            # Never poll during a navigation op: a KeyId=00 read mid-sequence
-            # counts as a key event and would swallow the next press (it also
-            # competes for the GoAhead server's single connection slot).
-            if not _nav_lock.locked():
+            # Never poll during a navigation op, nor when one is queued: a
+            # KeyId=00 read mid-sequence counts as a key event and would swallow
+            # the next press (it also competes for the GoAhead server's single
+            # connection slot). busy() covers both held and waiting-to-acquire.
+            if not _nav_lock.busy():
                 with self._http_lock:
                     self._apply(self._post('00'))
             self._poll_stop.wait(self._poll_s)
@@ -2057,7 +2105,9 @@ def _canary_probe_loop() -> None:
     time.sleep(60 + random.uniform(0, 30))
     while True:
         try:
-            if _ac_backend is not None and not _nav_lock.locked():
+            # Defer to any real action that is running OR queued so the probe's
+            # canary presses never stomp on a user command (busy() covers both).
+            if _ac_backend is not None and not _nav_lock.busy():
                 _ac_canary_probe()
         except Exception as e:
             log.error('Canary probe loop error: %s', e)
