@@ -641,6 +641,61 @@ def _apply_ac_led_to_state(led: dict) -> None:
 _ac_backend: Optional['AquaConnectBackend'] = None
 
 
+# How long the controller-write debouncer waits for quiet before applying a
+# value. HomeKit emits a burst of setpoint writes as the slider is dragged;
+# each one is a ~15s menu navigation, so we coalesce the burst and apply only
+# the final value once the user stops moving the slider.
+_WRITE_DEBOUNCE_S = 5.0
+
+
+class WriteDebouncer:
+    """Coalesce rapid writes per key; apply only the latest after a quiet window.
+
+    Each submit(key, target) replaces any pending value for that key and resets
+    its quiet timer, so the LAST value submitted always wins. A single worker
+    thread applies values once they have been quiet for `quiet_s`, calling
+    apply_fn(key, target). Exceptions in apply_fn are logged, never raised.
+    """
+
+    def __init__(self, apply_fn, quiet_s: float = _WRITE_DEBOUNCE_S):
+        self._apply = apply_fn
+        self._quiet = quiet_s
+        self._cv = threading.Condition()
+        self._pending: dict = {}   # key -> (target, deadline)
+        threading.Thread(target=self._run, daemon=True,
+                         name='write-debounce').start()
+
+    def submit(self, key, target) -> None:
+        with self._cv:
+            self._pending[key] = (target, time.time() + self._quiet)
+            self._cv.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._cv:
+                while not self._pending:
+                    self._cv.wait()
+                now = time.time()
+                ready = {k: v[0] for k, v in self._pending.items()
+                         if v[1] <= now}
+                if not ready:
+                    nxt = min(v[1] for v in self._pending.values())
+                    self._cv.wait(timeout=max(0.01, nxt - now))
+                    continue
+                for k in ready:
+                    del self._pending[k]
+            # Apply outside the lock so a long navigation doesn't block new
+            # submits (which keep coalescing into the next quiet window).
+            for key, target in ready.items():
+                try:
+                    self._apply(key, target)
+                except Exception as e:
+                    log.error('debounced write %s=%s failed: %s', key, target, e)
+
+
+_setpoint_debouncer: Optional[WriteDebouncer] = None
+
+
 class UnsupportedCircuit(Exception):
     """Raised when a circuit has no corresponding keypad key to toggle it."""
 
@@ -2152,29 +2207,49 @@ def set_heater_enable(which: str) -> Response:
         return jsonify({'error': str(e)}), 500
 
 
+def _apply_setpoint(which: str, temp_f: int) -> None:
+    """Debounced setpoint application — runs on the WriteDebouncer worker."""
+    nav = _get_navigator()
+    if nav is None:
+        log.warning('setpoint %s=%s dropped: not connected', which, temp_f)
+        return
+    result = nav.set_heater(which, int(temp_f))
+    log.info('Heater %s setpoint -> %s°F (was_off=%s)',
+             which, temp_f, result['was_off'])
+
+
 @app.route('/heater/<which>/setpoint', methods=['POST'])
 def set_heater_setpoint(which: str) -> Response:
     """
     Set a heater temperature setpoint via menu navigation.
     Body: {"temp_f": 88}
     Handles the forced-off enable/restore cycle automatically (§13.3).
+
+    Debounced: HomeKit emits a burst of writes while the slider is dragged and
+    each one is a ~15s navigation. We update the optimistic state immediately,
+    coalesce the burst, and apply only the final value after _WRITE_DEBOUNCE_S
+    of quiet. Returns 202 (accepted) — the physical write happens shortly after.
     """
     body = request.get_json(force=True)
     temp_f = body.get('temp_f')
     if temp_f is None:
         return jsonify({'error': 'temp_f is required'}), 400
+    if which not in ('pool', 'spa'):
+        return jsonify({'error': 'which must be "pool" or "spa"'}), 400
     nav = _get_navigator()
     if nav is None:
         return jsonify({'error': 'Not connected'}), 503
-    try:
-        result = nav.set_heater(which, int(temp_f))
-        log.info(f'Heater {which} setpoint -> {temp_f}°F (was_off={result["was_off"]})')
-        return jsonify(result)
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 400
-    except Exception as e:
-        log.error(f'set_heater {which}: {e}')
-        return jsonify({'error': str(e)}), 500
+    temp_f = int(_clamp(int(temp_f), 65, 104))
+    # Optimistic state so /status (and HomeKit's read-back) reflect the target
+    # immediately, before the slow navigation runs.
+    with state_lock:
+        if which == 'pool':
+            state.pool_setpoint_f = temp_f
+        else:
+            state.spa_setpoint_f = temp_f
+    _setpoint_debouncer.submit(which, temp_f)
+    return jsonify({'ok': True, 'queued': True, 'which': which,
+                    'target_f': temp_f}), 202
 
 
 # Legacy alias kept for backwards compat — routes to pool heater
@@ -2365,7 +2440,11 @@ def main() -> None:
     KEY_PREDELAY_MS = args.key_predelay_ms
     KEY_GAP_MS = args.key_gap_ms
 
-    global _ac_backend
+    global _ac_backend, _setpoint_debouncer
+    # Coalesce bursts of HomeKit setpoint writes; apply only the final value.
+    _setpoint_debouncer = WriteDebouncer(
+        lambda which, temp_f: _apply_setpoint(which, temp_f))
+
     if args.backend == 'aquaconnect':
         _ac_backend = AquaConnectBackend(host=args.aquaconnect_host)
         log.info('AquaConnect backend: http://%s/WNewSt.htm', args.aquaconnect_host)
