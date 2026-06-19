@@ -61,7 +61,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableSpaModeSwitch: config['enableSpaModeSwitch'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
-      enableHeaterActiveFan: config['enableHeaterActiveFan'] ?? true,
+      enableHeaterActiveFan: config['enableHeaterActiveFan'] ?? false,
     };
 
     this.sidecar = new SidecarClient(this.cfg.sidecarHost, this.cfg.sidecarPort);
