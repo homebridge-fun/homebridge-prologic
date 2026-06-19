@@ -138,6 +138,16 @@ def _record_command_failure() -> None:
             'Power-cycle the AquaConnect box to recover.',
             streak)
 
+def _immediate_wedge_probe() -> None:
+    """Spawn a background daemon thread to probe wedge state right now.
+
+    Called after any HomeKit-driven write fails so the bridge_wedged flag
+    updates within seconds rather than waiting for the 300s/30s probe loop.
+    """
+    threading.Thread(target=_ac_canary_probe, daemon=True,
+                     name='wedge-probe-on-failure').start()
+
+
 # ---------------------------------------------------------------------------
 # Backend selection persistence (§selectable-backend)
 #
@@ -2167,6 +2177,7 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
     idle screen. The simple equipment circuits send their keypad key once (only
     if not already in the desired state) and confirm via the re-read LED state.
     """
+    log.info('HomeKit action: circuit %s -> %s', key, 'ON' if on else 'OFF')
     with state_lock:
         wedged = state.bridge_wedged
     if wedged:
@@ -2181,7 +2192,13 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
             return jsonify({'error': 'Not connected'}), 503
         with state_lock:
             which = 'spa' if state.valve_mode == 'spa' else 'pool'
-        result = nav.set_heater_enabled(which, on)
+        try:
+            result = nav.set_heater_enabled(which, on)
+        except Exception as e:
+            log.error('HomeKit action HEATER_1 failed: %s — probing bridge', e)
+            _record_command_failure()
+            _immediate_wedge_probe()
+            return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
         _record_command_success()
         log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
         return jsonify({'ok': True, 'which': which, **result})
@@ -2204,7 +2221,10 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
         _record_command_success()
         log.info('Circuit %s -> %s (AquaConnect)', key, 'ON' if on else 'OFF')
         return jsonify({'ok': True})
+    log.warning('HomeKit action: circuit %s -> %s NOT CONFIRMED (now=%s) — probing bridge',
+                key, 'ON' if on else 'OFF', new)
     _record_command_failure()
+    _immediate_wedge_probe()
     return jsonify({
         'error': f'{key} toggle not confirmed (now={new})',
         'bridge_wedged': state.bridge_wedged,
@@ -2620,11 +2640,18 @@ def set_heater_enable(which: str) -> Response:
 
 def _apply_setpoint(which: str, temp_f: int) -> None:
     """Debounced setpoint application — runs on the WriteDebouncer worker."""
+    log.info('HomeKit action: heater %s setpoint -> %s°F', which, temp_f)
     nav = _get_navigator()
     if nav is None:
         log.warning('setpoint %s=%s dropped: not connected', which, temp_f)
         return
-    result = nav.set_heater(which, int(temp_f))
+    try:
+        result = nav.set_heater(which, int(temp_f))
+    except Exception as e:
+        log.error('HomeKit action heater %s setpoint failed: %s — probing bridge', which, e)
+        _record_command_failure()
+        _immediate_wedge_probe()
+        return
     log.info('Heater %s setpoint -> %s°F (was_off=%s)',
              which, temp_f, result['was_off'])
 
