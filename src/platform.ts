@@ -31,7 +31,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private spaModeSwitch?: SpaModeAccessory;
   private chlorinatorFan?: FanAccessory;
   private pumpFan?: FanAccessory;
-  private heaterActiveFan?: FanAccessory;
   private bridgeHealth?: BridgeHealthAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
 
@@ -61,7 +60,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableSpaModeSwitch: config['enableSpaModeSwitch'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
-      enableHeaterActiveFan: config['enableHeaterActiveFan'] ?? false,
     };
 
     this.sidecar = new SidecarClient(this.cfg.sidecarHost, this.cfg.sidecarPort);
@@ -162,13 +160,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.pumpFan = new FanAccessory(this, acc, 'pump');
     }
 
-    // Fan: heater actively calling for heat (spins when HEATER_1 LED is on)
-    if (this.cfg.enableHeaterActiveFan) {
-      const acc = register('Heater Active',
-        this.api.hap.uuid.generate(`${PLUGIN_NAME}-fan-heater-active`));
-      this.heaterActiveFan = new FanAccessory(this, acc, 'heater');
-    }
-
     // Switch: open when AC box command path is wedged
     {
       const acc = register('Bridge Needs Rebooting',
@@ -254,12 +245,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
         this.pumpFan?.updateSpeed(status.vsp_slot4_pct);
-        if (this.heaterActiveFan) {
-          const heaterEnabled = status.valve_mode === 'spa'
-            ? (status.spa_heater_enabled ?? false)
-            : (status.pool_heater_enabled ?? false);
-          this.heaterActiveFan.updateHeater(heaterEnabled, status.circuits['HEATER_1'] ?? false);
-        }
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);
