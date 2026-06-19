@@ -155,9 +155,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.pumpFan = new FanAccessory(this, acc, 'pump');
     }
 
-    // Contact sensor: "Pool Bridge Reboot Needed" — open when AC box is wedged
+    // Contact sensor: open when AC box command path is wedged
     {
-      const acc = register('Pool Bridge Reboot Needed',
+      const acc = register('Bridge Needs Rebooting',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-bridge-health`));
       this.bridgeHealth = new BridgeHealthAccessory(this, acc);
     }
