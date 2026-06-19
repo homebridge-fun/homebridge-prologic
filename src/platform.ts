@@ -47,6 +47,10 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       sidecarHost: config['sidecarHost'] ?? '127.0.0.1',
       sidecarPort: config['sidecarPort'] ?? 5757,
       pollInterval: config['pollInterval'] ?? 5000,
+      backend: config['backend'] ?? 'aquaconnect',
+      aquaconnectHost: config['aquaconnectHost'] ?? '192.168.50.100',
+      rs485Host: config['rs485Host'] ?? '192.168.68.101',
+      rs485Port: config['rs485Port'] ?? 8899,
       circuits: config['circuits'] ?? ['FILTER', 'LIGHTS', 'HEATER_1'],
       activeBodies: config['activeBodies'] ?? ['pool', 'spa'],
       enableActiveHeaterThermostat: config['enableActiveHeaterThermostat'] ?? true,
@@ -61,6 +65,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     this.sidecar = new SidecarClient(this.cfg.sidecarHost, this.cfg.sidecarPort);
 
     this.api.on('didFinishLaunching', () => {
+      this.reconcileBackend();
       this.discoverAccessories();
       this.startPolling();
     });
@@ -168,6 +173,32 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     }
     if (toRegister.length > 0) {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, toRegister);
+    }
+  }
+
+  /**
+   * Ensure the sidecar is running the backend selected in the plugin config.
+   * If it differs, push the choice — the sidecar persists it and restarts
+   * itself to apply. Best-effort: failures are logged, not fatal.
+   */
+  private async reconcileBackend(): Promise<void> {
+    try {
+      const cur = await this.sidecar.getBackend();
+      if (cur.active === this.cfg.backend) {
+        this.log.debug(`Sidecar backend already '${this.cfg.backend}'.`);
+        return;
+      }
+      this.log.info(
+        `Sidecar backend is '${cur.active}', config wants '${this.cfg.backend}' — switching (sidecar will restart).`);
+      await this.sidecar.setBackend({
+        backend: this.cfg.backend,
+        aquaconnect_host: this.cfg.aquaconnectHost,
+        rs485_host: this.cfg.rs485Host,
+        rs485_port: this.cfg.rs485Port,
+      });
+    } catch (err) {
+      this.log.warn('Backend reconcile failed (sidecar may be unreachable):',
+        (err as Error).message);
     }
   }
 

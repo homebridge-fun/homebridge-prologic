@@ -30,7 +30,9 @@ SIMULATION MODE
 """
 
 import argparse
+import json
 import logging
+import os
 import random
 import re
 import socket
@@ -132,6 +134,38 @@ def _record_command_failure() -> None:
             'Bridge command path appears wedged (%d consecutive unconfirmed writes). '
             'Power-cycle the AquaConnect box to recover.',
             streak)
+
+# ---------------------------------------------------------------------------
+# Backend selection persistence (§selectable-backend)
+#
+# The active navigation backend (aquaconnect | rs485) is chosen at startup from
+# this config file if present, else from CLI args. POST /backend rewrites the
+# file and exits the process so systemd restarts into the new backend. This
+# lets the Homebridge plugin switch backends without sudo or relaunching the
+# service directly. The file lives next to the script (homebridge-owned).
+_BACKEND_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'backend.json')
+# Which backend is live in this process (set in main()).
+_active_backend: Optional[str] = None
+
+
+def _load_backend_config() -> dict:
+    """Read the persisted backend selection, or {} if none/unreadable."""
+    try:
+        with open(_BACKEND_CONFIG_PATH) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log.warning('Could not read backend config %s: %s', _BACKEND_CONFIG_PATH, e)
+        return {}
+
+
+def _save_backend_config(cfg: dict) -> None:
+    """Persist the backend selection for the next startup."""
+    with open(_BACKEND_CONFIG_PATH, 'w') as f:
+        json.dump(cfg, f, indent=2)
+
 
 panel = None
 panel_lock = threading.Lock()
@@ -1814,6 +1848,7 @@ def get_status() -> Response:
             'connected':           state.connected,
             'last_update':         state.last_update,
             'bridge_wedged':       state.bridge_wedged,
+            'backend':             _active_backend,
         })
 
 
@@ -1827,6 +1862,61 @@ def get_display() -> Response:
 def get_display_history() -> Response:
     entries = [{'ts': ts, 'text': t} for ts, t in lcd.snapshot()]
     return jsonify({'history': entries})
+
+
+@app.route('/backend')
+def get_backend() -> Response:
+    """Report the active navigation backend and its persisted config."""
+    cfg = _load_backend_config()
+    return jsonify({
+        'active': _active_backend,
+        'config': cfg,
+    })
+
+
+@app.route('/backend', methods=['POST'])
+def set_backend() -> Response:
+    """Switch the navigation backend.
+
+    Body: {"backend": "aquaconnect"|"rs485",
+           "aquaconnect_host"?: str, "rs485_host"?: str, "rs485_port"?: int}
+
+    Persists the choice and exits the process so systemd restarts into the new
+    backend. If the requested backend already matches the active one (and hosts
+    are unchanged), this is a no-op.
+    """
+    body = request.get_json(force=True)
+    backend = body.get('backend')
+    if backend not in ('aquaconnect', 'rs485'):
+        return jsonify({'error': "backend must be 'aquaconnect' or 'rs485'"}), 400
+
+    cfg = _load_backend_config()
+    cfg['backend'] = backend
+    for k in ('aquaconnect_host', 'rs485_host'):
+        if body.get(k):
+            cfg[k] = body[k]
+    if body.get('rs485_port'):
+        cfg['rs485_port'] = int(body['rs485_port'])
+
+    # No-op if nothing actually changes (avoid a needless restart loop).
+    if backend == _active_backend and cfg == _load_backend_config():
+        return jsonify({'ok': True, 'unchanged': True, 'active': _active_backend})
+
+    try:
+        _save_backend_config(cfg)
+    except Exception as e:
+        log.error('Could not persist backend config: %s', e)
+        return jsonify({'error': f'persist failed: {e}'}), 500
+
+    log.info('Backend switch requested -> %s; restarting to apply.', backend)
+
+    # Exit shortly after responding so systemd (Restart=always) relaunches us
+    # reading the new config. Daemon timer lets the HTTP response flush first.
+    def _restart() -> None:
+        time.sleep(0.5)
+        os._exit(0)
+    threading.Thread(target=_restart, daemon=True, name='backend-restart').start()
+    return jsonify({'ok': True, 'restarting': True, 'backend': backend})
 
 
 @app.route('/bridge/health')
@@ -2636,18 +2726,28 @@ def main() -> None:
                         help='AquaConnect box IP for --backend aquaconnect. Default 192.168.50.100.')
     args = parser.parse_args()
 
+    # Persisted backend selection (written by POST /backend) overrides CLI args,
+    # so the plugin can switch backends and the choice survives restarts. The
+    # CLI args act as the initial defaults when no config file exists yet.
+    cfg = _load_backend_config()
+    backend = cfg.get('backend', args.backend)
+    aquaconnect_host = cfg.get('aquaconnect_host', args.aquaconnect_host)
+    rs485_host = cfg.get('rs485_host', args.host)
+    rs485_port = cfg.get('rs485_port', args.port)
+
     KEY_BURST = args.key_burst
     KEY_PREDELAY_MS = args.key_predelay_ms
     KEY_GAP_MS = args.key_gap_ms
 
-    global _ac_backend, _setpoint_debouncer
+    global _ac_backend, _setpoint_debouncer, _active_backend
+    _active_backend = backend
     # Coalesce bursts of HomeKit setpoint writes; apply only the final value.
     _setpoint_debouncer = WriteDebouncer(
         lambda which, temp_f: _apply_setpoint(which, temp_f))
 
-    if args.backend == 'aquaconnect':
-        _ac_backend = AquaConnectBackend(host=args.aquaconnect_host)
-        log.info('AquaConnect backend: http://%s/WNewSt.htm', args.aquaconnect_host)
+    if backend == 'aquaconnect':
+        _ac_backend = AquaConnectBackend(host=aquaconnect_host)
+        log.info('AquaConnect backend: http://%s/WNewSt.htm', aquaconnect_host)
         threading.Thread(target=_canary_probe_loop, daemon=True,
                          name='ac-canary').start()
         # AquaConnect mode: no RS-485 panel thread needed
@@ -2657,9 +2757,9 @@ def main() -> None:
     if args.simulate:
         t = threading.Thread(target=simulate_thread, daemon=True, name='simulate')
     else:
-        if not args.host:
+        if not rs485_host:
             parser.error('--host is required unless --simulate is given or --backend aquaconnect')
-        t = threading.Thread(target=panel_thread, args=(args.host, args.port), daemon=True, name='aqualogic')
+        t = threading.Thread(target=panel_thread, args=(rs485_host, rs485_port), daemon=True, name='aqualogic')
     t.start()
 
     if args.heater_refresh > 0:
