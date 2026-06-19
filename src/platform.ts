@@ -254,8 +254,12 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
         this.pumpFan?.updateSpeed(status.vsp_slot4_pct);
-        // 100% when actively calling for heat, 0% when enabled but idle or off
-        this.heaterActiveFan?.updateSpeed(status.circuits['HEATER_1'] ? 100 : 0);
+        if (this.heaterActiveFan) {
+          const heaterEnabled = status.valve_mode === 'spa'
+            ? (status.spa_heater_enabled ?? false)
+            : (status.pool_heater_enabled ?? false);
+          this.heaterActiveFan.updateHeater(heaterEnabled, status.circuits['HEATER_1'] ?? false);
+        }
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);
