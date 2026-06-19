@@ -23,6 +23,13 @@ export class BridgeHealthAccessory {
       .setCharacteristic(this.platform.Characteristic.Model, 'AquaConnect')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, 'bridge-health');
 
+    // Self-heal: this accessory was originally a ContactSensor. If a cached
+    // copy still carries that service, strip it so HomeKit presents the Switch.
+    const staleContact = this.accessory.getService(this.platform.Service.ContactSensor);
+    if (staleContact) {
+      this.accessory.removeService(staleContact);
+    }
+
     this.service = this.accessory.getService(this.platform.Service.Switch)
       ?? this.accessory.addService(this.platform.Service.Switch);
 
