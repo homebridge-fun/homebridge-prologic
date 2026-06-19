@@ -471,7 +471,8 @@ the AquaConnect backend sends the matching `KeyId`, the RS-485 backend sends the
   "enableTemperatureSensors": true,
   "enableSpaModeSwitch": true,
   "enableChlorinatorFan": true,
-  "enablePumpSpeedFan": true
+  "enablePumpSpeedFan": true,
+  "enableVspSlotTiles": false
 }
 ```
 
@@ -495,6 +496,7 @@ already on the right backend, this is a no-op. If it differs, the sidecar restar
 | TemperatureSensor | Air Temperature | `enableTemperatureSensors` |
 | Fan | Chlorinator | `enableChlorinatorFan` — rotation speed = chlorinator % |
 | Fan | Pump Speed Override | `enablePumpSpeedFan` — rotation speed = VSP slot4 % |
+| Fan | Speed 1–4 | `enableVspSlotTiles` — 4× Fan tiles, not shown on Home tab; see §10.1 |
 | Switch | Bridge Needs Rebooting | Always registered |
 
 ### 7.3 HEATER_1 Switch Semantics
@@ -663,6 +665,8 @@ homebridge-prologic/
 | Spillover mode | Not tested | POOL/SPA/SPILLOVER cycle not present on this installation |
 | Valve mode detection lag | ~10–30s on AquaConnect | Depends on scroll position when mode changes |
 | System fault indicator | Not implemented | "Check System" LCD frames not surfaced to HomeKit |
+| Salt level sensor | Not wired | `salt_level` present in `/status`; no HomeKit sensor (no native salt type; could use AirQuality or custom) |
+| `filter_speed_pct` scroll parsing | Not implemented | AquaConnect scroll contains "Filter Speed  NN%" frame; needs to be parsed into `PoolStatus` as prerequisite for live pump tile and VSP slot tiles |
 
 ### 10.1 VSP Filter Speed Slots
 
@@ -691,4 +695,5 @@ slot 4 is read/writable via the sidecar (`/vsp/slot4`).
 - Add `filter_speed_pct` to `PoolStatus` TypeScript interface in `settings.ts`
 - Update Pump Speed Fan tile to read `filter_speed_pct` instead of `vsp_slot4_pct`
 - Add 4× `VspSlotAccessory` tiles (Fan service, read-only speed + activate button)
-- Config option `enableVspSlotTiles: bool` (default false until implemented)
+- Config option `enableVspSlotTiles: bool` (default `false`); when `true`, registers 4×
+  `VspSlotAccessory` tiles hidden from the Home tab but visible in the accessory detail view
