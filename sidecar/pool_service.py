@@ -79,9 +79,59 @@ class PoolState:
     vsp_slot4_pct: Optional[int] = None
     connected: bool = False
     last_update: float = 0.0
+    # True when the AquaConnect box has entered read-only mode (commands ACKed
+    # but silently dropped at the RS-485 relay). Cleared by any confirmed write.
+    bridge_wedged: bool = False
 
 state = PoolState()
 state_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# AquaConnect command-path health tracking (§bridge-health-spec)
+#
+# The box can enter a silent failure mode: POSTs return 200, reads stay live,
+# but keypresses are never relayed to the panel. A power-cycle of the box
+# clears it. We detect it passively (confirmed-write failures) and actively
+# (periodic canary probe on AUX2, which is unused/inert on this system).
+#
+# Debounce: require _WEDGE_FAIL_THRESHOLD consecutive failures before flagging;
+# clear immediately on any confirmed success.
+_WEDGE_FAIL_THRESHOLD = 2
+_wedge_fail_streak: int = 0
+_wedge_lock = threading.Lock()
+
+# Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
+_WEDGE_CANARY_KEY = 'AUX2'
+# How often (seconds) to run the active canary probe while idle.
+_WEDGE_PROBE_INTERVAL_S = 300.0
+
+
+def _record_command_success() -> None:
+    """Call after any confirmed write. Clears the wedge flag immediately."""
+    global _wedge_fail_streak
+    with _wedge_lock:
+        _wedge_fail_streak = 0
+        changed = state.bridge_wedged
+    if changed:
+        with state_lock:
+            state.bridge_wedged = False
+        log.info('Bridge command path recovered — clearing wedge flag')
+
+
+def _record_command_failure() -> None:
+    """Call when a command was sent but produced no confirmed state change."""
+    global _wedge_fail_streak
+    with _wedge_lock:
+        _wedge_fail_streak += 1
+        streak = _wedge_fail_streak
+        already = state.bridge_wedged
+    if streak >= _WEDGE_FAIL_THRESHOLD and not already:
+        with state_lock:
+            state.bridge_wedged = True
+        log.warning(
+            'Bridge command path appears wedged (%d consecutive unconfirmed writes). '
+            'Power-cycle the AquaConnect box to recover.',
+            streak)
 
 panel = None
 panel_lock = threading.Lock()
@@ -1763,6 +1813,7 @@ def get_status() -> Response:
             'vsp_slot4_pct':       state.vsp_slot4_pct,
             'connected':           state.connected,
             'last_update':         state.last_update,
+            'bridge_wedged':       state.bridge_wedged,
         })
 
 
@@ -1776,6 +1827,82 @@ def get_display() -> Response:
 def get_display_history() -> Response:
     entries = [{'ts': ts, 'text': t} for ts, t in lcd.snapshot()]
     return jsonify({'history': entries})
+
+
+@app.route('/bridge/health')
+def get_bridge_health() -> Response:
+    """Return the AquaConnect command-path health status."""
+    with state_lock:
+        wedged = state.bridge_wedged
+    with _wedge_lock:
+        streak = _wedge_fail_streak
+    status = 'wedged' if wedged else 'ok'
+    code = 503 if wedged else 200
+    return jsonify({
+        'status': status,
+        'bridge_wedged': wedged,
+        'consecutive_failures': streak,
+    }), code
+
+
+@app.route('/bridge/health/reset', methods=['POST'])
+def reset_bridge_wedge() -> Response:
+    """Manually clear the wedge flag after power-cycling the box."""
+    global _wedge_fail_streak
+    with _wedge_lock:
+        _wedge_fail_streak = 0
+    with state_lock:
+        state.bridge_wedged = False
+    log.info('Bridge wedge flag manually cleared')
+    return jsonify({'ok': True, 'bridge_wedged': False})
+
+
+def _ac_canary_probe() -> bool:
+    """Active command-path probe: toggle AUX2 and confirm the LED bit flips.
+
+    AUX2 is confirmed unused/inert on this system — toggling it is harmless.
+    Returns True if the command path is alive, False if wedged.
+    Called by the background probe thread when the box is otherwise idle.
+    """
+    if _ac_backend is None:
+        return True  # no AC backend, nothing to probe
+    try:
+        with _nav_lock:
+            with state_lock:
+                before = state.circuits.get('AUX_2')
+            _ac_backend.send_nav_key(_WEDGE_CANARY_KEY)
+            with state_lock:
+                after = state.circuits.get('AUX_2')
+        if before != after:
+            # Canary flipped — path alive, toggle it back
+            log.debug('Canary probe: AUX2 %s→%s (path OK); restoring', before, after)
+            with _nav_lock:
+                _ac_backend.send_nav_key(_WEDGE_CANARY_KEY)
+                with state_lock:
+                    state.circuits['AUX_2'] = before  # best-effort restore
+            _record_command_success()
+            return True
+        else:
+            log.warning('Canary probe: AUX2 did not flip (before=%s after=%s) — path may be wedged', before, after)
+            _record_command_failure()
+            return False
+    except Exception as e:
+        log.error('Canary probe error: %s', e)
+        return False
+
+
+def _canary_probe_loop() -> None:
+    """Background thread: periodically probe the command path when idle."""
+    import random
+    # Stagger first probe so it doesn't fire at startup during initial connect.
+    time.sleep(60 + random.uniform(0, 30))
+    while True:
+        try:
+            if _ac_backend is not None and not _nav_lock.locked():
+                _ac_canary_probe()
+        except Exception as e:
+            log.error('Canary probe loop error: %s', e)
+        time.sleep(_WEDGE_PROBE_INTERVAL_S)
 
 
 @app.route('/mode', methods=['POST'])
@@ -1829,6 +1956,14 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
     idle screen. The simple equipment circuits send their keypad key once (only
     if not already in the desired state) and confirm via the re-read LED state.
     """
+    with state_lock:
+        wedged = state.bridge_wedged
+    if wedged:
+        return jsonify({
+            'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
+            'bridge_wedged': True,
+        }), 503
+
     if key == 'HEATER_1':
         nav = _get_navigator()
         if nav is None:
@@ -1836,6 +1971,7 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
         with state_lock:
             which = 'spa' if state.valve_mode == 'spa' else 'pool'
         result = nav.set_heater_enabled(which, on)
+        _record_command_success()
         log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
         return jsonify({'ok': True, 'which': which, **result})
 
@@ -1854,9 +1990,14 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
         with state_lock:
             new = state.circuits.get(key)
     if new == on:
+        _record_command_success()
         log.info('Circuit %s -> %s (AquaConnect)', key, 'ON' if on else 'OFF')
         return jsonify({'ok': True})
-    return jsonify({'error': f'{key} toggle not confirmed (now={new})'}), 502
+    _record_command_failure()
+    return jsonify({
+        'error': f'{key} toggle not confirmed (now={new})',
+        'bridge_wedged': state.bridge_wedged,
+    }), 502
 
 
 @app.route('/circuit/<name>', methods=['POST'])
@@ -2507,6 +2648,8 @@ def main() -> None:
     if args.backend == 'aquaconnect':
         _ac_backend = AquaConnectBackend(host=args.aquaconnect_host)
         log.info('AquaConnect backend: http://%s/WNewSt.htm', args.aquaconnect_host)
+        threading.Thread(target=_canary_probe_loop, daemon=True,
+                         name='ac-canary').start()
         # AquaConnect mode: no RS-485 panel thread needed
         app.run(host=args.api_host, port=args.api_port, threaded=True)
         return

@@ -32,6 +32,7 @@ export interface PoolStatus {
   vsp_slot4_pct: number | null;
   connected: boolean;
   last_update: number;
+  bridge_wedged: boolean;
 }
 
 export interface PlatformConfig {

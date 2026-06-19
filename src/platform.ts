@@ -4,6 +4,7 @@ import { ThermostatAccessory, type ThermostatState } from './thermostatAccessory
 import { TemperatureAccessory } from './temperatureAccessory';
 import { FanAccessory } from './fanAccessory';
 import { SpaModeAccessory } from './spaModeAccessory';
+import { BridgeHealthAccessory } from './bridgeHealthAccessory';
 import { SidecarClient } from './sidecarClient';
 import {
   PLATFORM_NAME, PLUGIN_NAME, CIRCUITS,
@@ -30,6 +31,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private spaModeSwitch?: SpaModeAccessory;
   private chlorinatorFan?: FanAccessory;
   private pumpFan?: FanAccessory;
+  private bridgeHealth?: BridgeHealthAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -153,6 +155,13 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.pumpFan = new FanAccessory(this, acc, 'pump');
     }
 
+    // Contact sensor: "Pool Bridge Reboot Needed" — open when AC box is wedged
+    {
+      const acc = register('Pool Bridge Reboot Needed',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-bridge-health`));
+      this.bridgeHealth = new BridgeHealthAccessory(this, acc);
+    }
+
     const stale = this.cachedAccessories.filter(a => !toKeep.has(a.UUID));
     if (stale.length > 0) {
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
@@ -194,6 +203,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
         this.pumpFan?.updateSpeed(status.vsp_slot4_pct);
+        this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);
       }
