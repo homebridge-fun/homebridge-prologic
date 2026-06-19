@@ -122,6 +122,14 @@ _WEDGE_FAIL_THRESHOLD = 2
 _wedge_fail_streak: int = 0
 _wedge_lock = threading.Lock()
 
+# After set_heater_enabled() writes a new enable state, the passive scroll
+# will cycle past the OLD "Heater1 Manual Off / Auto Control" line within
+# seconds and overwrite state.pool/spa_heater_enabled back to the stale value.
+# Block scroll-driven overwrites for this many seconds after a nav write.
+_HEATER_WRITE_GRACE_S = 35.0
+_heater_write_grace: dict = {'pool': 0.0, 'spa': 0.0}  # body -> expiry timestamp
+_heater_write_lock = threading.Lock()
+
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
 _WEDGE_CANARY_KEY = 'AUX2'
 # How often (seconds) to run the active canary probe while healthy.
@@ -926,11 +934,18 @@ def _apply_ac_scroll_to_state(lcd: str) -> None:
             prefix = (hm.group(1) or '').strip().lower()
             which = prefix or state.valve_mode or 'pool'
             enabled = 'auto' in hm.group(2).lower()
-            if which == 'spa':
-                state.spa_heater_enabled = enabled
-            else:
-                state.pool_heater_enabled = enabled
-            state.last_update = time.time()
+            # Don't overwrite a just-written enable state with the stale scroll
+            # value — the scroll cycles the OLD state past within seconds of a
+            # nav write. Grace expires after _HEATER_WRITE_GRACE_S.
+            with _heater_write_lock:
+                grace_until = _heater_write_grace.get(which, 0.0)
+                grace_active = time.time() < grace_until
+            if not grace_active:
+                if which == 'spa':
+                    state.spa_heater_enabled = enabled
+                else:
+                    state.pool_heater_enabled = enabled
+                state.last_update = time.time()
 
 
 def _apply_ac_led_to_state(led: dict) -> None:
@@ -1807,6 +1822,10 @@ class MenuNavigator:
                         state.pool_heater_enabled = on
                     else:
                         state.spa_heater_enabled = on
+                # Block the passive scroll from overwriting this for 35s —
+                # the scroll cycles the OLD state past within seconds of the write.
+                with _heater_write_lock:
+                    _heater_write_grace[which] = time.time() + _HEATER_WRITE_GRACE_S
                 return {'which': which, 'enabled': on, 'was_off': was_off}
         finally:
             self.fast_exit()
