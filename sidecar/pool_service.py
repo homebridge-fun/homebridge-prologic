@@ -1806,6 +1806,13 @@ class MenuNavigator:
             txt = self._send(key)
             if ok(txt):
                 return txt
+            # Foreign-submenu guard: if we're pressing RIGHT inside what should
+            # be the Settings Menu ring but land on an item that doesn't belong
+            # there (e.g. 'Wireless Channel:', 'Diagnostics'), abort immediately
+            # rather than pressing further and risk altering settings.
+            if key == 'RIGHT' and txt and txt[0:1].isupper() and not self._in_settings(txt):
+                raise RuntimeError(
+                    f'Navigation left Settings Menu; at {txt!r} (expected {what}); aborting')
             # Detect stuck: if we land on the same item twice in a row,
             # send one extra press to dismiss any value-cursor selection.
             if key == 'RIGHT' and self._same_item(txt, last_item):
@@ -1854,14 +1861,39 @@ class MenuNavigator:
             raise RuntimeError(f'Could not set {what} to {target}; at {cur} ({self._lcd.text()!r})')
         return cur
 
-    def _anchor(self) -> None:
-        """Drive MENU until the normalized frame is exactly 'Settings Menu'.
+    # Known Settings Menu item prefixes — any RIGHT-landed frame that does NOT
+    # start with one of these is a foreign submenu (Diagnostics, Network, etc.)
+    # and we abort immediately rather than pressing further into it.
+    _SETTINGS_ITEM_PREFIXES = (
+        'Settings Menu', 'Pool Heater', 'Spa Heater',
+        'Pool Chlorinator', 'Spa Chlorinator',
+        'Pool Setpoint', 'Spa Setpoint',
+        'VSP Speed', 'Filter Pump', 'Cleaner Pump',
+        'Light Show', 'Color Swim', 'Water Feature',
+        'Delay Cancel', 'Freeze Protect', 'Valve Delay',
+        'Clock', 'Date', 'Time',
+    )
 
-        After landing on the header, wait _POST_MENU_SETTLE_S before returning:
-        the panel needs ~300ms to be ready to accept RIGHT after a MENU press.
+    def _in_settings(self, txt: str) -> bool:
+        """True if the current frame looks like a normal Settings Menu item."""
+        return any(txt.startswith(p) for p in self._SETTINGS_ITEM_PREFIXES)
+
+    def _anchor(self) -> None:
+        """Drive the panel to the Settings Menu header, starting from any state.
+
+        Strategy: first escape to the Default Menu (safe known state via MENU
+        presses), then enter Settings Menu with one more MENU press. This
+        prevents us from navigating further into an unknown submenu if we were
+        already inside one (e.g. Diagnostics, Wireless Channel) — those submenus
+        do not surface 'Settings Menu' via repeated MENU presses and would
+        exhaust the budget while pressing live settings.
         """
+        # Step 1: exit whatever menu/submenu we may be in.
+        self._press_until('MENU', lambda t: t == self._DEFAULT_MENU_HDR,
+                          self._MENU_MAX, self._DEFAULT_MENU_HDR)
+        # Step 2: one MENU from Default Menu → Settings Menu.
         self._press_until('MENU', lambda t: t == self._SETTINGS_HDR,
-                          self._MENU_MAX, self._SETTINGS_HDR)
+                          3, self._SETTINGS_HDR)
         time.sleep(self._POST_MENU_SETTLE_S)
 
     # Status-cycle prefixes — any of these means we're back in the default display.
@@ -2574,6 +2606,7 @@ def rs485_taptest() -> Response:
     MenuNavigator._KEY_TIMEOUT = timeout
 
     results = []
+    anchor_error = None
     try:
         with _nav_lock:
             nav._anchor()
@@ -2584,6 +2617,8 @@ def rs485_taptest() -> Response:
                 after = nav._send(key)
                 dt_ms = round((time.time() - t0) * 1000, 1)
                 results.append({'landed': after != before, 'latency_ms': dt_ms})
+    except RuntimeError as e:
+        anchor_error = str(e)
     finally:
         MenuNavigator._KEY_TIMEOUT = saved_timeout
         KEY_PREDELAY_MS = saved_predelay
@@ -2591,6 +2626,9 @@ def rs485_taptest() -> Response:
             nav.fast_exit()
         except Exception:
             pass
+
+    if anchor_error and not results:
+        return jsonify({'error': anchor_error}), 503
 
     landed = [r for r in results if r['landed']]
     lat = sorted(r['latency_ms'] for r in landed)
