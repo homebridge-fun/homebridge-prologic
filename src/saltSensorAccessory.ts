@@ -26,9 +26,11 @@ export class SaltSensorAccessory {
       this.platform.Characteristic.AirQuality.EXCELLENT,
     );
 
-    // VOCDensity range is 0–65535, which covers typical saltwater pool levels
-    // (2700–3500 PPM) without clamping. PM25Density caps at 1000 so won't work.
+    // VOCDensity defaults to a maxValue of 1000 per the HAP spec, which clamps
+    // saltwater pool levels (typically 2700–3500 PPM) down to 1000. Raise the
+    // max with setProps so the full salt range comes through unclamped.
     this.service.getCharacteristic(this.platform.Characteristic.VOCDensity)
+      .setProps({ minValue: 0, maxValue: 10000 })
       .onGet(() => this.currentPpm);
   }
 
