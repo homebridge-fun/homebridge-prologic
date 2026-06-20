@@ -6,6 +6,7 @@ import { FanAccessory } from './fanAccessory';
 import { SpaModeAccessory } from './spaModeAccessory';
 import { BridgeHealthAccessory } from './bridgeHealthAccessory';
 import { SaltSensorAccessory } from './saltSensorAccessory';
+import { VspSlotAccessory } from './vspSlotAccessory';
 import { SidecarClient } from './sidecarClient';
 import {
   PLATFORM_NAME, PLUGIN_NAME, CIRCUITS,
@@ -34,6 +35,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private pumpFan?: FanAccessory;
   private bridgeHealth?: BridgeHealthAccessory;
   private saltSensor?: SaltSensorAccessory;
+  private vspSlots: VspSlotAccessory[] = [];
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -63,6 +65,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
       enableSaltSensor: config['enableSaltSensor'] ?? true,
+      enableVspSlotTiles: config['enableVspSlotTiles'] ?? false,
       circuitLabels: config['circuitLabels'] ?? {},
     };
 
@@ -164,6 +167,16 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.pumpFan = new FanAccessory(this, acc, 'pump');
     }
 
+    // VSP slot tiles (Speed 1–4), hidden from home tab by default
+    if (this.cfg.enableVspSlotTiles) {
+      this.vspSlots = [];
+      for (let slot = 1; slot <= 4; slot++) {
+        const acc = register(`Speed ${slot}`,
+          this.api.hap.uuid.generate(`${PLUGIN_NAME}-vsp-slot-${slot}`));
+        this.vspSlots.push(new VspSlotAccessory(this, acc, slot));
+      }
+    }
+
     // Salt level sensor
     if (this.cfg.enableSaltSensor) {
       const acc = register('Salt Level',
@@ -257,6 +270,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
         this.pumpFan?.updateSpeed(status.pump_speed);
         this.pumpFan?.updateActiveSlot(status.vsp_active_slot);
+        for (const slotAcc of this.vspSlots) {
+          slotAcc.updateSpeed(status.vsp_slot_pct[String(slotAcc.slot)]);
+        }
         this.saltSensor?.updateSaltLevel(status.salt_level);
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
       } catch (err) {

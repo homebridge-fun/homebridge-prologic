@@ -98,7 +98,7 @@ class PoolState:
     pool_heater_enabled: Optional[bool] = None
     spa_heater_enabled: Optional[bool] = None
     valve_mode: Optional[str] = None   # 'pool' | 'spa'
-    vsp_slot4_pct: Optional[int] = None
+    vsp_slot_pct: dict = field(default_factory=dict)  # {1: pct, 2: pct, 3: pct, 4: pct}
     vsp_active_slot: Optional[int] = None  # 1-4; set on activate, None = unknown
     connected: bool = False
     last_update: float = 0.0
@@ -1883,10 +1883,13 @@ class MenuNavigator:
         finally:
             self.fast_exit()
 
-    # ── VSP slot 4 ───────────────────────────────────────────────────────────
+    # ── VSP slots 1–4 ────────────────────────────────────────────────────────
 
-    def _goto_vsp_slot4(self) -> str:
-        """Anchor, enter the VSP submenu, and land on Filter Speed4. Returns frame."""
+    def _goto_vsp_slot(self, slot: int) -> str:
+        """Anchor, enter the VSP submenu, and land on Filter Speed{slot}. Returns frame."""
+        if slot not in (1, 2, 3, 4):
+            raise ValueError(f'VSP slot must be 1–4, got {slot}')
+        label = f'Filter Speed{slot}'
         self._anchor()
         self._press_until('RIGHT', lambda t: 'VSP Speed Settings' in t,
                           self._NAV_MAX, 'VSP Speed Settings')
@@ -1894,53 +1897,80 @@ class MenuNavigator:
         # until we're actually inside, so a dropped PLUS doesn't leave us in the
         # main ring (which RIGHT would then walk the wrong way).
         self._press_until('PLUS', lambda t: 'Filter Speed' in t, 6, 'VSP submenu')
-        return self._press_until('RIGHT', lambda t: 'Filter Speed4' in t,
-                                 8, 'Filter Speed4')
+        # Slot 1 is the entry point; RIGHT walks forward to higher slots.
+        if slot == 1:
+            return self._press_until('RIGHT', lambda t: 'Filter Speed1' in t,
+                                     2, 'Filter Speed1')
+        return self._press_until('RIGHT', lambda t: label in t, 8, label)
 
-    def read_vsp_slot4(self) -> dict:
-        """Read Filter Speed4 (slot 4) without changing it."""
+    def read_vsp_slot(self, slot: int) -> dict:
+        """Read Filter Speed{slot} without changing it."""
         try:
             with _nav_lock:
-                txt = self._goto_vsp_slot4()
+                txt = self._goto_vsp_slot(slot)
                 pct = self._pct(txt)
                 if pct is None:
-                    raise RuntimeError(f'Cannot parse Filter Speed4: {txt!r}')
+                    raise RuntimeError(f'Cannot parse Filter Speed{slot}: {txt!r}')
                 with state_lock:
-                    state.vsp_slot4_pct = pct
-                return {'slot': 4, 'speed_pct': pct}
+                    state.vsp_slot_pct[slot] = pct
+                return {'slot': slot, 'speed_pct': pct}
         finally:
             self.fast_exit()
 
-    def set_vsp_slot4(self, target_pct: int) -> dict:
-        """
-        Write Filter Speed4.  Snaps to 5% grid (verified step size, §12.4).
-        Hard scope limit: never writes slots 1-3 or Spa Speed (§6.1 / §8).
-        """
+    def read_vsp_all_slots(self) -> dict:
+        """Read all four VSP slot speeds in one menu session."""
+        results = {}
+        try:
+            with _nav_lock:
+                # Enter submenu once, walk RIGHT through all four slots.
+                self._anchor()
+                self._press_until('RIGHT', lambda t: 'VSP Speed Settings' in t,
+                                  self._NAV_MAX, 'VSP Speed Settings')
+                self._press_until('PLUS', lambda t: 'Filter Speed' in t, 6, 'VSP submenu')
+                txt = self._press_until('RIGHT', lambda t: 'Filter Speed1' in t,
+                                        2, 'Filter Speed1')
+                for slot in (1, 2, 3, 4):
+                    if slot > 1:
+                        txt = self._press_until(
+                            'RIGHT', lambda t, s=slot: f'Filter Speed{s}' in t,
+                            4, f'Filter Speed{slot}')
+                    pct = self._pct(txt)
+                    if pct is not None:
+                        results[slot] = pct
+                with state_lock:
+                    state.vsp_slot_pct.update(results)
+        finally:
+            self.fast_exit()
+        return {'slots': results}
+
+    def set_vsp_slot(self, slot: int, target_pct: int) -> dict:
+        """Write Filter Speed{slot}. Snaps to 5% grid (verified step size, §12.4)."""
+        if slot not in (1, 2, 3, 4):
+            raise ValueError(f'VSP slot must be 1–4, got {slot}')
         target_pct = int(_clamp(round(target_pct / 5) * 5, 0, 100))
         try:
             with _nav_lock:
-                self._goto_vsp_slot4()
+                self._goto_vsp_slot(slot)
                 self._step_to(self._pct, target_pct,
-                              'PLUS', 'MINUS', self._STEP_MAX, 'Filter Speed4')
+                              'PLUS', 'MINUS', self._STEP_MAX, f'Filter Speed{slot}')
                 with state_lock:
-                    state.vsp_slot4_pct = target_pct
-                return {'slot': 4, 'target_pct': target_pct, 'result': self.text()}
+                    state.vsp_slot_pct[slot] = target_pct
+                return {'slot': slot, 'target_pct': target_pct, 'result': self.text()}
         finally:
             self.fast_exit()
 
-
-    def activate_vsp_slot4(self) -> dict:
+    def activate_vsp_slot(self, slot: int) -> dict:
         """
-        Make slot 4 the running VSP slot by cycling FILTER off→on to open the
-        slot-selection window (§6.2), then using +/- to reach slot 4 (§6.4).
+        Make slot {slot} the running VSP slot by cycling FILTER off→on to open
+        the slot-selection window (§6.2), then using +/- to reach the target slot.
 
         Gate contract (§6.4 / §11): every +/- press verifies 'Filter On:' is
-        still in l1 before proceeding; if the window closed early an error is
-        raised without further action.
-
-        Does NOT navigate the Settings menu; holds _nav_lock the full time to
-        prevent any concurrent keypad use during the activation window.
+        still present; if the window closed early an error is raised.
+        Does NOT navigate the Settings menu; holds _nav_lock throughout.
         """
+        if slot not in (1, 2, 3, 4):
+            raise ValueError(f'VSP slot must be 1–4, got {slot}')
+        target_label = f'Spd{slot}'
         _SLOT_MAX_STEPS = 8   # 5 slots × up to 1 wrap = 5; 8 is generous
         with _nav_lock:
             # Ensure filter is off first so the next FILTER press turns it on.
@@ -1957,22 +1987,31 @@ class MenuNavigator:
                 raise RuntimeError(
                     f'Expected slot-selection window after FILTER on, got: {txt!r}')
 
-            # Cycle +/- until we see Spd4. The window can close on its own, so
-            # this is gated rather than retried: each PLUS must keep us in it.
+            # Cycle +/- until we see the target slot label.
             for step in range(_SLOT_MAX_STEPS):
-                if 'Spd4' in txt:
+                if target_label in txt:
                     break
                 txt = self._send('PLUS')
                 if 'Filter On:' not in txt:
                     raise RuntimeError(
                         f'Slot-selection window closed early at step {step}: {txt!r}')
             else:
-                raise RuntimeError('Could not find slot 4 in slot-selection window')
+                raise RuntimeError(f'Could not find {target_label} in slot-selection window')
 
             with state_lock:
                 state.circuits['FILTER'] = True
-                state.vsp_active_slot = 4
-            return {'activated_slot': 4, 'frame': txt}
+                state.vsp_active_slot = slot
+            return {'activated_slot': slot, 'frame': txt}
+
+    # Convenience aliases kept for any callers that used the slot-4 specific names.
+    def read_vsp_slot4(self) -> dict:
+        return self.read_vsp_slot(4)
+
+    def set_vsp_slot4(self, target_pct: int) -> dict:
+        return self.set_vsp_slot(4, target_pct)
+
+    def activate_vsp_slot4(self) -> dict:
+        return self.activate_vsp_slot(4)
 
 
 def _get_panel():
@@ -2013,7 +2052,7 @@ def get_status() -> Response:
             'pool_heater_enabled': state.pool_heater_enabled,
             'spa_heater_enabled':  state.spa_heater_enabled,
             'valve_mode':          state.valve_mode,
-            'vsp_slot4_pct':       state.vsp_slot4_pct,
+            'vsp_slot_pct':        dict(state.vsp_slot_pct),
             'vsp_active_slot':     state.vsp_active_slot,
             'connected':           state.connected,
             'last_update':         state.last_update,
@@ -2997,25 +3036,35 @@ def set_heater_setpoint_legacy() -> Response:
     return set_heater_setpoint(which)
 
 
-@app.route('/vsp/slot4')
-def get_vsp_slot4() -> Response:
-    """Read Filter Speed4 via menu navigation."""
+@app.route('/vsp/slots')
+def get_vsp_all_slots() -> Response:
+    """Read all four VSP slot speeds via menu navigation."""
     nav = _get_navigator()
     if nav is None:
         return jsonify({'error': 'Not connected'}), 503
     try:
-        return jsonify(nav.read_vsp_slot4())
+        return jsonify(nav.read_vsp_all_slots())
     except Exception as e:
-        log.error(f'read_vsp_slot4: {e}')
+        log.error(f'read_vsp_all_slots: {e}')
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/vsp/slot4', methods=['POST'])
-def set_vsp_slot4() -> Response:
-    """
-    Set Filter Speed4 (slot 4 only).  Body: {"speed_pct": 75}
-    Speed is snapped to 5% grid.  Slots 1-3 and Spa Speed are never written.
-    """
+@app.route('/vsp/slot/<int:slot>')
+def get_vsp_slot(slot: int) -> Response:
+    """Read Filter Speed{slot} (1-4) via menu navigation."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        return jsonify(nav.read_vsp_slot(slot))
+    except (ValueError, Exception) as e:
+        log.error(f'read_vsp_slot {slot}: {e}')
+        return jsonify({'error': str(e)}), (400 if isinstance(e, ValueError) else 500)
+
+
+@app.route('/vsp/slot/<int:slot>', methods=['POST'])
+def set_vsp_slot(slot: int) -> Response:
+    """Set Filter Speed{slot} (1-4). Body: {"speed_pct": 75}. Snaps to 5% grid."""
     body = request.get_json(force=True)
     pct = body.get('speed_pct')
     if pct is None:
@@ -3024,31 +3073,44 @@ def set_vsp_slot4() -> Response:
     if nav is None:
         return jsonify({'error': 'Not connected'}), 503
     try:
-        result = nav.set_vsp_slot4(int(pct))
-        log.info(f'VSP slot4 -> {result["target_pct"]}%')
+        result = nav.set_vsp_slot(slot, int(pct))
+        log.info(f'VSP slot{slot} -> {result["target_pct"]}%')
         return jsonify(result)
-    except Exception as e:
-        log.error(f'set_vsp_slot4: {e}')
-        return jsonify({'error': str(e)}), 500
+    except (ValueError, Exception) as e:
+        log.error(f'set_vsp_slot {slot}: {e}')
+        return jsonify({'error': str(e)}), (400 if isinstance(e, ValueError) else 500)
 
 
-@app.route('/vsp/slot4/activate', methods=['POST'])
-def activate_vsp_slot4() -> Response:
+@app.route('/vsp/slot/<int:slot>/activate', methods=['POST'])
+def activate_vsp_slot(slot: int) -> Response:
     """
-    Activate slot 4 as the running VSP slot by cycling FILTER off→on (§6.2).
-    No body required.  The filter is left ON after the call.
-    Combine with POST /vsp/slot4 to set the speed value first, then activate.
+    Activate slot {slot} (1-4) as the running VSP slot by cycling FILTER off→on.
+    No body required. Filter is left ON after the call.
     """
     nav = _get_navigator()
     if nav is None:
         return jsonify({'error': 'Not connected'}), 503
     try:
-        result = nav.activate_vsp_slot4()
-        log.info(f'VSP slot4 activated (filter on)')
+        result = nav.activate_vsp_slot(slot)
+        log.info(f'VSP slot{slot} activated (filter on)')
         return jsonify(result)
-    except Exception as e:
-        log.error(f'activate_vsp_slot4: {e}')
-        return jsonify({'error': str(e)}), 500
+    except (ValueError, Exception) as e:
+        log.error(f'activate_vsp_slot {slot}: {e}')
+        return jsonify({'error': str(e)}), (400 if isinstance(e, ValueError) else 500)
+
+
+# Legacy slot-4 aliases — kept for backwards compatibility with existing callers.
+@app.route('/vsp/slot4')
+def get_vsp_slot4_compat() -> Response:
+    return get_vsp_slot(4)
+
+@app.route('/vsp/slot4', methods=['POST'])
+def set_vsp_slot4_compat() -> Response:
+    return set_vsp_slot(4)
+
+@app.route('/vsp/slot4/activate', methods=['POST'])
+def activate_vsp_slot4_compat() -> Response:
+    return activate_vsp_slot(4)
 
 
 @app.route('/chlorinator/<which>', methods=['POST'])

@@ -92,8 +92,27 @@ export class SidecarClient {
     await this.http.post(`/heater/${which}/enable`, { on });
   }
 
-  // ── VSP slot 4 (menu navigation + FILTER activation) ─────────────────────
+  // ── VSP slots 1–4 (menu navigation + FILTER activation) ─────────────────
 
+  async getAllVspSlots(): Promise<{ slots: Record<string, number> }> {
+    const res = await this.http.get('/vsp/slots');
+    return res.data;
+  }
+
+  async getVspSlot(slot: number): Promise<{ slot: number; speed_pct: number }> {
+    const res = await this.http.get(`/vsp/slot/${slot}`);
+    return res.data;
+  }
+
+  async setVspSlot(slot: number, speedPct: number): Promise<void> {
+    await this.http.post(`/vsp/slot/${slot}`, { speed_pct: Math.round(speedPct) });
+  }
+
+  async activateVspSlot(slot: number): Promise<void> {
+    await this.http.post(`/vsp/slot/${slot}/activate`);
+  }
+
+  // Legacy slot-4 wrappers used by FanAccessory.
   async getVspSlot4(): Promise<VspSlot4> {
     const res = await this.http.get<VspSlot4>('/vsp/slot4');
     return res.data;

@@ -130,6 +130,12 @@
         "default": true,
         "description": "Expose salt level (PPM) as an Air Quality sensor tile."
       },
+      "enableVspSlotTiles": {
+        "title": "VSP Speed Slot Tiles",
+        "type": "boolean",
+        "default": false,
+        "description": "Expose four Fan tiles (Speed 1–4) showing each VSP slot's configured speed %. Setting a tile's speed writes that slot and activates it. Not shown on the home tab."
+      },
       "circuitLabels": {
         "title": "Circuit Label Overrides",
         "type": "object",

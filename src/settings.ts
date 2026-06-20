@@ -29,7 +29,7 @@ export interface PoolStatus {
   pool_heater_enabled: boolean | null;
   spa_heater_enabled: boolean | null;
   valve_mode: 'pool' | 'spa' | null;
-  vsp_slot4_pct: number | null;
+  vsp_slot_pct: Record<string, number>;  // keys "1"–"4"
   vsp_active_slot: number | null;
   connected: boolean;
   last_update: number;
@@ -55,6 +55,7 @@ export interface PlatformConfig {
   enableChlorinatorFan: boolean;
   enablePumpSpeedFan: boolean;
   enableSaltSensor: boolean;
+  enableVspSlotTiles: boolean;
   circuitLabels: Partial<Record<Circuit, string>>;
 }
 
