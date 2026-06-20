@@ -96,8 +96,13 @@ Content-Length: {len}\r\n
 {body}
 ```
 
-Minimum gap of 0.9s between requests enforced (`_AC_MIN_GAP_S`). Each request opens a
-fresh connection (no pipelining).
+Minimum gap of **0.6s** between any two requests enforced (`_AC_MIN_GAP_S`). Each request
+opens a fresh connection (no pipelining). The gap applies to **all** requests (reads and
+keypresses) — empirically the AquaConnect box itself needs the inter-request spacing, not
+just the panel: a press-only gap (skipping reads) was measured *worse* (19 drops/3-lap run
+vs 2). Characterized via `/debug/nav-sweep` on 2026-06-20: 0.6s gives ~15s per slot read
+and ~2 drops; the original 0.9s gave ~27s. Below ~0.5s the box wedges (presses ACKed but
+dropped at the RS-485 relay; only a power-cycle clears it).
 
 ### 3.4 Response Format
 
@@ -551,19 +556,33 @@ homebridge-prologic/
 
 ## 10. Known Limitations and Future Work
 
+### 10.1 Completed
+
 | Item | Status | Notes |
 |---|---|---|
 | VSP slot tiles | Done | `enableVspSlotTiles`; generalized sidecar nav for slots 1–4 |
+| VSP slot tile robustness | Done | Pre-fetch `/vsp/slots` on startup so tiles show real values; 600ms debounce on the speed slider (one menu walk per drag, not per intermediate value); `onSet(0)` treated as no-op so a tap-without-drag can't set the slot to 0% and stop the pump |
+| VSP slot floor guard | Done | Per-slot `vspSlotMinPct` (slot 1 defaults to 35%) sets the HomeKit slider's `minValue` so it can't target a speed the panel clamps; sidecar `_step_to` also stops stepping once a value stalls at a hardware floor/ceiling instead of burning the full press budget |
 | Pump tile live speed | Done | Reads `pump_speed` (scroll); labeled "Filter Speed" |
 | LIGHTS / AUX_1 write | Verified | Tested on hardware; keycodes and LED confirmation correct |
 | Super Chlorinate | Done | Settings menu nav; add to `circuits` config to expose |
-| Salt level sensor | Done | `enableSaltSensor`; AirQualitySensor/VOCDensity |
-| Fan spinning | Done | `CurrentFanState` set explicitly per tile on each poll |
+| Salt level sensor | Done | `enableSaltSensor`; AirQualitySensor/VOCDensity, `maxValue` raised to 4000 PPM (HAP default of 1000 was clamping the ~3200 reading) |
+| Fan spinning | Done | `CurrentFanState` set explicitly per tile on each poll; `Active=1` re-pushed every poll so HomeKit's reconnect reset doesn't stop the animation |
+| Heater two-switch model | Done | "Heater Auto" (armed/Auto-mode, tappable) + "Heater Running" (read-only relay-firing indicator from `led['heater']`). Replaced the abandoned three-state Fanv2 — Apple Home ignores `CurrentFanState` and spins any `Active=1` fan |
 | Circuit label overrides | Done | `circuitLabels` config object, editable in Homebridge UI |
-| Chlorinator % HomeKit write | Not wired | Endpoint exists (`/chlorinator/pool`); Fan tile is read-only |
-| FILTER circuit as Fanv2 | Not implemented | Could expose pump on/off alongside slot tiles |
+| Nav timing optimization | Done | `_AC_MIN_GAP_S` 0.9→0.6s; adaptive nav-key reads (exit on first changed frame, `_AC_NAV_READS` cap 2). ~44% faster menu reads. Floor is ~0.5s; below that the box wedges |
+| `/debug/nav-sweep` harness | Done | Server-side timing sweep over `min_gaps` (and optionally `nav_gaps`/`post_menu_settles`), aborts early + returns partial results on a wedge, ranks clean runs fastest-first |
+
+### 10.2 Backlog (open)
+
+| Item | Priority | Notes |
+|---|---|---|
+| **Dedicated LCD frame-watcher service** | Backlog | Always-running service that passively watches the AquaConnect frame and exposes a pub/sub API: latest value, change notifications, last-known value per field. Decouples state reads from navigation. **Won't speed up navigation** (the 0.6s/request box constraint is the real limit) — value is cleaner architecture + always-fresh state independent of poll interval |
+| Chlorinator % HomeKit write | Backlog | Endpoint exists (`/chlorinator/pool`); Fan tile is currently read-only |
+| FILTER circuit as Fanv2 | Backlog | Could expose pump on/off alongside slot tiles |
 | RS-485 backend parity | Partial | Nav exists; not end-to-end verified on current codebase |
 | Spillover mode | Not tested | Not present on this installation |
-| Valve mode detection lag | ~10–30s | Scroll-dependent; no event-driven update |
-| System fault indicator | Not implemented | "Check System" LCD frames not surfaced to HomeKit |
-| Spa heater setpoint | Not confirmed | `spa_heater_enabled` shows null; needs a spa mode test session |
+| Valve mode detection lag | ~10–30s | Scroll-dependent; no event-driven update (would benefit from the frame-watcher) |
+| System fault indicator | Not implemented | "Check System" / "Inspect Cell" LCD frames not surfaced to HomeKit |
+| Spa heater setpoint | Not confirmed | `spa_heater_enabled` shows null; needs a spa-mode test session |
+| `/debug/aquaconnect` GET uses `_post('00')` | Minor | The only remaining read path that injects a keypad event; manual diagnostic only, but could switch to `_read()` for zero phantom events anywhere |
