@@ -2718,23 +2718,54 @@ def set_mode() -> Response:
     Set pool/spa valve mode.  Body: {"mode": "pool"|"spa"}
 
     For pool+spa-only systems this is a single cycle-key press whenever the
-    current mode differs from the target.  Optimistically updates valve_mode
-    so the next /status poll reflects the change immediately.
+    current mode differs from the target.
     """
     body = request.get_json(force=True)
     target = body.get('mode', '').lower()
     if target not in ('pool', 'spa'):
         return jsonify({'error': 'mode must be "pool" or "spa"'}), 400
+
+    with state_lock:
+        current = state.valve_mode
+        wedged = state.bridge_wedged
+    if current == target:
+        return jsonify({'ok': True, 'mode': target, 'changed': False})
+
+    if _ac_backend is not None:
+        if wedged:
+            return jsonify({
+                'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
+                'bridge_wedged': True,
+            }), 503
+        # SPA and POOL both share key code '07' (the panel's pool/spa cycle key).
+        # We only press when not already in the target state (idempotency guard).
+        key_name = 'SPA' if target == 'spa' else 'POOL'
+        try:
+            with _nav_lock:
+                _ac_backend.send_nav_key(key_name)
+                with state_lock:
+                    new_mode = state.valve_mode
+        except Exception as e:
+            log.error(f'set_mode (AC) {target}: {e}')
+            _record_command_failure()
+            _immediate_wedge_probe()
+            return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
+        if new_mode == target:
+            _record_command_success()
+            log.info(f'Mode -> {target} (AquaConnect)')
+            return jsonify({'ok': True, 'mode': target, 'changed': True})
+        log.warning('set_mode %s NOT CONFIRMED (now=%s) — probing bridge', target, new_mode)
+        _record_command_failure()
+        _immediate_wedge_probe()
+        return jsonify({
+            'error': f'mode toggle not confirmed (now={new_mode})',
+            'bridge_wedged': state.bridge_wedged,
+        }), 502
+
     p = _get_panel()
     if p is None:
         return jsonify({'error': 'Not connected'}), 503
-    with state_lock:
-        current = state.valve_mode
-    if current == target:
-        return jsonify({'ok': True, 'mode': target, 'changed': False})
     try:
-        # Send the POOL/SPA cycle key via the existing circuit path.
-        # For pool+spa-only systems one press always toggles.
         p.set_circuit('POOL' if target == 'pool' else 'SPA', True)
         with state_lock:
             state.valve_mode = target
