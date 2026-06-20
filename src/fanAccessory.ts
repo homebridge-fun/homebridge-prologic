@@ -12,6 +12,7 @@ export class FanAccessory {
   private currentPct = 0;
   private running = false;
   private activeSlot: number | null = null;
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly platform: ProLogicPlatform,
@@ -53,12 +54,27 @@ export class FanAccessory {
       .onSet(this.handleSetSpeed.bind(this));
   }
 
-  private async handleSetSpeed(value: CharacteristicValue): Promise<void> {
+  private handleSetSpeed(value: CharacteristicValue): void {
     const pct = Math.round(value as number);
+    // HomeKit fires onSet repeatedly while the user drags the speed ring. Each
+    // commit is a full menu navigation (and for chlorinator, minStep is 1), so
+    // writing every intermediate value would flood the panel and risk a wedge.
+    // Debounce: commit only the final value after 600ms of silence.
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
+      this.commitSpeed(pct);
+    }, 600);
+  }
+
+  private async commitSpeed(pct: number): Promise<void> {
     this.platform.log.info(`[Fan ${this.role}] speed → ${pct}%`);
     try {
       if (this.role === 'chlorinator') {
-        await this.platform.sidecar.setChlorinatorPercent('pool', pct);
+        // Write whichever body's chlorinator matches the current valve mode;
+        // default to pool until the first poll resolves the mode.
+        const which = this.platform.currentValveMode === 'spa' ? 'spa' : 'pool';
+        await this.platform.sidecar.setChlorinatorPercent(which, pct);
       } else {
         await this.platform.sidecar.setVspSlot(4, pct);
         await this.platform.sidecar.activateVspSlot(4);
@@ -66,9 +82,10 @@ export class FanAccessory {
       this.currentPct = pct;
     } catch (err) {
       this.platform.log.error(`[Fan ${this.role}] set speed failed:`, err);
-      throw new this.platform.api.hap.HapStatusError(
-        this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
-      );
+      // Revert the ring to the last known good value rather than leaving the
+      // user's failed drag value showing.
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.RotationSpeed, this.currentPct);
     }
   }
 

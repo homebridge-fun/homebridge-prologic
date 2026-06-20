@@ -487,6 +487,12 @@ animation rather than picking randomly:
 
 `Active` is always 1 (tile stays visible even when not spinning).
 
+**Writable tiles**: setting `RotationSpeed` on the Chlorinator tile writes the current
+body's chlorinator output % (`/chlorinator/{pool|spa}`, chosen by valve mode). Setting the
+Filter Speed tile writes VSP slot 4 and activates it. Both writes are debounced 600ms so a
+slider drag commits once (each commit is a menu navigation), and the ring reverts to the
+last known value on failure.
+
 ### 7.7 VSP Slot Tiles
 
 When `enableVspSlotTiles: true`, four Fan tiles are registered (Speed 1–Speed 4). Each
@@ -620,6 +626,7 @@ homebridge-prologic/
 | Heater two-switch model | Done | "Heater Auto" (armed/Auto-mode, tappable) + "Heater Running" (read-only relay-firing indicator from `led['heater']`). Replaced the abandoned three-state Fanv2 — Apple Home ignores `CurrentFanState` and spins any `Active=1` fan |
 | Circuit label overrides | Done | `circuitLabels` config object, editable in Homebridge UI |
 | Nav timing optimization | Done | `_AC_MIN_GAP_S` 0.9→0.6s; adaptive nav-key reads (exit on first changed frame, `_AC_NAV_READS` cap 2). ~44% faster menu reads. Floor is ~0.5s; below that the box wedges |
+| Chlorinator % HomeKit write | Done | Fan tile `RotationSpeed` writes `/chlorinator/{which}`; valve-mode aware (pool vs spa); 600ms debounce so a drag is one menu write, not one per step; reverts the ring on failure. Sidecar snaps to the panel grid (1% below 10%, 5% at/above) |
 | `/debug/nav-sweep` harness | Done | Server-side timing sweep over `min_gaps` (and optionally `nav_gaps`/`post_menu_settles`), aborts early + returns partial results on a wedge, ranks clean runs fastest-first |
 
 ### 10.2 Backlog (open)
@@ -627,7 +634,6 @@ homebridge-prologic/
 | Item | Priority | Notes |
 |---|---|---|
 | **Dedicated LCD frame-watcher service** | Backlog | Always-running service that passively watches the AquaConnect frame and exposes a pub/sub API: latest value, change notifications, last-known value per field. Decouples state reads from navigation. **Won't speed up navigation** (the 0.6s/request box constraint is the real limit) — value is cleaner architecture + always-fresh state independent of poll interval |
-| Chlorinator % HomeKit write | Backlog | Endpoint exists (`/chlorinator/pool`); Fan tile is currently read-only |
 | FILTER circuit as Fanv2 | Backlog | Could expose pump on/off alongside slot tiles |
 | RS-485 backend parity | Partial | Nav exists; not end-to-end verified on current codebase |
 | Spillover mode | Not tested | Not present on this installation |
