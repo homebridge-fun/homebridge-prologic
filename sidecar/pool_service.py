@@ -2534,6 +2534,83 @@ def rs485_sweep() -> Response:
     })
 
 
+def _pct(sorted_vals: list, p: float):
+    """Simple percentile (nearest-rank) of a pre-sorted list."""
+    if not sorted_vals:
+        return None
+    k = max(0, min(len(sorted_vals) - 1, int(round(p / 100.0 * (len(sorted_vals) - 1)))))
+    return sorted_vals[k]
+
+
+@app.route('/debug/rs485/taptest', methods=['POST'])
+def rs485_taptest() -> Response:
+    """Fast keypress-landing probe for tuning the RS-485/WiFi-bridge timing.
+
+    Body: {"presses"?: 20, "timeout"?: 1.5, "predelay_ms"?: <set live first>}
+
+    Enters the Settings menu and fires single, benign RIGHT/LEFT presses (cursor
+    moves only — no equipment changes), measuring for EACH press whether it
+    landed (display changed) and how long it took. Reports landing rate plus the
+    latency distribution (min/p50/p90/max) of landed presses — the long tail is
+    the signature of bridge buffering/jitter. Much faster than the full nav
+    benchmark, so it's the loop to use while changing bridge settings.
+
+    Single presses with NO re-press, so the landing rate is the raw per-window
+    hit probability (unlike the benchmark, whose navigator re-presses drops).
+    """
+    nav, mode, err, code = _resolve_benchmark_nav('rs485')
+    if nav is None:
+        return jsonify({'error': err}), code
+
+    body = request.get_json(silent=True) or {}
+    presses = max(1, int(body.get('presses', 20)))
+    timeout = float(body.get('timeout', 1.5))
+
+    global KEY_PREDELAY_MS
+    saved_predelay = KEY_PREDELAY_MS
+    if body.get('predelay_ms') is not None:
+        KEY_PREDELAY_MS = float(body['predelay_ms'])
+    saved_timeout = MenuNavigator._KEY_TIMEOUT
+    MenuNavigator._KEY_TIMEOUT = timeout
+
+    results = []
+    try:
+        with _nav_lock:
+            nav._anchor()
+            for i in range(presses):
+                key = 'RIGHT' if i % 2 == 0 else 'LEFT'
+                before = nav.text()
+                t0 = time.time()
+                after = nav._send(key)
+                dt_ms = round((time.time() - t0) * 1000, 1)
+                results.append({'landed': after != before, 'latency_ms': dt_ms})
+    finally:
+        MenuNavigator._KEY_TIMEOUT = saved_timeout
+        KEY_PREDELAY_MS = saved_predelay
+        try:
+            nav.fast_exit()
+        except Exception:
+            pass
+
+    landed = [r for r in results if r['landed']]
+    lat = sorted(r['latency_ms'] for r in landed)
+    return jsonify({
+        'mode': mode,
+        'presses': presses,
+        'landed': len(landed),
+        'landing_rate_pct': round(100 * len(landed) / presses, 1),
+        'predelay_ms': saved_predelay if body.get('predelay_ms') is None
+                       else float(body['predelay_ms']),
+        'latency_ms': {
+            'min': lat[0] if lat else None,
+            'p50': _pct(lat, 50),
+            'p90': _pct(lat, 90),
+            'max': lat[-1] if lat else None,
+        },
+        'detail': results,
+    })
+
+
 @app.route('/bridge/health')
 def get_bridge_health() -> Response:
     """Return the AquaConnect command-path health status.
