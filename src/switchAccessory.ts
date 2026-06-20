@@ -16,6 +16,10 @@ export class SwitchAccessory {
       .setCharacteristic(this.platform.Characteristic.Model, 'ProLogic/AquaPlus')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, circuit);
 
+    // Evict any stale Fanv2 service left from earlier plugin versions.
+    const staleFan = this.accessory.getService(this.platform.Service.Fanv2);
+    if (staleFan) this.accessory.removeService(staleFan);
+
     this.service = this.accessory.getService(this.platform.Service.Switch)
       ?? this.accessory.addService(this.platform.Service.Switch);
 
