@@ -1,7 +1,8 @@
 # Homebridge ProLogic Plugin — Authoritative Specification
 
-> **Version**: 3.1 — updated to reflect VSP slot tiles, salt sensor, super chlorinate,
-> circuit label overrides, fan spinning logic, and all other post-3.0 changes
+> **Version**: 3.2 — heater two-switch model, salt sensor max 4000, VSP slot tile
+> robustness (pre-fetch/debounce/zero-guard/floor), nav timing optimization (0.6s gap +
+> adaptive reads), `/debug/nav-sweep` + `/debug/nav-benchmark` harnesses
 > **Updated**: 2026-06-20
 > **Status**: Implemented and running on hardware (v0.1.0)
 
@@ -222,6 +223,7 @@ class PoolState:
     spa_setpoint_f: int | None
     pool_heater_enabled: bool | None   # True=Auto mode, False=Manual Off
     spa_heater_enabled: bool | None
+    heater_active: bool | None   # relay firing right now (from led['heater'])
     valve_mode: str | None       # 'pool' | 'spa'
     vsp_slot_pct: dict           # {1: pct, 2: pct, 3: pct, 4: pct}
     vsp_active_slot: int | None  # 1–4; set on activate or from scroll
@@ -237,6 +239,13 @@ skipping when `_nav_lock.busy()` (navigation in progress). Each response is pass
 `_apply()` → `_apply_ac_scroll_to_state()` + `_apply_ac_led_to_state()`. Poll reads are
 pure reads — no keypad events.
 
+**Per-key reads during navigation** (`send_nav_key`): pure navigation keys (MENU/RIGHT/
+LEFT/PLUS/MINUS, `_AC_NAV_KEYS`) read *adaptively* — they stop at the first read whose
+frame differs from the pre-keypress frame (`_AC_NAV_READS` cap, default 2). Equipment toggle
+keys keep the fixed confirm-read burst (`_AC_CONFIRM_READS`/`_AC_CONFIRM_GAP_S`) because the
+panel flashes a transient confirmation that a single read can miss. This adaptive split is
+the main contributor to the ~44% faster menu reads (see §3.3).
+
 ### 5.4 `_PriorityLock`
 
 Wraps `threading.Lock`, tracking queued waiters. `busy()` = held OR queued. Poll loop
@@ -247,11 +256,17 @@ defers when busy so navigation sequences aren't interrupted by concurrent reads.
 | Field | Meaning | Source |
 |---|---|---|
 | `pool/spa_heater_enabled` | Heater armed (Auto mode) | Menu navigation / scroll |
-| `circuits['HEATER_1']` | Heater actively calling for heat | LED nibble |
+| `circuits['HEATER_1']` | Heater armed (Auto mode), LED-derived fallback | `HEATER_AUTO_MODE` LED bit |
+| `heater_active` | Relay firing right now (element on) | `led['heater']` nibble (on/blink = firing) |
 
-The HEATER_1 **switch** shows enabled state. The thermostat `CurrentHeatingCoolingState`
-shows active state. These are intentionally different: the switch being ON means the heater
-is armed and will heat when needed; it does not mean the element is currently firing.
+Three distinct signals. **Armed** (`heater_enabled` / `circuits['HEATER_1']`) means the
+heater is in Auto mode and will call for heat when the pump runs and temp is below setpoint.
+**Active** (`heater_active`) means the relay is firing *right now*. `heater_active` is read
+from the LED broadcast on both backends (`led['heater']`) — note `get_state(States.HEATER_1)`
+throws on AquaConnect because the `_states` bitmap is RS-485-only.
+
+The plugin surfaces these as two switches (see §7.4): "Heater Auto" (armed) and
+"Heater Running" (active).
 
 ### 5.6 Bridge Wedge Detection
 
@@ -353,6 +368,10 @@ uses Settings menu navigation on both backends.
 | GET | `/superchlorinate/inspect` | Read-only frame capture for that menu item |
 | POST | `/debug/wedge-test` | One-shot wedge scenario harness |
 | GET | `/debug/wedge-test` | Poll wedge-test result |
+| GET | `/debug/nav-trace` | Last N keypress traces (`?n=60`), newest last |
+| POST | `/debug/nav-trace/clear` | Clear the nav trace ring buffer |
+| POST | `/debug/nav-benchmark` | Time `read_vsp_slot` over N laps under chosen timing params; reports wall-time + dropped/re-pressed counts |
+| POST | `/debug/nav-sweep` | Sweep `min_gaps` (and optionally `nav_gaps`/`post_menu_settles`) in one call; aborts early + returns partial results on a wedge; ranks clean runs fastest-first |
 
 ---
 
@@ -382,6 +401,7 @@ uses Settings menu navigation on both backends.
   "enablePumpSpeedFan": true,
   "enableSaltSensor": true,
   "enableVspSlotTiles": false,
+  "vspSlotMinPct": { "1": 35 },
   "circuitLabels": {
     "AUX_1": "Spa Light"
   }
@@ -395,7 +415,8 @@ uses Settings menu navigation on both backends.
 | Switch | Spa | `enableSpaModeSwitch` — On=spa, Off=pool |
 | Switch | Filter | `circuits` includes FILTER |
 | Switch | Lights | `circuits` includes LIGHTS |
-| Switch | Heater | `circuits` includes HEATER_1 — shows enabled state |
+| Switch | Heater Auto | `circuits` includes HEATER_1 — armed/Auto-mode, tappable |
+| Switch | Heater Running | registered with HEATER_1 — read-only relay-firing indicator (`heater_active`) |
 | Switch | Aux 1 | `circuits` includes AUX_1 (this system: spa light) |
 | Switch | Aux 2 | `circuits` includes AUX_2 |
 | Switch | Super Chlorinate | `circuits` includes SUPER_CHLORINATE |
@@ -421,15 +442,25 @@ Any circuit switch can be renamed in config without changing the sidecar or prot
 Defaults: Pool, Spa, Filter, Lights, Spillover, Aux 1, Aux 2, Heater, Super Chlorinate.
 Editable per-field in the Homebridge config UI.
 
-### 7.4 HEATER_1 Switch Semantics
+### 7.4 HEATER_1 Switch Semantics — Two-Switch Model
 
-Shows `pool_heater_enabled` or `spa_heater_enabled` based on valve mode — the **armed**
-state (Auto vs Manual Off), not whether the element is actively firing. Falls back to the
-LED bit until the first menu read confirms the enabled state.
+When `circuits` includes HEATER_1, two tiles are registered instead of one:
 
-Switch ON = heater armed, will heat when pump runs and temp is below setpoint.
-Switch OFF = Manual Off, will not heat regardless of temperature.
-Active heating is shown separately by the thermostat's `CurrentHeatingCoolingState`.
+**"Heater Auto"** (`SwitchAccessory`, tappable) — shows `pool_heater_enabled` or
+`spa_heater_enabled` based on valve mode, i.e. the **armed** state (Auto vs Manual Off).
+Falls back to the LED bit until the first menu read confirms the enabled state.
+ON = armed, will heat when pump runs and temp is below setpoint. OFF = Manual Off.
+
+**"Heater Running"** (`HeaterRunningAccessory`, read-only) — shows `heater_active`, i.e.
+whether the relay is **firing right now**. Any user toggle snaps back to the real state.
+
+Rationale: an earlier attempt used a single three-state Fanv2 (grayed/armed/spinning), but
+Apple Home ignores `CurrentFanState` and spins any `Active=1` fan, so the "firing" state
+could not be shown reliably. The two-switch split is unambiguous. The thermostat's
+`CurrentHeatingCoolingState` also reflects active heating.
+
+> **Implementation note:** `SwitchAccessory` evicts any stale `Fanv2` service left on the
+> accessory by the abandoned three-state design before adding its `Switch` service.
 
 ### 7.5 Three-Thermostat Model
 
@@ -460,20 +491,36 @@ animation rather than picking randomly:
 
 When `enableVspSlotTiles: true`, four Fan tiles are registered (Speed 1–Speed 4). Each
 shows that slot's configured speed % from `vsp_slot_pct`. Setting the speed writes the
-new value to that slot and immediately activates it (FILTER off→on). The `vsp_slot_pct`
-dict is populated by `GET /vsp/slots` or individual `GET /vsp/slot/<n>` calls; null until
-the first menu navigation read.
+new value to that slot and immediately activates it (FILTER off→on).
 
-Trigger an initial read after sidecar restart:
-```bash
-curl -s http://127.0.0.1:5757/vsp/slots | python3 -m json.tool
-```
+Robustness behaviors (added 2026-06-20):
+
+- **Startup pre-fetch**: the plugin calls `GET /vsp/slots` once on launch and populates the
+  tiles, so they show real values instead of a blank 0% before any interaction. (Previously
+  `vsp_slot_pct` was null until a manual menu read.)
+- **Debounced writes**: HomeKit fires `onSet` repeatedly while the user drags the speed
+  ring. The accessory debounces 600 ms and commits only the final value, so a drag from
+  90→40 is **one** menu navigation, not one per intermediate step.
+- **Zero guard**: `onSet(0)` (sent when the user taps a tile without dragging) is a no-op
+  that reverts to the current value — it must not write 0% and stop the pump.
+- **Per-slot floor** (`vspSlotMinPct`): sets the `RotationSpeed` `minValue` so the slider
+  can't target below the panel's hardware floor. Slot 1 defaults to 35%. The sidecar's
+  `_step_to` independently stops once a value stalls against a floor/ceiling instead of
+  burning the full press budget.
 
 ### 7.8 Salt Level Sensor
 
 `SaltSensorAccessory` uses `AirQualitySensor` service, `AirQuality` pinned to Excellent
-(no warning colours), `VOCDensity` showing raw PPM (range 0–65535 covers typical saltwater
-pool levels of 2700–3500 PPM without clamping). Enabled by `enableSaltSensor` (default true).
+(no warning colours), `VOCDensity` showing raw PPM. `VOCDensity` defaults to a HAP `maxValue`
+of **1000**, which silently clamped the ~3200 PPM reading; `setProps({ minValue: 0,
+maxValue: 4000 })` raises it with headroom for typical saltwater levels (2700–3500 PPM).
+Enabled by `enableSaltSensor` (default true).
+
+> HomeKit limitations (confirmed, not fixable on the Air Quality service): the unit renders
+> as µg/m³ — there is no "ppm" unit for any standard HomeKit sensor — and the mandatory
+> `AirQuality` characteristic always shows a qualitative label ("Excellent"), which cannot
+> be hidden. A Light Sensor (lux) would drop the label but still not show "ppm"; kept on
+> Air Quality by preference.
 
 ### 7.9 BridgeHealthAccessory
 
@@ -484,14 +531,15 @@ to true result. Updated passively on every poll.
 
 On each poll cycle:
 1. Valve mode → Spa Mode switch
-2. Circuit switches (HEATER_1 uses enabled state; all others use LED bit)
-3. Thermostat state → all three thermostat accessories
-4. Pool + air temp sensors
-5. Chlorinator fan speed + running state (filter on AND % > 0)
-6. Filter Speed fan speed + running state (filter on)
-7. VSP slot tiles speed + running state (filter on AND slot matches)
-8. Salt level sensor
-9. Bridge health wedge state
+2. Circuit switches (HEATER_1 "Heater Auto" uses enabled state; all others use LED bit)
+3. "Heater Running" switch ← `heater_active`
+4. Thermostat state → all three thermostat accessories
+5. Pool + air temp sensors
+6. Chlorinator fan speed + running state (filter on AND % > 0)
+7. Filter Speed fan speed + running state (filter on AND `pump_speed` > 0)
+8. VSP slot tiles speed + running state (filter on AND slot matches)
+9. Salt level sensor
+10. Bridge health wedge state
 
 ### 7.11 Backend Reconciliation
 
@@ -521,6 +569,7 @@ homebridge-prologic/
     ├── switchAccessory.ts          ← generic circuit switch (SUPER_CHLORINATE special-cased)
     ├── spaModeAccessory.ts         ← Spa Mode switch (On=spa, Off=pool)
     ├── thermostatAccessory.ts      ← three-body thermostat model
+    ├── heaterRunningAccessory.ts   ← read-only "Heater Running" relay-firing switch
     ├── temperatureAccessory.ts     ← read-only temperature sensor
     ├── fanAccessory.ts             ← chlorinator % / filter speed fan tiles + CurrentFanState
     ├── vspSlotAccessory.ts         ← VSP slot 1–4 fan tiles
