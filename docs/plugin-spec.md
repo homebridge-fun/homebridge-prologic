@@ -662,7 +662,7 @@ homebridge-prologic/
 | RS-485 backend parity | Partial | Navigation exists but AquaConnect is primary; RS-485 not verified end-to-end in current codebase |
 | LIGHTS / AUX_1 write verify | Verified | Tested on hardware — keycode table correct, LED confirmation working |
 | Chlorinator % HomeKit write | Not wired | Endpoint exists; no HomeKit affordance yet |
-| Super Chlorinate | Not wired | Endpoint exists; no HomeKit switch wired |
+| Super Chlorinate | Done | Add `SUPER_CHLORINATE` to `circuits` config to expose switch; uses Settings menu nav on AquaConnect |
 | Spillover mode | Not tested | POOL/SPA/SPILLOVER cycle not present on this installation |
 | Valve mode detection lag | ~10–30s on AquaConnect | Depends on scroll position when mode changes |
 | System fault indicator | Not implemented | "Check System" LCD frames not surfaced to HomeKit |

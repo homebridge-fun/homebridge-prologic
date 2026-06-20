@@ -1883,6 +1883,25 @@ class MenuNavigator:
         finally:
             self.fast_exit()
 
+    # ── Super Chlorinate ─────────────────────────────────────────────────────
+
+    def set_super_chlorinate(self, on: bool) -> dict:
+        """Toggle Super Chlorinate on/off via Settings menu navigation."""
+        target = 'On' if on else 'Off'
+        try:
+            with _nav_lock:
+                self._anchor()
+                txt = self._press_until('RIGHT', lambda t: 'Super Chlorinate' in t,
+                                        self._NAV_MAX, 'Super Chlorinate')
+                current = 'on' in txt.lower().split('super chlorinate')[-1].lower()
+                if current != on:
+                    self._send('PLUS')   # PLUS toggles On/Off on this item
+                with state_lock:
+                    state.circuits['SUPER_CHLORINATE'] = on
+                return {'ok': True, 'super_chlorinate': on, 'was': current}
+        finally:
+            self.fast_exit()
+
     # ── VSP slots 1–4 ────────────────────────────────────────────────────────
 
     def _goto_vsp_slot(self, slot: int) -> str:
@@ -3149,6 +3168,16 @@ def set_chlorinator_legacy() -> Response:
 def set_super_chlorinate() -> Response:
     body = request.get_json(force=True)
     on: bool = bool(body.get('on', False))
+    nav = _get_navigator()
+    if nav is not None:
+        # AquaConnect and RS-485 (via navigator): use Settings menu navigation.
+        try:
+            result = nav.set_super_chlorinate(on)
+            log.info(f'Super-chlorinate -> {"ON" if on else "OFF"} (menu nav)')
+            return jsonify(result)
+        except Exception as e:
+            log.error(f'set_super_chlorinate (nav): {e}')
+            return jsonify({'error': str(e)}), 500
     p = _get_panel()
     if p is None:
         return jsonify({'error': 'Not connected'}), 503
