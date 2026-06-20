@@ -264,7 +264,7 @@ function circuitLabel(circuit: Circuit): string {
     FILTER: 'Filter',
     LIGHTS: 'Lights',
     SPILLOVER: 'Spillover',
-    AUX_1: 'Aux 1',
+    AUX_1: 'Spa Light',
     AUX_2: 'Aux 2',
     HEATER_1: 'Heater',
     SUPER_CHLORINATE: 'Super Chlorinate',

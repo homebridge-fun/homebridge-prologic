@@ -645,6 +645,7 @@ homebridge-prologic/
 | Spa heater | Manual Off default |
 | AquaConnect LED field | 12-char alphanumeric (e.g. `TECD4C333333`), nibbles: 3=absent, 4=off, 5=on, 6=blink |
 | AquaConnect scroll rate | One frame rotation ~10–30s on default cycling display |
+| AUX_1 | Spa light |
 | AUX_2 (canary circuit) | Inert on this installation; safe for wedge probe |
 | RS-485 LCD frame format | 32-char string, no newline — entire frame in line1, line2 empty |
 | Fault observed | "Check System / Inspect Cell" — T-Cell-15 salt cell comm fault |
