@@ -1667,12 +1667,26 @@ class MenuNavigator:
         re-press) and overshoot (direction chosen fresh each iteration);
         converges because we stop on equality.
         """
+        stalled = 0
+        prev = None
         for _ in range(budget):
             cur = self._read_value(parser)
             if cur is None:
                 raise RuntimeError(f'Cannot read {what} value at {self._lcd.text()!r}')
             if cur == target:
                 return cur
+            # Detect a hardware floor/ceiling: if two consecutive presses in the
+            # same direction don't move the value, the panel won't go further.
+            # Stop here and accept the clamped value rather than burning the
+            # whole budget hammering a limit.
+            if prev is not None and cur == prev:
+                stalled += 1
+                if stalled >= 2:
+                    log.info('%s clamped at %s (target %s unreachable)', what, cur, target)
+                    return cur
+            else:
+                stalled = 0
+            prev = cur
             self._send(up_key if target > cur else down_key)
         cur = self._read_value(parser)
         if cur != target:
