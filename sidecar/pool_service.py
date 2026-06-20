@@ -2600,10 +2600,12 @@ def nav_sweep() -> Response:
     slot = int(body.get('slot', 1))
     settle = float(body.get('settle_between_s', 2.0))
 
-    # Swept axes (lists). Default to a min_gap sweep if none given.
+    # Swept axes (lists). Default to a min_gap sweep if none given. The
+    # nav_gap / post_menu_settle axes default to a single [None] entry meaning
+    # "leave at the fixed value" — don't coerce that None to float.
     min_gaps = [float(x) for x in body.get('min_gaps', [_AC_MIN_GAP_S])]
-    nav_gaps = [float(x) for x in body.get('nav_gaps', [None])]
-    settles = [float(x) for x in body.get('post_menu_settles', [None])]
+    nav_gaps = [None if x is None else float(x) for x in body.get('nav_gaps', [None])]
+    settles = [None if x is None else float(x) for x in body.get('post_menu_settles', [None])]
 
     base = _nav_timing_defaults()
     fixed = _apply_overrides(base, body)  # apply any scalar fixed overrides
