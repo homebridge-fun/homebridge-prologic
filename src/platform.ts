@@ -60,6 +60,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableSpaModeSwitch: config['enableSpaModeSwitch'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
+      circuitLabels: config['circuitLabels'] ?? {},
     };
 
     this.sidecar = new SidecarClient(this.cfg.sidecarHost, this.cfg.sidecarPort);
@@ -104,7 +105,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     // Circuit switches
     for (const circuit of this.cfg.circuits) {
       if (CIRCUITS.includes(circuit)) {
-        const acc = register(circuitLabel(circuit),
+        const acc = register(circuitLabel(circuit, this.cfg.circuitLabels),
           this.api.hap.uuid.generate(`${PLUGIN_NAME}-circuit-${circuit}`));
         this.switches.set(circuit, new SwitchAccessory(this, acc, circuit));
       }
@@ -257,17 +258,17 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   }
 }
 
-function circuitLabel(circuit: Circuit): string {
-  const labels: Record<Circuit, string> = {
+function circuitLabel(circuit: Circuit, overrides: Partial<Record<Circuit, string>> = {}): string {
+  const defaults: Record<Circuit, string> = {
     POOL: 'Pool',
     SPA: 'Spa',
     FILTER: 'Filter',
     LIGHTS: 'Lights',
     SPILLOVER: 'Spillover',
-    AUX_1: 'Spa Light',
+    AUX_1: 'Aux 1',
     AUX_2: 'Aux 2',
     HEATER_1: 'Heater',
     SUPER_CHLORINATE: 'Super Chlorinate',
   };
-  return labels[circuit] ?? circuit;
+  return overrides[circuit] ?? defaults[circuit] ?? circuit;
 }

@@ -54,6 +54,7 @@ export interface PlatformConfig {
   enableSpaModeSwitch: boolean;
   enableChlorinatorFan: boolean;
   enablePumpSpeedFan: boolean;
+  circuitLabels: Partial<Record<Circuit, string>>;
 }
 
 export function celsiusToFahrenheit(c: number): number {
