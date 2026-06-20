@@ -2354,6 +2354,34 @@ def set_backend() -> Response:
     return jsonify({'ok': True, 'restarting': True, 'backend': backend})
 
 
+@app.route('/backend/toggle', methods=['POST'])
+def toggle_backend() -> Response:
+    """Flip the active backend to the other one and restart into it.
+
+    The whole-sidecar switch is the 'fully silent idle' toggle: only the active
+    backend's process paths run, so the other bridge never touches the panel —
+    every read/write/benchmark on the new active backend is single-transport.
+    Clears observe_rs485 so the clean (no parallel observer) mode is used.
+    """
+    other = 'rs485' if _active_backend == 'aquaconnect' else 'aquaconnect'
+    cfg = _load_backend_config()
+    cfg['backend'] = other
+    cfg['observe_rs485'] = False   # single-transport: no parallel observer
+    try:
+        _save_backend_config(cfg)
+    except Exception as e:
+        log.error('toggle_backend persist failed: %s', e)
+        return jsonify({'error': f'persist failed: {e}'}), 500
+    log.info('Backend TOGGLE %s -> %s; restarting.', _active_backend, other)
+
+    def _restart() -> None:
+        time.sleep(0.5)
+        os._exit(0)
+    threading.Thread(target=_restart, daemon=True, name='backend-toggle').start()
+    return jsonify({'ok': True, 'restarting': True,
+                    'from': _active_backend, 'to': other})
+
+
 # ── Backend-agnostic live frame stream + per-backend benchmark ───────────────
 # Upstream consumes /stream (active backend) and never names a backend. The
 # /stream/<name> and /benchmark/<name> forms target a specific backend by name
@@ -2429,9 +2457,9 @@ def benchmark_named(name: str) -> Response:
     the nav trace. Comparable across backends — for RS-485 the latency is the
     bus round-trip; for AquaConnect it's the HTTP frame-reader confirm time.
 
-    For 'rs485' this drives the observe-only listener, so it actively presses
-    keys on the panel for the duration — run it deliberately, not on the live
-    HomeKit path.
+    Prefers the ACTIVE backend (single-transport, no cross-bridge contention).
+    Falls back to the observe-only RS-485 listener only if rs485 is requested
+    while AquaConnect is active.
     """
     if name not in _STREAM_BACKENDS:
         return jsonify({'error': f'unknown backend: {name}'}), 404
@@ -2439,22 +2467,14 @@ def benchmark_named(name: str) -> Response:
     laps = max(1, int(body.get('laps', 3)))
     slot = int(body.get('slot', 1))
     applied = _apply_overrides(_nav_timing_defaults(), body)
-    is_rs = (name == 'rs485')
 
-    if is_rs:
-        obs = _rs485_observer
-        if obs is None:
-            return jsonify({'error': 'rs485 observer not connected'}), 503
-        nav = obs.nav
-    else:
-        if _active_backend != 'aquaconnect':
-            return jsonify({'error': 'aquaconnect backend not active'}), 503
-        nav = _get_navigator()
-        if nav is None:
-            return jsonify({'error': 'navigator unavailable'}), 503
+    nav, mode, err, code = _resolve_benchmark_nav(name)
+    if nav is None:
+        return jsonify({'error': err}), code
 
-    result = _run_nav_benchmark(nav, laps, slot, applied, is_rs485=is_rs)
+    result = _run_nav_benchmark(nav, laps, slot, applied, is_rs485=(name == 'rs485'))
     result['backend'] = name
+    result['mode'] = mode   # 'active' (single-transport) or 'observer'
     return jsonify(result)
 
 
@@ -2469,9 +2489,9 @@ def rs485_sweep() -> Response:
     rate and avg key latency so you can pick the timing that minimises drops.
     Aborts early if a run produces 0 successful keys (panel stuck).
     """
-    obs = _rs485_observer
-    if obs is None:
-        return jsonify({'error': 'rs485 observer not connected'}), 503
+    nav, mode, err, code = _resolve_benchmark_nav('rs485')
+    if nav is None:
+        return jsonify({'error': err}), code
 
     body = request.get_json(force=True) or {}
     predelays = body.get('predelays_ms',
@@ -2484,7 +2504,7 @@ def rs485_sweep() -> Response:
     for pd in predelays:
         applied = dict(base)
         applied['key_predelay_ms'] = float(pd)
-        result = _run_nav_benchmark(obs.nav, laps, slot, applied, is_rs485=True)
+        result = _run_nav_benchmark(nav, laps, slot, applied, is_rs485=True)
         s = result['summary']
         entry = {
             'key_predelay_ms': pd,
@@ -2509,6 +2529,7 @@ def rs485_sweep() -> Response:
     return jsonify({
         'runs': runs,
         'best': clean[0] if clean else None,
+        'mode': mode,   # 'active' (single-transport) or 'observer'
         'params': {'laps': laps, 'slot': slot},
     })
 
@@ -2795,6 +2816,25 @@ def _apply_overrides(base: dict, body: dict) -> dict:
     return applied
 
 
+def _resolve_benchmark_nav(name: str):
+    """Pick the navigator to benchmark for `name`.
+
+    Returns (nav, mode, err, http_code). Prefers the ACTIVE backend so the run
+    is single-transport (reads, nav and confirmation all on one bridge — the
+    true 'is this backend viable on its own' test). Only falls back to the
+    observe-only RS-485 listener when rs485 is asked for while AC is active.
+    """
+    if name == _active_backend:
+        nav = _get_navigator()
+        if nav is None:
+            return None, None, f'{name} active but navigator unavailable', 503
+        return nav, 'active', None, 200
+    if name == 'rs485' and _rs485_observer is not None:
+        return _rs485_observer.nav, 'observer', None, 200
+    return None, None, (f'{name} is not the active backend and has no observer; '
+                        f'toggle to it first (POST /backend/toggle)'), 503
+
+
 def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict,
                        is_rs485: bool = False) -> dict:
     """Apply `applied` tunables, time read_vsp_slot(slot) over `laps`, restore.
@@ -2881,10 +2921,6 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict,
         summary['requests_per_press'] = (
             round(total_requests / total_presses, 2) if total_presses else None)
     else:
-        all_lat = [e['wait_s'] for e in
-                   [e for l in laps_out for e in []]  # placeholder
-                   if e.get('changed')]
-        # Pull latencies from the per-lap avg instead
         valid_avgs = [l['avg_key_latency_ms'] for l in laps_out
                       if l.get('avg_key_latency_ms') is not None]
         summary['avg_key_latency_ms'] = (

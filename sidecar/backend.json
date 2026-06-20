@@ -1,0 +1,4 @@
+{
+  "backend": "rs485",
+  "observe_rs485": false
+}

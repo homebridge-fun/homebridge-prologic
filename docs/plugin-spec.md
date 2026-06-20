@@ -362,31 +362,34 @@ uses Settings menu navigation on both backends.
 | GET | `/backend` | `{"active": "aquaconnect"\|"rs485", "config": {...}}` |
 | POST | `/backend` | `{"backend", "aquaconnect_host"?, "rs485_host"?, "rs485_port"?}` — persists + restarts |
 
-### 6.8 Live frame stream + per-backend benchmark
+### 6.8 Backend toggle, live stream, and benchmark
 
-Backend-agnostic surface for watching the LCD bus and comparing backends. Each
-backend publishes its frames to a `FrameHub`; upstream consumes `/stream` and
-never names a backend. The `/<name>` forms target a specific backend by name —
-used for parallel RS-485 validation where both buses run at once.
+The two backends are **complete, isolated interfaces**; exactly one is active at
+a time (the idle one is fully silent — its process paths don't run, so its
+bridge never touches the panel). Validation is **single-transport**: toggle the
+whole sidecar to a backend, then read/write/benchmark entirely on that bridge —
+no cross-bridge contention. Toggling RS-485 → permanent is the production swap.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/stream` | SSE feed of LCD frames from the **active** backend (recent tail, then live). `data: {seq, ts, text, raw}` per frame; `: heartbeat` on idle |
-| GET | `/stream/<name>` | SSE feed from a named backend (`aquaconnect`\|`rs485`), even if it is only observing |
-| GET | `/backends` | List backends, each `{name, role: active\|observer\|inactive, frames_seen, last_frame_ts}`; rs485 adds `connected` + isolated `observed_state` |
-| POST | `/benchmark/<name>` | Nav speed test on a named backend. Body `{laps?=3, slot?=1, min_gap?, post_menu_settle?, key_timeout?}`. Reports per-lap wall time, presses, drops; per-key latency comes from the nav trace (`wait_s`). For `rs485` this **drives the observe-only listener** (sends keys for the run's duration) |
+| POST | `/backend/toggle` | Flip active backend to the other and restart into it (clears `observe_rs485` for clean single-transport). Returns `{from, to, restarting}` |
+| GET | `/stream` | SSE feed of LCD frames from the **active** backend (recent tail, then live). `data: {seq, ts, text, raw}`; `: heartbeat` on idle |
+| GET | `/stream/<name>` | SSE feed from a named backend's `FrameHub` (`aquaconnect`\|`rs485`) |
+| GET | `/backends` | List backends: `{name, role: active\|observer\|inactive, frames_seen, last_frame_ts}` |
+| POST | `/benchmark/<name>` | Nav speed test. Body `{laps?=3, slot?=1, key_predelay_ms?, key_burst?, key_timeout?, post_menu_settle?, min_gap?}`. Reports per-lap wall time, presses, drops, `drop_rate_pct`; RS-485 adds `avg_key_latency_ms`, AC adds `requests_per_press`. **Prefers the active backend** (`mode: active`, single-transport); falls back to the observer (`mode: observer`) only if rs485 is requested while AC is active |
+| POST | `/benchmark/rs485/sweep` | Sweep `predelays_ms` (default `[20,30,50,70,100,130,160,200]`) to find the panel's post-keep-alive accept window; ranks by drop rate; aborts early if the panel gets stuck |
 
-**Parallel RS-485 observer.** In `--backend aquaconnect`, pass `--observe-rs485`
-(`--observe-rs485-host`, default `--host`; `--observe-rs485-port`, default 8899)
-to run an observe-only RS-485 listener alongside the active AquaConnect backend.
-The observer streams frames to `/stream/rs485` and parses an **isolated** state
-snapshot (never the global `PoolState`), so the two backends never stomp each
-other. It sends no keys except during `/benchmark/rs485`. Persistable via `POST
-/backend` keys `observe_rs485`, `observe_rs485_host`, `observe_rs485_port`.
+**RS-485 keypress timing.** The WiFi serial bridge has a narrow accept window
+after each keep-alive frame; `key_predelay_ms` (default 70) targets it. Missing
+it drops the key. Use `/benchmark/rs485/sweep` to find the lowest-drop predelay
+for the panel, then bake it into the sidecar's `--key-predelay-ms` startup arg.
 
-> Note: during `/benchmark/rs485` the AquaConnect poll loop is still reading the
-> box over HTTP while the observer presses keys over RS-485 — both hit the same
-> physical panel, so run benchmarks deliberately, not on the live HomeKit path.
+**Parallel observer (optional, off by default).** `--observe-rs485` runs an
+observe-only RS-485 listener alongside an active AquaConnect backend, streaming
+to `/stream/rs485` with an isolated state snapshot. It exists for a future live
+side-by-side dashboard, but is **not** the validation path — single-transport
+toggling is, because mixing a read on one bridge with a write on the other
+muddies measurements and doesn't reflect the swapped end-state.
 
 ### 6.9 Debug
 
