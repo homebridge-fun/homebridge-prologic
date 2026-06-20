@@ -62,13 +62,11 @@ export class HeaterFanAccessory {
 
   updateState(armed: boolean, firing: boolean): void {
     const { Characteristic: C } = this.platform;
-    if (this.armed !== armed) {
-      this.armed = armed;
-      this.service.updateCharacteristic(C.Active, armed ? 1 : 0);
-    }
-    // Always re-push fan state so the spin animation tracks the relay even
-    // when armed is unchanged.
+    this.armed = armed;
     this.firing = firing;
+    // Push Active and CurrentFanState every poll — HomeKit can silently
+    // drop updates if Active isn't re-asserted alongside state changes.
+    this.service.updateCharacteristic(C.Active, armed ? 1 : 0);
     const fanState = !armed
       ? C.CurrentFanState.INACTIVE
       : (firing ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.IDLE);
