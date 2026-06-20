@@ -659,7 +659,7 @@ homebridge-prologic/
 | VSP slot tiles | Not implemented | See §10.1 below |
 | FILTER circuit as Fanv2 | Not implemented | Could expose pump on/off + rotation speed read-only alongside slot tiles |
 | RS-485 backend parity | Partial | Navigation exists but AquaConnect is primary; RS-485 not verified end-to-end in current codebase |
-| LIGHTS / AUX_1 write verify | Not tested | Never tested on healthy bridge; keycode table should be correct |
+| LIGHTS / AUX_1 write verify | Verified | Tested on hardware — keycode table correct, LED confirmation working |
 | Chlorinator % HomeKit write | Not wired | Endpoint exists; no HomeKit affordance yet |
 | Super Chlorinate | Not wired | Endpoint exists; no HomeKit switch wired |
 | Spillover mode | Not tested | POOL/SPA/SPILLOVER cycle not present on this installation |
