@@ -3164,6 +3164,44 @@ def set_chlorinator_legacy() -> Response:
     return set_chlorinator_which(which)
 
 
+@app.route('/superchlorinate/inspect')
+def inspect_super_chlorinate() -> Response:
+    """Navigate to Super Chlorinate in the Settings menu and return the raw frames
+    seen at each step — read-only, no changes made. Used to verify frame text
+    before wiring the toggle logic."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    frames = []
+    try:
+        with _nav_lock:
+            nav._anchor()
+            frames.append({'key': 'anchor', 'frame': nav.text()})
+            # Walk RIGHT until we land on Super Chlorinate, recording each frame.
+            for i in range(nav._NAV_MAX):
+                txt = nav._send('RIGHT')
+                frames.append({'key': f'RIGHT x{i+1}', 'frame': txt})
+                if 'Super Chlorinate' in txt:
+                    # Record one PLUS press (what toggle would do) then MINUS to undo,
+                    # so we can see both states without leaving a change.
+                    after_plus = nav._send('PLUS')
+                    frames.append({'key': 'PLUS (toggled)', 'frame': after_plus})
+                    after_minus = nav._send('MINUS')
+                    frames.append({'key': 'MINUS (restored)', 'frame': after_minus})
+                    break
+            else:
+                frames.append({'key': 'error', 'frame': 'Super Chlorinate not found in Settings ring'})
+        return jsonify({'frames': frames})
+    except Exception as e:
+        log.error(f'inspect_super_chlorinate: {e}')
+        return jsonify({'error': str(e), 'frames_so_far': frames}), 500
+    finally:
+        try:
+            nav.fast_exit()
+        except Exception:
+            pass
+
+
 @app.route('/superchlorinate', methods=['POST'])
 def set_super_chlorinate() -> Response:
     body = request.get_json(force=True)
