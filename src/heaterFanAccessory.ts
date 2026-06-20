@@ -43,6 +43,14 @@ export class HeaterFanAccessory {
         if (!this.armed) return C.CurrentFanState.INACTIVE;
         return this.firing ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.IDLE;
       });
+
+    // RotationSpeed is required for HomeKit to honor CurrentFanState (a Fanv2
+    // without a speed ring animates purely on Active). 100 = firing, 0 = idle.
+    // Read-only: the slider just reflects firing state.
+    this.service.getCharacteristic(C.RotationSpeed)
+      .setProps({ minValue: 0, maxValue: 100, minStep: 100 })
+      .onGet(() => this.firing ? 100 : 0)
+      .onSet(() => { /* read-only */ });
   }
 
   private async handleSetActive(value: CharacteristicValue): Promise<void> {
@@ -71,5 +79,6 @@ export class HeaterFanAccessory {
       ? C.CurrentFanState.INACTIVE
       : (firing ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.IDLE);
     this.service.updateCharacteristic(C.CurrentFanState, fanState);
+    this.service.updateCharacteristic(C.RotationSpeed, firing ? 100 : 0);
   }
 }
