@@ -3365,15 +3365,27 @@ def debug_rawkey() -> Response:
         return jsonify({'error': str(e)}), 500
 
 
+def _current_key_timing() -> dict:
+    return {'burst': KEY_BURST, 'predelay_ms': KEY_PREDELAY_MS,
+            'gap_ms': KEY_GAP_MS, 'max_retries': KEY_MAX_RETRIES,
+            'verify_delay_s': KEY_VERIFY_DELAY_S, 'pad_bytes': KEY_PAD_BYTES}
+
+
+@app.route('/keytiming', methods=['GET', 'POST'])
 @app.route('/debug/keyburst', methods=['GET', 'POST'])
 def debug_keyburst() -> Response:
-    """Live-tune the key-burst timing without a restart (diagnostics).
+    """Live-tune the RS-485 key timing without a restart.
 
-    POST JSON any of: burst (int), predelay_ms (float), gap_ms (float).
-    The _send_frame_burst closure reads these globals on each send, so changes
-    take effect on the next keypress.
+    POST JSON any of: burst (int), predelay_ms (float), gap_ms (float),
+    max_retries (int), verify_delay_s (float), pad_bytes (int). The send path
+    reads these globals on each keypress, so changes take effect immediately.
+
+    Pass "persist": true to save the resulting values to backend.json so they
+    survive sidecar restarts/reboots — useful when dialing in timing over many
+    debug runs. The persisted values override the CLI --key-* args at startup.
     """
     global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES
+    persisted = False
     if request.method == 'POST':
         body = request.get_json(force=True) or {}
         if 'burst' in body:
@@ -3388,15 +3400,21 @@ def debug_keyburst() -> Response:
             KEY_VERIFY_DELAY_S = float(body['verify_delay_s'])
         if 'pad_bytes' in body:
             KEY_PAD_BYTES = max(0, int(body['pad_bytes']))
-        log.info('Key-burst retuned: burst=%d predelay=%.0fms gap=%.0fms '
+        log.info('Key timing retuned: burst=%d predelay=%.0fms gap=%.0fms '
                  'retries=%d verify=%.1fs pad=%d', KEY_BURST, KEY_PREDELAY_MS,
                  KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES)
-    return jsonify({'burst': KEY_BURST,
-                    'predelay_ms': KEY_PREDELAY_MS,
-                    'gap_ms': KEY_GAP_MS,
-                    'max_retries': KEY_MAX_RETRIES,
-                    'verify_delay_s': KEY_VERIFY_DELAY_S,
-                    'pad_bytes': KEY_PAD_BYTES})
+        if body.get('persist'):
+            try:
+                cfg = _load_backend_config()
+                cfg['key_timing'] = _current_key_timing()
+                _save_backend_config(cfg)
+                persisted = True
+                log.info('Key timing persisted to backend.json')
+            except Exception as e:
+                log.error('Could not persist key timing: %s', e)
+    out = _current_key_timing()
+    out['persisted'] = persisted
+    return jsonify(out)
 
 
 @app.route('/debug/aquaconnect', methods=['GET', 'POST'])
@@ -3997,9 +4015,21 @@ def main() -> None:
                           or args.observe_rs485_host or rs485_host or args.host)
     observe_rs485_port = cfg.get('observe_rs485_port', args.observe_rs485_port)
 
+    global KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES
     KEY_BURST = args.key_burst
     KEY_PREDELAY_MS = args.key_predelay_ms
     KEY_GAP_MS = args.key_gap_ms
+    # Persisted key timing (POST /keytiming {persist:true}) overrides the CLI
+    # --key-* args, so a value dialed in over many debug runs survives restarts.
+    kt = cfg.get('key_timing') or {}
+    if 'burst' in kt:         KEY_BURST = max(1, int(kt['burst']))
+    if 'predelay_ms' in kt:   KEY_PREDELAY_MS = float(kt['predelay_ms'])
+    if 'gap_ms' in kt:        KEY_GAP_MS = float(kt['gap_ms'])
+    if 'max_retries' in kt:   KEY_MAX_RETRIES = max(1, int(kt['max_retries']))
+    if 'verify_delay_s' in kt: KEY_VERIFY_DELAY_S = float(kt['verify_delay_s'])
+    if 'pad_bytes' in kt:     KEY_PAD_BYTES = max(0, int(kt['pad_bytes']))
+    if kt:
+        log.info('Loaded persisted key timing: %s', kt)
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend
