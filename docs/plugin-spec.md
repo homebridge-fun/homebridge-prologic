@@ -474,6 +474,12 @@ and dynamic tile name.
 
 Setpoint range: 65–104°F. Display units: Fahrenheit.
 
+Setpoint writes are **debounced 600ms** (`handleSetTarget` → `commitSetpoint`): dragging the
+temperature dial fires `onSet` per step and each write is a menu navigation, so only the
+final value is committed. `targetTempC` updates only on a confirmed write; a failed write
+reverts the dial to the last known value. This matches the fan/VSP debounce and closes the
+last drag-driven wedge vector.
+
 ### 7.6 Fan Accessories — Spinning Logic
 
 `CurrentFanState` is set explicitly on every poll so HomeKit always shows the correct
@@ -627,6 +633,7 @@ homebridge-prologic/
 | Circuit label overrides | Done | `circuitLabels` config object, editable in Homebridge UI |
 | Nav timing optimization | Done | `_AC_MIN_GAP_S` 0.9→0.6s; adaptive nav-key reads (exit on first changed frame, `_AC_NAV_READS` cap 2). ~44% faster menu reads. Floor is ~0.5s; below that the box wedges |
 | Chlorinator % HomeKit write | Done | Fan tile `RotationSpeed` writes `/chlorinator/{which}`; valve-mode aware (pool vs spa); 600ms debounce so a drag is one menu write, not one per step; reverts the ring on failure. Sidecar snaps to the panel grid (1% below 10%, 5% at/above) |
+| Wedge-risk audit of write paths | Done | Every slider-driven `onSet` that triggers menu navigation is now debounced 600ms: fan (chlorinator/pump), VSP slot tiles, **and the thermostat setpoint** (was the last unguarded drag→nav path). Discrete toggles (circuit switches, spa mode, heater enable) are single-press and need no debounce |
 | `/debug/nav-sweep` harness | Done | Server-side timing sweep over `min_gaps` (and optionally `nav_gaps`/`post_menu_settles`), aborts early + returns partial results on a wedge, ranks clean runs fastest-first |
 
 ### 10.2 Backlog (open)

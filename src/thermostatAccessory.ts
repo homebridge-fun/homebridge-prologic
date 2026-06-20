@@ -40,6 +40,7 @@ export class ThermostatAccessory {
   private heatingActive = false;
   private heaterEnabled = false;
   private currentName = '';
+  private setpointDebounce: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly platform: ProLogicPlatform,
@@ -88,20 +89,34 @@ export class ThermostatAccessory {
     return this.body;
   }
 
-  async handleSetTarget(value: CharacteristicValue): Promise<void> {
+  handleSetTarget(value: CharacteristicValue): void {
     const c = value as number;
-    const f = Math.round(celsiusToFahrenheit(c));
-    this.targetTempC = c;
+    // HomeKit fires onSet for every step as the user drags the temperature
+    // dial. Each setpoint write is a full menu navigation (PLUS/MINUS stepping),
+    // so committing every intermediate value would flood the panel and risk a
+    // wedge. Debounce: commit only the final value after 600ms of silence.
+    // targetTempC is left untouched until the write confirms, so a failed
+    // commit can revert the dial to the last known good value.
+    if (this.setpointDebounce) clearTimeout(this.setpointDebounce);
+    this.setpointDebounce = setTimeout(() => {
+      this.setpointDebounce = null;
+      void this.commitSetpoint(c);
+    }, 600);
+  }
 
+  private async commitSetpoint(c: number): Promise<void> {
+    const f = Math.round(celsiusToFahrenheit(c));
     const which = this.targetBody(this.platform.currentValveMode);
     this.platform.log.info(`[Thermostat ${this.body}] setpoint → ${f}°F (body: ${which})`);
     try {
       await this.platform.sidecar.setHeaterSetpoint(which, f);
+      this.targetTempC = c;
     } catch (err) {
       this.platform.log.error(`[Thermostat ${this.body}] setpoint write failed:`, err);
-      throw new this.platform.api.hap.HapStatusError(
-        this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
-      );
+      // Revert the dial to the last known good setpoint rather than leaving the
+      // failed drag value showing.
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.TargetTemperature, this.targetTempC);
     }
   }
 
