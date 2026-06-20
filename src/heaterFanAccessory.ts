@@ -48,7 +48,7 @@ export class HeaterFanAccessory {
     // without a speed ring animates purely on Active). 100 = firing, 0 = idle.
     // Read-only: the slider just reflects firing state.
     this.service.getCharacteristic(C.RotationSpeed)
-      .setProps({ minValue: 0, maxValue: 100, minStep: 100 })
+      .setProps({ minValue: 0, maxValue: 100, minStep: 1 })
       .onGet(() => this.firing ? 100 : 0)
       .onSet(() => { /* read-only */ });
   }
