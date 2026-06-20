@@ -1886,16 +1886,24 @@ class MenuNavigator:
     # ── Super Chlorinate ─────────────────────────────────────────────────────
 
     def set_super_chlorinate(self, on: bool) -> dict:
-        """Toggle Super Chlorinate on/off via Settings menu navigation."""
-        target = 'On' if on else 'Off'
+        """Toggle Super Chlorinate on/off via Settings menu navigation.
+
+        Frame format (verified on hardware):
+          'Super Chlorinate <span class="WBON">Off</span>'
+          'Super Chlorinate <span class="WBON">On</span>'
+        PLUS = Off→On, MINUS = On→Off.
+        """
         try:
             with _nav_lock:
                 self._anchor()
                 txt = self._press_until('RIGHT', lambda t: 'Super Chlorinate' in t,
                                         self._NAV_MAX, 'Super Chlorinate')
-                current = 'on' in txt.lower().split('super chlorinate')[-1].lower()
+                # '>On<' is unambiguous; '>Off<' also matches. 'WBON' contains 'on'
+                # so a plain substring check would always be True.
+                current = bool(re.search(r'>\s*On\s*<', txt, re.I))
                 if current != on:
-                    self._send('PLUS')   # PLUS toggles On/Off on this item
+                    key = 'PLUS' if on else 'MINUS'
+                    self._send(key)
                 with state_lock:
                     state.circuits['SUPER_CHLORINATE'] = on
                 return {'ok': True, 'super_chlorinate': on, 'was': current}
