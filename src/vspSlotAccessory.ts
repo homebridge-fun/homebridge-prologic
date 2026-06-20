@@ -15,6 +15,7 @@ export class VspSlotAccessory {
   private readonly service: Service;
   private configuredPct = 0;
   private running = false;
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly platform: ProLogicPlatform,
@@ -50,8 +51,28 @@ export class VspSlotAccessory {
       .onSet(this.handleSetSpeed.bind(this));
   }
 
-  private async handleSetSpeed(value: CharacteristicValue): Promise<void> {
+  private handleSetSpeed(value: CharacteristicValue): void {
     const pct = Math.round(value as number);
+
+    // HomeKit sends 0 when the user taps without dragging — treat as no-op.
+    if (pct === 0) {
+      setTimeout(() => {
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.RotationSpeed, this.configuredPct);
+      }, 100);
+      return;
+    }
+
+    // Debounce: HomeKit fires onSet repeatedly while the user drags the slider.
+    // Only commit after 600 ms of silence so we get a single menu navigation.
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
+      this.commitSpeed(pct);
+    }, 600);
+  }
+
+  private async commitSpeed(pct: number): Promise<void> {
     this.platform.log.info(`[VSP Slot ${this.slot}] speed → ${pct}%`);
     try {
       await this.platform.sidecar.setVspSlot(this.slot, pct);
@@ -59,9 +80,8 @@ export class VspSlotAccessory {
       this.configuredPct = pct;
     } catch (err) {
       this.platform.log.error(`[VSP Slot ${this.slot}] set speed failed:`, err);
-      throw new this.platform.api.hap.HapStatusError(
-        this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
-      );
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.RotationSpeed, this.configuredPct);
     }
   }
 

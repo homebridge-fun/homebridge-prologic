@@ -192,6 +192,14 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
           this.api.hap.uuid.generate(`${PLUGIN_NAME}-vsp-slot-${slot}`));
         this.vspSlots.push(new VspSlotAccessory(this, acc, slot));
       }
+      // Fetch real slot speeds on startup so tiles show current values.
+      this.sidecar.getAllVspSlots().then(result => {
+        for (const slotAcc of this.vspSlots) {
+          slotAcc.updateSpeed(result.slots[String(slotAcc.slot)]);
+        }
+      }).catch(err => {
+        this.log.warn('Could not pre-fetch VSP slot speeds:', (err as Error).message);
+      });
     }
 
     // Salt level sensor
