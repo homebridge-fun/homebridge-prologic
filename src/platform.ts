@@ -266,12 +266,15 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
           if (circuit === 'HEATER_1') {
             // Show enabled (Auto mode) not active-heating so the switch
             // stays on whenever the heater is armed, regardless of whether
-            // it is currently calling for heat. Falls back to the LED bit
-            // until the scroll has confirmed the enabled state.
+            // it is currently calling for heat. Only update when the navigator
+            // has confirmed the armed state — null means not yet read, so we
+            // hold the last-known value rather than flickering to false.
             const heaterEnabled = status.valve_mode === 'spa'
-              ? (status.spa_heater_enabled ?? status.circuits['HEATER_1'] ?? false)
-              : (status.pool_heater_enabled ?? status.circuits['HEATER_1'] ?? false);
-            sw.updateState(heaterEnabled);
+              ? status.spa_heater_enabled
+              : status.pool_heater_enabled;
+            if (heaterEnabled !== null) {
+              sw.updateState(heaterEnabled);
+            }
           } else {
             sw.updateState(status.circuits[circuit] ?? false);
           }
