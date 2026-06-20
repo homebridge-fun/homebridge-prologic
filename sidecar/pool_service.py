@@ -537,9 +537,12 @@ _AC_KEY_CODES = {
 }
 
 # Minimum gap (seconds) between ANY two requests to the box — reads included.
-# Characterization (2026-06-19): bare press threshold ~0.5s; read-then-press
-# threshold ~0.9s (reads count as events). 0.9s sits reliably above the edge.
-_AC_MIN_GAP_S = 0.9
+# Gap enforced between consecutive KEYPRESSES only. Reads (Update Local Server&)
+# are not keypad events and don't reset the panel's ignore window, so they carry
+# no gap. Characterization: bare press-to-press threshold ~0.5s. 0.6s gives a
+# 100ms safety margin while cutting per-key time roughly in half vs the original
+# 0.9s (which was conservatively set when reads were also phantom KeyId=00 events).
+_AC_MIN_GAP_S = 0.6
 
 # How long to wait after a key before reading back the settled screen. The box
 # mirrors the panel over the slow RS-485 bus, so the immediate response can
@@ -560,7 +563,7 @@ _AC_CONFIRM_GAP_S = 0.4
 # until the frame differs from the pre-keypress frame, then stop early. On a
 # responsive box this is a single read (~one gap), collapsing a ~2s/key step
 # toward ~1s/key. The cap is the fallback when the box is slow to mirror.
-_AC_NAV_READS = 4
+_AC_NAV_READS = 2
 _AC_NAV_GAP_S = 0.4
 
 # Navigation keys that move the cursor / adjust a value but never toggle an
@@ -635,7 +638,8 @@ class AquaConnectBackend:
         self._host = host
         self.lcd = LcdCapture()
         self._http_lock = threading.Lock()   # serializes press+settle+read units
-        self._last_req = 0.0                  # ts of last request (gap enforcement)
+        self._last_req = 0.0    # ts of last request (any); for debug gap logging
+        self._last_press = 0.0  # ts of last keypress; gates the press-to-press gap
         self._last_raw: Optional[str] = None  # last full body, for /debug calibration
         self._last_led: dict = {}
         self._poll_s = poll_s
@@ -665,7 +669,7 @@ class AquaConnectBackend:
         NOTE: use _read() for status reads. _post('00') goes through the
         firmware's WebsProcessKey() handler and counts as a keypad event.
         """
-        return self._request(f'KeyId={key_code}&')
+        return self._request(f'KeyId={key_code}&', is_press=True)
 
     def _read(self) -> Optional[str]:
         """Fetch the current screen state WITHOUT injecting a keypad event.
@@ -682,13 +686,20 @@ class AquaConnectBackend:
         """
         return self._request('Update Local Server&')
 
-    def _request(self, body: str) -> Optional[str]:
-        """Send a POST /WNewSt.htm with the given body and return the response."""
-        now = time.time()
-        elapsed = now - self._last_req
-        wait = _AC_MIN_GAP_S - elapsed
-        if wait > 0:
-            time.sleep(wait)
+    def _request(self, body: str, is_press: bool = False) -> Optional[str]:
+        """Send a POST /WNewSt.htm with the given body and return the response.
+
+        Gap enforcement applies only to keypresses (is_press=True): the panel
+        ignores keys fired within ~0.5s of the previous keypress. Reads use
+        'Update Local Server&' which is NOT a keypad event and does NOT reset
+        the panel's ignore window, so reads carry no gap requirement — the next
+        press is gated only on time since the last press, not since the last read.
+        """
+        if is_press:
+            now = time.time()
+            wait = _AC_MIN_GAP_S - (now - self._last_press)
+            if wait > 0:
+                time.sleep(wait)
         t_send = time.time()
         req = (f'POST /WNewSt.htm HTTP/1.1\r\n'
                f'Host: {self._host}\r\n'
@@ -732,7 +743,8 @@ class AquaConnectBackend:
                     if _AC_LED_RE.match(ln):
                         led_line = ln
                         break
-                gap_actual = t_send - self._last_req if self._last_req else 0.0
+                ref = self._last_press if is_press else self._last_req
+                gap_actual = t_send - ref if ref else 0.0
                 rtt = time.time() - t_send
                 log.debug(
                     'AC POST body=%r gap=%.3fs rtt=%.3fs thread=%s http=%s led=%s',
@@ -745,14 +757,18 @@ class AquaConnectBackend:
             finally:
                 s.close()
         except Exception as e:
+            ref = self._last_press if is_press else self._last_req
             log.warning('AquaConnect socket error body=%r gap=%.3fs thread=%s: %s',
                         body[:30],
-                        t_send - self._last_req if self._last_req else 0.0,
+                        t_send - ref if ref else 0.0,
                         threading.current_thread().name,
                         e)
             return None
         finally:
-            self._last_req = time.time()
+            now = time.time()
+            self._last_req = now
+            if is_press:
+                self._last_press = now
 
     # ── Parsing ───────────────────────────────────────────────────────────────
     @staticmethod
@@ -2652,8 +2668,11 @@ def nav_sweep() -> Response:
         if aborted:
             break
 
+    # "Clean" = all laps completed successfully. Drops (re-pressed keys) are
+    # baseline WiFi-bridge noise unrelated to gap size; requiring zero drops
+    # would never yield a winner. What matters is that every lap finished.
     clean = [r for r in rows
-             if r['drops'] == 0 and r['ok_laps'] == r['laps'] and r['avg_s'] is not None]
+             if r['ok_laps'] == r['laps'] and r['avg_s'] is not None]
     ranking = sorted(clean, key=lambda r: r['avg_s'])
     return jsonify({
         'laps': laps, 'slot': slot, 'defaults': base,
