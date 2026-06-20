@@ -21,6 +21,7 @@ export class VspSlotAccessory {
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
     public readonly slot: number,
+    private readonly minPct: number = 0,
   ) {
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Hayward')
@@ -45,8 +46,11 @@ export class VspSlotAccessory {
         : C.CurrentFanState.IDLE);
     this.service.updateCharacteristic(C.CurrentFanState, C.CurrentFanState.IDLE);
 
+    // minValue is the panel's hardware floor for this slot, so HomeKit's
+    // slider physically stops there instead of letting the user target a
+    // value the controller will silently clamp.
     this.service.getCharacteristic(C.RotationSpeed)
-      .setProps({ minValue: 0, maxValue: 100, minStep: 5 })
+      .setProps({ minValue: this.minPct, maxValue: 100, minStep: 5 })
       .onGet(() => this.configuredPct)
       .onSet(this.handleSetSpeed.bind(this));
   }

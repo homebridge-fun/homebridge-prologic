@@ -57,6 +57,7 @@ export interface PlatformConfig {
   enablePumpSpeedFan: boolean;
   enableSaltSensor: boolean;
   enableVspSlotTiles: boolean;
+  vspSlotMinPct: Record<string, number>;  // keys "1"–"4" → panel floor %
   circuitLabels: Partial<Record<Circuit, string>>;
 }
 

@@ -68,6 +68,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
       enableSaltSensor: config['enableSaltSensor'] ?? true,
       enableVspSlotTiles: config['enableVspSlotTiles'] ?? false,
+      vspSlotMinPct: config['vspSlotMinPct'] ?? { '1': 35 },
       circuitLabels: config['circuitLabels'] ?? {},
     };
 
@@ -190,7 +191,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       for (let slot = 1; slot <= 4; slot++) {
         const acc = register(`Speed ${slot}`,
           this.api.hap.uuid.generate(`${PLUGIN_NAME}-vsp-slot-${slot}`));
-        this.vspSlots.push(new VspSlotAccessory(this, acc, slot));
+        const minPct = this.cfg.vspSlotMinPct[String(slot)] ?? 0;
+        this.vspSlots.push(new VspSlotAccessory(this, acc, slot, minPct));
       }
       // Fetch real slot speeds on startup so tiles show current values.
       this.sidecar.getAllVspSlots().then(result => {

@@ -136,6 +136,17 @@
         "default": false,
         "description": "Expose four Fan tiles (Speed 1–4) showing each VSP slot's configured speed %. Setting a tile's speed writes that slot and activates it. Not shown on the home tab."
       },
+      "vspSlotMinPct": {
+        "title": "VSP Slot Minimum Speed %",
+        "type": "object",
+        "description": "Per-slot hardware floor for the VSP speed tiles. The HomeKit slider stops at this value so you cannot target a speed the panel will silently clamp. Slot 1 defaults to 35%.",
+        "properties": {
+          "1": { "title": "Slot 1 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
+          "2": { "title": "Slot 2 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
+          "3": { "title": "Slot 3 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
+          "4": { "title": "Slot 4 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 }
+        }
+      },
       "circuitLabels": {
         "title": "Circuit Label Overrides",
         "type": "object",
