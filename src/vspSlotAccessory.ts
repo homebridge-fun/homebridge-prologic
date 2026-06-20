@@ -14,6 +14,7 @@ import type { ProLogicPlatform } from './platform';
 export class VspSlotAccessory {
   private readonly service: Service;
   private configuredPct = 0;
+  private running = false;
 
   constructor(
     private readonly platform: ProLogicPlatform,
@@ -36,6 +37,11 @@ export class VspSlotAccessory {
       .onGet(() => 1)
       .onSet(() => { /* no-op */ });
 
+    this.service.getCharacteristic(C.CurrentFanState)
+      .onGet(() => this.running
+        ? C.CurrentFanState.BLOWING_AIR
+        : C.CurrentFanState.IDLE);
+
     this.service.getCharacteristic(C.RotationSpeed)
       .setProps({ minValue: 0, maxValue: 100, minStep: 5 })
       .onGet(() => this.configuredPct)
@@ -55,6 +61,17 @@ export class VspSlotAccessory {
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
       );
     }
+  }
+
+  updateRunning(activeSlot: number | null, filterOn: boolean): void {
+    const running = filterOn && activeSlot === this.slot;
+    if (this.running === running) return;
+    this.running = running;
+    const { Characteristic: C } = this.platform;
+    this.service.updateCharacteristic(
+      C.CurrentFanState,
+      running ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.IDLE,
+    );
   }
 
   updateSpeed(pct: number | undefined): void {

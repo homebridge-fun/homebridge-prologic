@@ -267,11 +267,15 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.poolTempSensor?.updateTemperature(status.pool_temp);
         this.airTempSensor?.updateTemperature(status.air_temp);
 
+        const filterOn = status.circuits['FILTER'] ?? false;
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
+        this.chlorinatorFan?.updateRunning(filterOn && (status.chlorinator_percent ?? 0) > 0);
         this.pumpFan?.updateSpeed(status.pump_speed);
+        this.pumpFan?.updateRunning(filterOn);
         this.pumpFan?.updateActiveSlot(status.vsp_active_slot);
         for (const slotAcc of this.vspSlots) {
           slotAcc.updateSpeed(status.vsp_slot_pct[String(slotAcc.slot)]);
+          slotAcc.updateRunning(status.vsp_active_slot, filterOn);
         }
         this.saltSensor?.updateSaltLevel(status.salt_level);
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
