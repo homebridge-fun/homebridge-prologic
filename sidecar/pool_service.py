@@ -618,6 +618,10 @@ class AquaConnectBackend:
         self.lcd = LcdCapture()
         self._http_lock = threading.Lock()   # serializes all socket access
         self._last_req = 0.0                  # ts of last request (gap enforcement)
+        # Monotonic count of every HTTP request (press + read), for timing tests:
+        # lets a benchmark measure total request volume per operation, validating
+        # the frame-reader's N+1-requests-per-N-keys behavior.
+        self._req_count = 0
         self._last_raw: Optional[str] = None  # last full body, for /debug calibration
         self._last_led: dict = {}
         self._poll_s = poll_s
@@ -672,6 +676,7 @@ class AquaConnectBackend:
 
     def _request(self, body: str) -> Optional[str]:
         """Send a POST /WNewSt.htm with the given body and return the response."""
+        self._req_count += 1
         now = time.time()
         wait = _AC_MIN_GAP_S - (now - self._last_req)
         if wait > 0:
@@ -2469,6 +2474,7 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
 
         for i in range(laps):
             seq0 = _NAV_SEQ[0]
+            req0 = _ac_backend._req_count if _ac_backend else 0
             t0 = time.time()
             ok, err = True, None
             try:
@@ -2482,9 +2488,14 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
                 lap_keys = [e for e in _NAV_TRACE if e['seq'] > seq0]
             presses = len(lap_keys)
             drops = sum(1 for e in lap_keys if not e['changed'])
+            # Total HTTP requests (presses + reads, incl. the background poll
+            # loop's reads that landed during this lap). With the frame-reader
+            # this should track ~presses + a small read overhead, vs the old
+            # confirm-burst's ~presses*5.
+            requests = (_ac_backend._req_count - req0) if _ac_backend else 0
             laps_out.append({
                 'lap': i + 1, 'ok': ok, 'seconds': round(dt, 2),
-                'presses': presses, 'drops': drops,
+                'presses': presses, 'drops': drops, 'requests': requests,
                 **({'error': err} if err else {}),
             })
     finally:
@@ -2494,14 +2505,19 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
 
     ok_laps = [l for l in laps_out if l['ok']]
     times = [l['seconds'] for l in ok_laps]
+    total_presses = sum(l['presses'] for l in laps_out)
+    total_requests = sum(l.get('requests', 0) for l in laps_out)
     summary = {
         'laps': laps, 'ok_laps': len(ok_laps),
         'total_s': round(sum(l['seconds'] for l in laps_out), 2),
         'avg_s': round(sum(times) / len(times), 2) if times else None,
         'min_s': min(times) if times else None,
         'max_s': max(times) if times else None,
-        'total_presses': sum(l['presses'] for l in laps_out),
+        'total_presses': total_presses,
         'total_drops': sum(l['drops'] for l in laps_out),
+        'total_requests': total_requests,
+        # Requests per keypress: ~1 (frame-reader N+1) vs ~5 (old confirm burst).
+        'requests_per_press': round(total_requests / total_presses, 2) if total_presses else None,
     }
     return {'summary': summary, 'laps_detail': laps_out}
 
@@ -2588,6 +2604,8 @@ def nav_sweep() -> Response:
                 'post_menu_settle': applied['post_menu_settle'],
                 'total_s': s['total_s'], 'avg_s': s['avg_s'],
                 'drops': s['total_drops'], 'presses': s['total_presses'],
+                'requests': s['total_requests'],
+                'requests_per_press': s['requests_per_press'],
                 'ok_laps': s['ok_laps'], 'laps': s['laps'],
             })
             # A run where EVERY lap failed is the wedge signature: presses
