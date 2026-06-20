@@ -119,10 +119,32 @@
         "description": "Expose pool chlorinator output % as a Fan accessory (speed ring = output %). Read/write via Settings menu navigation."
       },
       "enablePumpSpeedFan": {
-        "title": "Pump Speed Fan",
+        "title": "Filter Speed Fan",
         "type": "boolean",
         "default": true,
-        "description": "Expose VSP pump slot-4 speed % as a Fan accessory (speed ring = slot 4 %). Read/write via Settings menu navigation."
+        "description": "Expose current running filter speed as a Fan accessory. Setting the speed activates VSP slot 4 at that speed."
+      },
+      "enableSaltSensor": {
+        "title": "Salt Level Sensor",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose salt level (PPM) as an Air Quality sensor tile."
+      },
+      "circuitLabels": {
+        "title": "Circuit Label Overrides",
+        "type": "object",
+        "description": "Custom display names for circuit switches in HomeKit. Leave a field blank to use the default name.",
+        "properties": {
+          "POOL":              { "title": "Pool label",              "type": "string", "placeholder": "Pool" },
+          "SPA":               { "title": "Spa label",               "type": "string", "placeholder": "Spa" },
+          "FILTER":            { "title": "Filter label",            "type": "string", "placeholder": "Filter" },
+          "LIGHTS":            { "title": "Lights label",            "type": "string", "placeholder": "Lights" },
+          "SPILLOVER":         { "title": "Spillover label",         "type": "string", "placeholder": "Spillover" },
+          "AUX_1":             { "title": "Aux 1 label",             "type": "string", "placeholder": "Aux 1" },
+          "AUX_2":             { "title": "Aux 2 label",             "type": "string", "placeholder": "Aux 2" },
+          "HEATER_1":          { "title": "Heater label",            "type": "string", "placeholder": "Heater" },
+          "SUPER_CHLORINATE":  { "title": "Super Chlorinate label",  "type": "string", "placeholder": "Super Chlorinate" }
+        }
       }
     },
     "required": ["name"]

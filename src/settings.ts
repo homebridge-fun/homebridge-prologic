@@ -54,6 +54,7 @@ export interface PlatformConfig {
   enableSpaModeSwitch: boolean;
   enableChlorinatorFan: boolean;
   enablePumpSpeedFan: boolean;
+  enableSaltSensor: boolean;
   circuitLabels: Partial<Record<Circuit, string>>;
 }
 

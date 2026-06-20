@@ -5,6 +5,7 @@ import { TemperatureAccessory } from './temperatureAccessory';
 import { FanAccessory } from './fanAccessory';
 import { SpaModeAccessory } from './spaModeAccessory';
 import { BridgeHealthAccessory } from './bridgeHealthAccessory';
+import { SaltSensorAccessory } from './saltSensorAccessory';
 import { SidecarClient } from './sidecarClient';
 import {
   PLATFORM_NAME, PLUGIN_NAME, CIRCUITS,
@@ -32,6 +33,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private chlorinatorFan?: FanAccessory;
   private pumpFan?: FanAccessory;
   private bridgeHealth?: BridgeHealthAccessory;
+  private saltSensor?: SaltSensorAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -60,6 +62,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableSpaModeSwitch: config['enableSpaModeSwitch'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
+      enableSaltSensor: config['enableSaltSensor'] ?? true,
       circuitLabels: config['circuitLabels'] ?? {},
     };
 
@@ -161,6 +164,13 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.pumpFan = new FanAccessory(this, acc, 'pump');
     }
 
+    // Salt level sensor
+    if (this.cfg.enableSaltSensor) {
+      const acc = register('Salt Level',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-salt-sensor`));
+      this.saltSensor = new SaltSensorAccessory(this, acc);
+    }
+
     // Switch: open when AC box command path is wedged
     {
       const acc = register('Bridge Needs Rebooting',
@@ -247,6 +257,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
         this.pumpFan?.updateSpeed(status.pump_speed);
         this.pumpFan?.updateActiveSlot(status.vsp_active_slot);
+        this.saltSensor?.updateSaltLevel(status.salt_level);
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);
