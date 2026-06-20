@@ -28,6 +28,7 @@ export interface PoolStatus {
   spa_setpoint_f: number | null;
   pool_heater_enabled: boolean | null;
   spa_heater_enabled: boolean | null;
+  heater_active: boolean | null;  // relay firing right now
   valve_mode: 'pool' | 'spa' | null;
   vsp_slot_pct: Record<string, number>;  // keys "1"–"4"
   vsp_active_slot: number | null;
@@ -56,6 +57,7 @@ export interface PlatformConfig {
   enablePumpSpeedFan: boolean;
   enableSaltSensor: boolean;
   enableVspSlotTiles: boolean;
+  enableHeaterFan: boolean;
   circuitLabels: Partial<Record<Circuit, string>>;
 }
 

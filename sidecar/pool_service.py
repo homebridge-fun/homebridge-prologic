@@ -97,6 +97,7 @@ class PoolState:
     spa_setpoint_f: Optional[int] = None
     pool_heater_enabled: Optional[bool] = None
     spa_heater_enabled: Optional[bool] = None
+    heater_active: Optional[bool] = None   # relay firing right now (States.HEATER_1)
     valve_mode: Optional[str] = None   # 'pool' | 'spa'
     vsp_slot_pct: dict = field(default_factory=dict)  # {1: pct, 2: pct, 3: pct, 4: pct}
     vsp_active_slot: Optional[int] = None  # 1-4; set on activate, None = unknown
@@ -1108,9 +1109,15 @@ def panel_thread(host: str, port: int) -> None:
             # HEATER_1's broadcast bit (States.HEATER_1) is the *relay* — true
             # only while actively calling for heat. The enable state the keypad
             # HEATER_1 button toggles is Auto vs Manual Off = HEATER_AUTO_MODE.
-            # Report the enable bit so the switch/thermostat tiles track it.
+            # Report the enable bit as the circuit (so the switch/thermostat
+            # tiles track armed/auto), and the relay bit separately as
+            # heater_active (so a fan tile can spin only while actually firing).
             try:
                 state.circuits['HEATER_1'] = bool(aq.get_state(States.HEATER_AUTO_MODE))
+            except Exception:
+                pass
+            try:
+                state.heater_active = bool(aq.get_state(States.HEATER_1))
             except Exception:
                 pass
             # Parse valve mode from default cycling display (§10).
@@ -2078,6 +2085,7 @@ def get_status() -> Response:
             'spa_setpoint_f':      state.spa_setpoint_f,
             'pool_heater_enabled': state.pool_heater_enabled,
             'spa_heater_enabled':  state.spa_heater_enabled,
+            'heater_active':       state.heater_active,
             'valve_mode':          state.valve_mode,
             'vsp_slot_pct':        dict(state.vsp_slot_pct),
             'vsp_active_slot':     state.vsp_active_slot,
