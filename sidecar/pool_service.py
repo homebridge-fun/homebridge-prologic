@@ -42,6 +42,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
+from types import SimpleNamespace
 
 from flask import Flask, jsonify, request, Response
 
@@ -399,18 +400,23 @@ def _norm(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 class LcdCapture:
-    def __init__(self, maxhist: int = 60):
+    def __init__(self, maxhist: int = 60, hub: 'Optional[FrameHub]' = None):
         self._lock = threading.Lock()
         self._latest: Optional[str] = None
         self._ts: float = 0.0
         self._event = threading.Event()
         self.history: deque = deque(maxlen=maxhist)
+        # Optional per-backend FrameHub: every captured frame is republished here
+        # for the live /stream feed. None = not streamed (e.g. simulation).
+        self._hub = hub
 
     def text_updated(self, text: str) -> None:
         with self._lock:
             self._latest = text
             self._ts = time.time()
             self.history.append((self._ts, text))
+        if self._hub is not None:
+            self._hub.publish(_norm(text), raw=text)
         self._event.set()
 
     # aqualogic may call other no-op methods on its _web object; absorb them.
@@ -443,6 +449,75 @@ class LcdCapture:
     def snapshot(self):
         with self._lock:
             return [(ts, t) for ts, t in self.history]
+
+
+# ---------------------------------------------------------------------------
+# FrameHub — backend-agnostic live frame feed (§ parallel-backend work)
+#
+# Each backend (aquaconnect, rs485) owns one hub. As LCD frames arrive they are
+# published here; the /stream SSE endpoints subscribe to get a continuous tail
+# without polling — the same "watch the bus" model the AquaConnect frame-reader
+# uses internally, now exposed as a first-class read surface. The hub name is
+# the only backend-specific detail upstream ever sees; /stream (active backend)
+# and /stream/<name> (a specific one) both resolve to a hub here.
+# ---------------------------------------------------------------------------
+class FrameHub:
+    def __init__(self, name: str, maxlen: int = 200):
+        self.name = name
+        self._cond = threading.Condition()
+        self._ring: deque = deque(maxlen=maxlen)
+        self._seq = 0
+        self.last_publish = 0.0
+
+    def publish(self, text: str, raw: Optional[str] = None,
+                extra: Optional[dict] = None) -> None:
+        with self._cond:
+            self._seq += 1
+            frame = {'seq': self._seq, 'ts': round(time.time(), 3), 'text': text}
+            if raw is not None:
+                frame['raw'] = raw
+            if extra:
+                frame.update(extra)
+            self._ring.append(frame)
+            self.last_publish = frame['ts']
+            self._cond.notify_all()
+
+    def recent(self, limit: int = 50) -> list:
+        with self._cond:
+            return list(self._ring)[-limit:]
+
+    def follow(self, timeout: float = 20.0):
+        """Generator yielding each newly-published frame (live tail).
+
+        Starts from the next frame after subscription. Yields None on idle
+        timeout so the caller can emit an SSE heartbeat and detect disconnects.
+        """
+        with self._cond:
+            last = self._seq
+        while True:
+            with self._cond:
+                if self._seq <= last:
+                    self._cond.wait(timeout=timeout)
+                pending = [f for f in self._ring if f['seq'] > last]
+                if pending:
+                    last = pending[-1]['seq']
+            if pending:
+                yield from pending
+            else:
+                yield None
+
+
+_frame_hubs: "dict[str, FrameHub]" = {}
+_frame_hubs_lock = threading.Lock()
+
+
+def _get_hub(name: str) -> FrameHub:
+    with _frame_hubs_lock:
+        h = _frame_hubs.get(name)
+        if h is None:
+            h = FrameHub(name)
+            _frame_hubs[name] = h
+        return h
 
 
 lcd = LcdCapture()
@@ -615,7 +690,7 @@ class AquaConnectBackend:
 
     def __init__(self, host: str = '192.168.50.100', poll_s: float = 3.0):
         self._host = host
-        self.lcd = LcdCapture()
+        self.lcd = LcdCapture(hub=_get_hub('aquaconnect'))
         self._http_lock = threading.Lock()   # serializes all socket access
         self._last_req = 0.0                  # ts of last request (gap enforcement)
         # Monotonic count of every HTTP request (press + read), for timing tests:
@@ -1091,6 +1166,79 @@ class RealPanel:
         self._aq.send_key(k)
 
 
+# RS-485 observe-only listener (parallel-backend work). When the active backend
+# is AquaConnect, this runs alongside it: it streams frames into the 'rs485'
+# FrameHub and parses an ISOLATED state snapshot (never the global `state`), so
+# the two backends never stomp each other. It sends no keys except when a
+# benchmark explicitly drives _rs485_observer.nav. Promoting this observer to a
+# co-equal active backend later (option 2) only needs its snapshot to also
+# answer /status/rs485 — the streaming/nav plumbing is already here.
+_rs485_observer: Optional[SimpleNamespace] = None  # (aq, panel, nav, lcd) when up
+_rs485_obs_state: dict = {}
+_rs485_obs_lock = threading.Lock()
+
+
+def rs485_observer_thread(host: str, port: int) -> None:
+    global _rs485_observer
+
+    from aqualogic.core import AquaLogic
+    from aqualogic.states import States
+    from aqualogic.keys import Keys
+
+    _install_key_burst(AquaLogic)
+    obs_lcd = LcdCapture(hub=_get_hub('rs485'))
+    smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
+
+    def on_change(aq) -> None:
+        snap: dict = {}
+        try:
+            snap['pool_temp'] = _read_property(aq, 'pool_temp')
+            snap['air_temp'] = _read_property(aq, 'air_temp')
+            snap['spa_temp'] = _read_property(aq, 'spa_temp')
+            snap['salt_level'] = _read_property(aq, 'salt_level')
+            snap['chlorinator_percent'] = _read_property(aq, 'pool_chlorinator')
+            snap['pump_speed'] = _read_property(aq, 'pump_speed')
+            circ: dict = {}
+            for name, s in smap.items():
+                try:
+                    circ[name] = bool(aq.get_state(s))
+                except Exception:
+                    pass
+            snap['circuits'] = circ
+        except Exception:
+            pass
+        with _rs485_obs_lock:
+            _rs485_obs_state.clear()
+            _rs485_obs_state.update(snap)
+            _rs485_obs_state['connected'] = True
+            _rs485_obs_state['last_update'] = time.time()
+
+    while True:
+        try:
+            log.info('RS-485 OBSERVER (observe-only) connecting to %s:%s', host, port)
+            aq = AquaLogic(web_port=0)
+            aq._web = obs_lcd
+            aq.connect(host, port)
+            try:
+                import socket as _socket
+                aq._socket.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+            except Exception as e:
+                log.warning('Observer: could not set TCP_NODELAY: %s', e)
+            obs_panel = RealPanel(aq, States, Keys)
+            obs_nav = MenuNavigator(obs_panel, obs_lcd)
+            _rs485_observer = SimpleNamespace(
+                aq=aq, panel=obs_panel, nav=obs_nav, lcd=obs_lcd)
+            aq.process(on_change)        # blocks until the connection drops
+        except Exception as e:
+            log.error('RS-485 observer lost: %s', e)
+        finally:
+            _rs485_observer = None
+            with _rs485_obs_lock:
+                _rs485_obs_state['connected'] = False
+        log.info('RS-485 observer reconnecting in 5 seconds...')
+        time.sleep(5)
+
+
 def panel_thread(host: str, port: int) -> None:
     global panel
 
@@ -1101,6 +1249,10 @@ def panel_thread(host: str, port: int) -> None:
     # Always install: even at burst=1 we need the keep-alive window targeting
     # (predelay) and the get_state patch that tolerates raw send_key frames.
     _install_key_burst(AquaLogic)
+
+    # In RS-485-active mode the global lcd carries the panel's frames; route them
+    # into the 'rs485' hub so /stream works the same as it does for AquaConnect.
+    lcd._hub = _get_hub('rs485')
 
     smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
 
@@ -2171,11 +2323,15 @@ def set_backend() -> Response:
 
     cfg = _load_backend_config()
     cfg['backend'] = backend
-    for k in ('aquaconnect_host', 'rs485_host'):
+    for k in ('aquaconnect_host', 'rs485_host', 'observe_rs485_host'):
         if body.get(k):
             cfg[k] = body[k]
     if body.get('rs485_port'):
         cfg['rs485_port'] = int(body['rs485_port'])
+    if body.get('observe_rs485_port'):
+        cfg['observe_rs485_port'] = int(body['observe_rs485_port'])
+    if 'observe_rs485' in body:
+        cfg['observe_rs485'] = bool(body['observe_rs485'])
 
     # No-op if nothing actually changes (avoid a needless restart loop).
     if backend == _active_backend and cfg == _load_backend_config():
@@ -2196,6 +2352,109 @@ def set_backend() -> Response:
         os._exit(0)
     threading.Thread(target=_restart, daemon=True, name='backend-restart').start()
     return jsonify({'ok': True, 'restarting': True, 'backend': backend})
+
+
+# ── Backend-agnostic live frame stream + per-backend benchmark ───────────────
+# Upstream consumes /stream (active backend) and never names a backend. The
+# /stream/<name> and /benchmark/<name> forms target a specific backend by name
+# — needed for the parallel RS-485 validation where both buses run at once.
+
+_STREAM_BACKENDS = ('aquaconnect', 'rs485')
+
+
+def _sse_response(hub: FrameHub) -> Response:
+    """Server-Sent Events feed of a hub's frames (recent tail, then live)."""
+    def gen():
+        yield 'retry: 3000\n\n'
+        for f in hub.recent(10):
+            yield f'data: {json.dumps(f)}\n\n'
+        for f in hub.follow(timeout=20.0):
+            if f is None:
+                yield ': heartbeat\n\n'        # keep the connection alive
+            else:
+                yield f'data: {json.dumps(f)}\n\n'
+    return Response(gen(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache',
+                             'X-Accel-Buffering': 'no',
+                             'Connection': 'keep-alive'})
+
+
+@app.route('/stream')
+def stream_active() -> Response:
+    """Live LCD frame stream from whichever backend is active (SSE)."""
+    return _sse_response(_get_hub(_active_backend or 'aquaconnect'))
+
+
+@app.route('/stream/<name>')
+def stream_named(name: str) -> Response:
+    """Live LCD frame stream from a named backend, even if it's only observing."""
+    if name not in _STREAM_BACKENDS:
+        return jsonify({'error': f'unknown backend: {name}'}), 404
+    return _sse_response(_get_hub(name))
+
+
+@app.route('/backends')
+def list_backends() -> Response:
+    """List known backends, their role (active/observer/inactive), and liveness."""
+    out = []
+    for name in _STREAM_BACKENDS:
+        hub = _frame_hubs.get(name)
+        if name == _active_backend:
+            role = 'active'
+        elif name == 'rs485' and _rs485_observer is not None:
+            role = 'observer'
+        else:
+            role = 'inactive'
+        info = {
+            'name': name,
+            'role': role,
+            'frames_seen': hub._seq if hub else 0,
+            'last_frame_ts': hub.last_publish if hub else None,
+        }
+        if name == 'rs485' and (_rs485_observer is not None or _rs485_obs_state):
+            with _rs485_obs_lock:
+                info['connected'] = bool(_rs485_obs_state.get('connected'))
+                info['observed_state'] = dict(_rs485_obs_state)
+        out.append(info)
+    return jsonify({'active': _active_backend, 'backends': out})
+
+
+@app.route('/benchmark/<name>', methods=['POST'])
+def benchmark_named(name: str) -> Response:
+    """Run a navigation speed test on a named backend.
+
+    Body: {"laps"?: int=3, "slot"?: int=1, "min_gap"?, "post_menu_settle"?,
+           "key_timeout"?}. Walks read_vsp_slot(slot) for `laps` laps and reports
+    per-lap wall time, keypresses, drops, and (per key) the wait latency from
+    the nav trace. Comparable across backends — for RS-485 the latency is the
+    bus round-trip; for AquaConnect it's the HTTP frame-reader confirm time.
+
+    For 'rs485' this drives the observe-only listener, so it actively presses
+    keys on the panel for the duration — run it deliberately, not on the live
+    HomeKit path.
+    """
+    if name not in _STREAM_BACKENDS:
+        return jsonify({'error': f'unknown backend: {name}'}), 404
+    body = request.get_json(silent=True) or {}
+    laps = max(1, int(body.get('laps', 3)))
+    slot = int(body.get('slot', 1))
+    applied = _apply_overrides(_nav_timing_defaults(), body)
+
+    if name == 'rs485':
+        obs = _rs485_observer
+        if obs is None:
+            return jsonify({'error': 'rs485 observer not connected'}), 503
+        nav = obs.nav
+    else:
+        if _active_backend != 'aquaconnect':
+            return jsonify({'error': 'aquaconnect backend not active'}), 503
+        nav = _get_navigator()
+        if nav is None:
+            return jsonify({'error': 'navigator unavailable'}), 503
+
+    result = _run_nav_benchmark(nav, laps, slot, applied)
+    result['backend'] = name
+    return jsonify(result)
 
 
 @app.route('/bridge/health')
@@ -3581,6 +3840,16 @@ def main() -> None:
                         help='Navigation backend: rs485 (default) or aquaconnect (HTTP).')
     parser.add_argument('--aquaconnect-host', default='192.168.50.100',
                         help='AquaConnect box IP for --backend aquaconnect. Default 192.168.50.100.')
+    parser.add_argument('--observe-rs485', action='store_true',
+                        help='In aquaconnect mode, also run an observe-only RS-485 '
+                             'listener in parallel (streams to /stream/rs485, '
+                             'benchmarkable via /benchmark/rs485). Sends no keys '
+                             'except during a benchmark.')
+    parser.add_argument('--observe-rs485-host', default=None,
+                        help='RS-485 bridge host for the parallel observer '
+                             '(default: --host).')
+    parser.add_argument('--observe-rs485-port', type=int, default=8899,
+                        help='RS-485 bridge port for the parallel observer. Default 8899.')
     args = parser.parse_args()
 
     # Persisted backend selection (written by POST /backend) overrides CLI args,
@@ -3591,6 +3860,10 @@ def main() -> None:
     aquaconnect_host = cfg.get('aquaconnect_host', args.aquaconnect_host)
     rs485_host = cfg.get('rs485_host', args.host)
     rs485_port = cfg.get('rs485_port', args.port)
+    observe_rs485 = cfg.get('observe_rs485', args.observe_rs485)
+    observe_rs485_host = (cfg.get('observe_rs485_host')
+                          or args.observe_rs485_host or rs485_host or args.host)
+    observe_rs485_port = cfg.get('observe_rs485_port', args.observe_rs485_port)
 
     KEY_BURST = args.key_burst
     KEY_PREDELAY_MS = args.key_predelay_ms
@@ -3607,6 +3880,19 @@ def main() -> None:
         log.info('AquaConnect backend: http://%s/WNewSt.htm', aquaconnect_host)
         threading.Thread(target=_canary_probe_loop, daemon=True,
                          name='ac-canary').start()
+        # Optional parallel RS-485 observer (observe-only; never touches the
+        # global state or sends keys outside a benchmark).
+        if observe_rs485:
+            if observe_rs485_host:
+                threading.Thread(
+                    target=rs485_observer_thread,
+                    args=(observe_rs485_host, observe_rs485_port),
+                    daemon=True, name='rs485-observer').start()
+                log.info('RS-485 observer (observe-only) -> %s:%s',
+                         observe_rs485_host, observe_rs485_port)
+            else:
+                log.warning('--observe-rs485 set but no RS-485 host given; '
+                            'observer not started')
         # AquaConnect mode: no RS-485 panel thread needed
         app.run(host=args.api_host, port=args.api_port, threaded=True)
         return

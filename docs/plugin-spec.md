@@ -362,7 +362,33 @@ uses Settings menu navigation on both backends.
 | GET | `/backend` | `{"active": "aquaconnect"\|"rs485", "config": {...}}` |
 | POST | `/backend` | `{"backend", "aquaconnect_host"?, "rs485_host"?, "rs485_port"?}` — persists + restarts |
 
-### 6.8 Debug
+### 6.8 Live frame stream + per-backend benchmark
+
+Backend-agnostic surface for watching the LCD bus and comparing backends. Each
+backend publishes its frames to a `FrameHub`; upstream consumes `/stream` and
+never names a backend. The `/<name>` forms target a specific backend by name —
+used for parallel RS-485 validation where both buses run at once.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/stream` | SSE feed of LCD frames from the **active** backend (recent tail, then live). `data: {seq, ts, text, raw}` per frame; `: heartbeat` on idle |
+| GET | `/stream/<name>` | SSE feed from a named backend (`aquaconnect`\|`rs485`), even if it is only observing |
+| GET | `/backends` | List backends, each `{name, role: active\|observer\|inactive, frames_seen, last_frame_ts}`; rs485 adds `connected` + isolated `observed_state` |
+| POST | `/benchmark/<name>` | Nav speed test on a named backend. Body `{laps?=3, slot?=1, min_gap?, post_menu_settle?, key_timeout?}`. Reports per-lap wall time, presses, drops; per-key latency comes from the nav trace (`wait_s`). For `rs485` this **drives the observe-only listener** (sends keys for the run's duration) |
+
+**Parallel RS-485 observer.** In `--backend aquaconnect`, pass `--observe-rs485`
+(`--observe-rs485-host`, default `--host`; `--observe-rs485-port`, default 8899)
+to run an observe-only RS-485 listener alongside the active AquaConnect backend.
+The observer streams frames to `/stream/rs485` and parses an **isolated** state
+snapshot (never the global `PoolState`), so the two backends never stomp each
+other. It sends no keys except during `/benchmark/rs485`. Persistable via `POST
+/backend` keys `observe_rs485`, `observe_rs485_host`, `observe_rs485_port`.
+
+> Note: during `/benchmark/rs485` the AquaConnect poll loop is still reading the
+> box over HTTP while the observer presses keys over RS-485 — both hit the same
+> physical panel, so run benchmarks deliberately, not on the live HomeKit path.
+
+### 6.9 Debug
 
 | Method | Path | Notes |
 |---|---|---|
