@@ -67,9 +67,9 @@ export class VspSlotAccessory {
 
   updateRunning(activeSlot: number | null, filterOn: boolean): void {
     const running = filterOn && activeSlot === this.slot;
-    if (this.running === running) return;
     this.running = running;
     const { Characteristic: C } = this.platform;
+    this.service.updateCharacteristic(C.Active, 1);
     this.service.updateCharacteristic(
       C.CurrentFanState,
       running ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.IDLE,

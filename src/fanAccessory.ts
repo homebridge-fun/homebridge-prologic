@@ -73,9 +73,11 @@ export class FanAccessory {
   }
 
   updateRunning(running: boolean): void {
-    if (this.running === running) return;
     this.running = running;
     const { Characteristic: C } = this.platform;
+    // Push Active=1 every poll — HomeKit can silently reset it to 0 on
+    // accessory reconnect, which prevents the spinning animation.
+    this.service.updateCharacteristic(C.Active, 1);
     this.service.updateCharacteristic(
       C.CurrentFanState,
       running ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.IDLE,
