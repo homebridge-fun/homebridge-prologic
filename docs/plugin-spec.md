@@ -4,7 +4,7 @@
 > robustness (pre-fetch/debounce/zero-guard/floor), nav timing optimization (0.6s gap +
 > adaptive reads), `/debug/nav-sweep` + `/debug/nav-benchmark` harnesses
 > **Updated**: 2026-06-20
-> **Status**: Implemented and running on hardware (v0.1.0)
+> **Status**: Implemented and running on hardware (v0.2.0)
 
 ---
 
