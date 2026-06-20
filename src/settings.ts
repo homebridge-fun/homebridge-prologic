@@ -57,7 +57,6 @@ export interface PlatformConfig {
   enablePumpSpeedFan: boolean;
   enableSaltSensor: boolean;
   enableVspSlotTiles: boolean;
-  enableHeaterFan: boolean;
   circuitLabels: Partial<Record<Circuit, string>>;
 }
 

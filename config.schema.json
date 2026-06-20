@@ -136,12 +136,6 @@
         "default": false,
         "description": "Expose four Fan tiles (Speed 1–4) showing each VSP slot's configured speed %. Setting a tile's speed writes that slot and activates it. Not shown on the home tab."
       },
-      "enableHeaterFan": {
-        "title": "Heater as Three-State Fan",
-        "type": "boolean",
-        "default": true,
-        "description": "Render HEATER_1 as a tappable Fan tile: grayed when off, highlighted when in Auto mode, spinning while actively firing. Replaces the plain on/off heater switch. Turn off to use a simple switch instead."
-      },
       "circuitLabels": {
         "title": "Circuit Label Overrides",
         "type": "object",

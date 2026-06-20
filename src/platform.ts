@@ -7,7 +7,7 @@ import { SpaModeAccessory } from './spaModeAccessory';
 import { BridgeHealthAccessory } from './bridgeHealthAccessory';
 import { SaltSensorAccessory } from './saltSensorAccessory';
 import { VspSlotAccessory } from './vspSlotAccessory';
-import { HeaterFanAccessory } from './heaterFanAccessory';
+import { HeaterRunningAccessory } from './heaterRunningAccessory';
 import { SidecarClient } from './sidecarClient';
 import {
   PLATFORM_NAME, PLUGIN_NAME, CIRCUITS,
@@ -37,7 +37,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private bridgeHealth?: BridgeHealthAccessory;
   private saltSensor?: SaltSensorAccessory;
   private vspSlots: VspSlotAccessory[] = [];
-  private heaterFan?: HeaterFanAccessory;
+  private heaterRunning?: HeaterRunningAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -68,7 +68,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
       enableSaltSensor: config['enableSaltSensor'] ?? true,
       enableVspSlotTiles: config['enableVspSlotTiles'] ?? false,
-      enableHeaterFan: config['enableHeaterFan'] ?? true,
       circuitLabels: config['circuitLabels'] ?? {},
     };
 
@@ -112,10 +111,10 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     }
 
     // Circuit switches. HEATER_1 is rendered as a tappable three-state Fanv2
-    // (grayed=off, highlighted=auto, spinning=actively firing) when
-    // enableHeaterFan is set, so it is skipped from the plain-switch loop.
+    // HEATER_1 is split into two switches below ("Heater Auto" tappable +
+    // "Heater Running" read-only), so skip it from the plain-switch loop.
     for (const circuit of this.cfg.circuits) {
-      if (circuit === 'HEATER_1' && this.cfg.enableHeaterFan) continue;
+      if (circuit === 'HEATER_1') continue;
       if (CIRCUITS.includes(circuit)) {
         const acc = register(circuitLabel(circuit, this.cfg.circuitLabels),
           this.api.hap.uuid.generate(`${PLUGIN_NAME}-circuit-${circuit}`));
@@ -123,11 +122,16 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    // Heater as a tappable three-state fan (replaces the HEATER_1 switch)
-    if (this.cfg.enableHeaterFan && this.cfg.circuits.includes('HEATER_1')) {
-      const acc = register(circuitLabel('HEATER_1', this.cfg.circuitLabels),
-        this.api.hap.uuid.generate(`${PLUGIN_NAME}-heater-fan`));
-      this.heaterFan = new HeaterFanAccessory(this, acc);
+    // Heater as two switches: "Heater Auto" (tappable arm/disarm) and
+    // "Heater Running" (read-only firing indicator from the relay bit).
+    if (this.cfg.circuits.includes('HEATER_1')) {
+      const autoAcc = register(this.cfg.circuitLabels['HEATER_1'] ?? 'Heater Auto',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-circuit-HEATER_1`));
+      this.switches.set('HEATER_1', new SwitchAccessory(this, autoAcc, 'HEATER_1'));
+
+      const runAcc = register('Heater Running',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-heater-running`));
+      this.heaterRunning = new HeaterRunningAccessory(this, runAcc);
     }
 
     // Accessory A: mode-following "active" thermostat (§10.1)
@@ -280,11 +284,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.poolTempSensor?.updateTemperature(status.pool_temp);
         this.airTempSensor?.updateTemperature(status.air_temp);
 
-        // Heater fan: armed = Auto mode (valve-aware), firing = relay now
-        const heaterArmed = status.valve_mode === 'spa'
-          ? (status.spa_heater_enabled ?? status.circuits['HEATER_1'] ?? false)
-          : (status.pool_heater_enabled ?? status.circuits['HEATER_1'] ?? false);
-        this.heaterFan?.updateState(heaterArmed, status.heater_active ?? false);
+        // Heater Running switch: read-only firing relay
+        this.heaterRunning?.updateFiring(status.heater_active ?? false);
 
         const filterOn = status.circuits['FILTER'] ?? false;
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
