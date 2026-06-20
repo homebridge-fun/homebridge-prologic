@@ -1878,22 +1878,26 @@ class MenuNavigator:
         """True if the current frame looks like a normal Settings Menu item."""
         return any(txt.startswith(p) for p in self._SETTINGS_ITEM_PREFIXES)
 
-    def _anchor(self) -> None:
-        """Drive the panel to the Settings Menu header, starting from any state.
+    # MENU cycles through the top-level menus in a ring:
+    #   Default → Settings → Timers → Diagnostic → Configuration(locked) → …
+    # So 'Settings Menu' is always reachable by pressing MENU until it appears.
+    # With ~70% keypress drop on the WiFi bridge, a landed press may overshoot
+    # Settings (e.g. land on Timers); the budget must cover several full ring
+    # traversals so we cycle back around to Settings rather than stranding.
+    _ANCHOR_MENU_MAX = 30
 
-        Strategy: first escape to the Default Menu (safe known state via MENU
-        presses), then enter Settings Menu with one more MENU press. This
-        prevents us from navigating further into an unknown submenu if we were
-        already inside one (e.g. Diagnostics, Wireless Channel) — those submenus
-        do not surface 'Settings Menu' via repeated MENU presses and would
-        exhaust the budget while pressing live settings.
+    def _anchor(self) -> None:
+        """Drive MENU until the normalized frame is exactly 'Settings Menu'.
+
+        MENU walks the top-level menu ring (see _ANCHOR_MENU_MAX); we stop the
+        instant 'Settings Menu' appears. A generous budget tolerates dropped
+        presses and overshoot without straying into any submenu's live settings.
+
+        After landing on the header, wait _POST_MENU_SETTLE_S: the panel needs
+        ~300ms before it will accept RIGHT.
         """
-        # Step 1: exit whatever menu/submenu we may be in.
-        self._press_until('MENU', lambda t: t == self._DEFAULT_MENU_HDR,
-                          self._MENU_MAX, self._DEFAULT_MENU_HDR)
-        # Step 2: one MENU from Default Menu → Settings Menu.
         self._press_until('MENU', lambda t: t == self._SETTINGS_HDR,
-                          3, self._SETTINGS_HDR)
+                          self._ANCHOR_MENU_MAX, self._SETTINGS_HDR)
         time.sleep(self._POST_MENU_SETTLE_S)
 
     # Status-cycle prefixes — any of these means we're back in the default display.
