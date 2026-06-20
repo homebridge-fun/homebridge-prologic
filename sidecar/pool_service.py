@@ -553,6 +553,20 @@ _AC_SETTLE_S = 1.0
 _AC_CONFIRM_READS = 4
 _AC_CONFIRM_GAP_S = 0.4
 
+# Pure navigation keys (MENU/RIGHT/LEFT/PLUS/MINUS) do NOT flash a confirmation
+# the way an equipment toggle does — they just move to a new menu item. So they
+# don't need the full confirm burst; they only need enough reads to see the new
+# screen settle. We read ADAPTIVELY: keep reading (up to _AC_NAV_READS) only
+# until the frame differs from the pre-keypress frame, then stop early. On a
+# responsive box this is a single read (~one gap), collapsing a ~2s/key step
+# toward ~1s/key. The cap is the fallback when the box is slow to mirror.
+_AC_NAV_READS = 4
+_AC_NAV_GAP_S = 0.4
+
+# Navigation keys that move the cursor / adjust a value but never toggle an
+# equipment relay — these take the adaptive read path above.
+_AC_NAV_KEYS = frozenset({'MENU', 'RIGHT', 'LEFT', 'PLUS', 'MINUS'})
+
 # LED nibble decode (each equipment LED is one 4-bit nibble in the state line).
 #   3 = absent / no key on this panel
 #   4 = off
@@ -813,20 +827,34 @@ class AquaConnectBackend:
         """
         # Normalize underscores so navigator names (HEATER_1, AUX_1, …) match
         # the underscore-free table keys (HEATER1, AUX1, …).
-        code = _AC_KEY_CODES.get(key_name.upper().replace('_', ''))
+        norm = key_name.upper().replace('_', '')
+        code = _AC_KEY_CODES.get(norm)
         if code is None:
             raise ValueError(f'No AquaConnect code for key: {key_name}')
+        is_nav = norm in _AC_NAV_KEYS
         with self._http_lock:
+            before = self.lcd.text()
             self._apply(self._post(code))
-            # The panel flashes a transient confirmation of the new state right
-            # after a toggle (e.g. 'Filter ON', 'Heater1 Auto Control') before
-            # reverting to the idle scroll. A single read at the settle mark can
-            # land before or after that flash, so sample a short burst and apply
-            # each frame; whichever one carries the confirmation updates state at
-            # once instead of waiting for the passive scroll to come back around.
-            for _ in range(_AC_CONFIRM_READS):
-                time.sleep(_AC_CONFIRM_GAP_S)
-                self._apply(self._read())
+            if is_nav:
+                # Navigation keys don't flash a confirmation — they move to a new
+                # item. Read adaptively: stop as soon as the frame differs from the
+                # pre-keypress frame, so a responsive box costs a single read
+                # instead of the full fixed burst. The cap bounds a slow box.
+                for _ in range(_AC_NAV_READS):
+                    time.sleep(_AC_NAV_GAP_S)
+                    self._apply(self._read())
+                    if self.lcd.text() != before:
+                        break
+            else:
+                # Equipment toggle: the panel flashes a transient confirmation of
+                # the new state (e.g. 'Filter ON', 'Heater1 Auto Control') before
+                # reverting to the idle scroll. A single read at the settle mark
+                # can land before or after that flash, so sample a short burst and
+                # apply each frame; whichever carries the confirmation updates
+                # state at once instead of waiting for the passive scroll.
+                for _ in range(_AC_CONFIRM_READS):
+                    time.sleep(_AC_CONFIRM_GAP_S)
+                    self._apply(self._read())
 
     def _led_line(self, body: Optional[str]) -> Optional[str]:
         """Extract the raw field-3 LED/equipment-state line from a body."""
@@ -2428,6 +2456,103 @@ def run_wedge_test() -> Response:
         return jsonify({'error': str(e), 'scenario': name}), 500
     code = 200 if not result['wedged'] else 503
     return jsonify(result), code
+
+
+@app.route('/debug/nav-benchmark', methods=['POST'])
+def nav_benchmark() -> Response:
+    """Time a real menu read under chosen timing params, to find the safe floor.
+
+    Runs read_vsp_slot(slot) `laps` times (pure navigate-and-read — no panel
+    state is changed) and reports wall-time per lap plus how many keypresses
+    were dropped and re-pressed. Temporarily overrides the timing tunables for
+    the run and restores them after, so you can sweep without editing code:
+
+      POST /debug/nav-benchmark
+        {"laps":5, "slot":1,
+         "min_gap":0.6, "nav_reads":2, "nav_gap":0.35,
+         "post_menu_settle":0.25, "key_timeout":3.0}
+
+    Omitted params keep their current value. Compare total_s / drops across runs
+    to find the fastest settings that still complete every lap with few drops.
+    """
+    global _AC_MIN_GAP_S, _AC_NAV_READS, _AC_NAV_GAP_S
+    global _AC_CONFIRM_READS, _AC_CONFIRM_GAP_S
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    body = request.get_json(force=True, silent=True) or {}
+    laps = max(1, int(body.get('laps', 5)))
+    slot = int(body.get('slot', 1))
+
+    # Snapshot every tunable we might override, then apply the requested ones.
+    saved = {
+        'min_gap': _AC_MIN_GAP_S,
+        'nav_reads': _AC_NAV_READS, 'nav_gap': _AC_NAV_GAP_S,
+        'confirm_reads': _AC_CONFIRM_READS, 'confirm_gap': _AC_CONFIRM_GAP_S,
+        'post_menu_settle': MenuNavigator._POST_MENU_SETTLE_S,
+        'key_timeout': MenuNavigator._KEY_TIMEOUT,
+    }
+    applied = dict(saved)
+    for k in ('min_gap', 'nav_gap', 'confirm_gap', 'post_menu_settle', 'key_timeout'):
+        if body.get(k) is not None:
+            applied[k] = float(body[k])
+    for k in ('nav_reads', 'confirm_reads'):
+        if body.get(k) is not None:
+            applied[k] = int(body[k])
+
+    laps_out: list = []
+    try:
+        _AC_MIN_GAP_S = applied['min_gap']
+        _AC_NAV_READS = applied['nav_reads']
+        _AC_NAV_GAP_S = applied['nav_gap']
+        _AC_CONFIRM_READS = applied['confirm_reads']
+        _AC_CONFIRM_GAP_S = applied['confirm_gap']
+        MenuNavigator._POST_MENU_SETTLE_S = applied['post_menu_settle']
+        MenuNavigator._KEY_TIMEOUT = applied['key_timeout']
+
+        for i in range(laps):
+            seq0 = _NAV_SEQ[0]
+            t0 = time.time()
+            ok, err = True, None
+            try:
+                nav.read_vsp_slot(slot)
+            except Exception as e:
+                ok, err = False, str(e)
+            dt = time.time() - t0
+            # Count keypresses logged during this lap and how many were drops
+            # (a press that produced no display change → caller re-pressed).
+            with _NAV_TRACE_LOCK:
+                lap_keys = [e for e in _NAV_TRACE if e['seq'] > seq0]
+            presses = len(lap_keys)
+            drops = sum(1 for e in lap_keys if not e['changed'])
+            laps_out.append({
+                'lap': i + 1, 'ok': ok, 'seconds': round(dt, 2),
+                'presses': presses, 'drops': drops,
+                **({'error': err} if err else {}),
+            })
+    finally:
+        _AC_MIN_GAP_S = saved['min_gap']
+        _AC_NAV_READS = saved['nav_reads']
+        _AC_NAV_GAP_S = saved['nav_gap']
+        _AC_CONFIRM_READS = saved['confirm_reads']
+        _AC_CONFIRM_GAP_S = saved['confirm_gap']
+        MenuNavigator._POST_MENU_SETTLE_S = saved['post_menu_settle']
+        MenuNavigator._KEY_TIMEOUT = saved['key_timeout']
+
+    ok_laps = [l for l in laps_out if l['ok']]
+    times = [l['seconds'] for l in ok_laps]
+    total = round(sum(l['seconds'] for l in laps_out), 2)
+    summary = {
+        'laps': laps, 'ok_laps': len(ok_laps),
+        'total_s': total,
+        'avg_s': round(sum(times) / len(times), 2) if times else None,
+        'min_s': min(times) if times else None,
+        'max_s': max(times) if times else None,
+        'total_presses': sum(l['presses'] for l in laps_out),
+        'total_drops': sum(l['drops'] for l in laps_out),
+    }
+    return jsonify({'applied': applied, 'saved_defaults': saved,
+                    'summary': summary, 'laps_detail': laps_out})
 
 
 @app.route('/bridge/health/reset', methods=['POST'])
