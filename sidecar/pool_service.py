@@ -549,27 +549,6 @@ _AC_MIN_GAP_S = 0.6
 # still show the pre-keypress screen. 1.0s is well above the ~230ms read RTT.
 _AC_SETTLE_S = 1.0
 
-# After a toggle the panel briefly flashes the new state before reverting to the
-# idle scroll. Sample a few frames across that window so we catch the flash
-# whichever moment it lands on, rather than waiting for the passive cycle. The
-# total span (READS × GAP) covers ~1.6s, comfortably wider than a typical flash.
-_AC_CONFIRM_READS = 4
-_AC_CONFIRM_GAP_S = 0.4
-
-# Pure navigation keys (MENU/RIGHT/LEFT/PLUS/MINUS) do NOT flash a confirmation
-# the way an equipment toggle does — they just move to a new menu item. So they
-# don't need the full confirm burst; they only need enough reads to see the new
-# screen settle. We read ADAPTIVELY: keep reading (up to _AC_NAV_READS) only
-# until the frame differs from the pre-keypress frame, then stop early. On a
-# responsive box this is a single read (~one gap), collapsing a ~2s/key step
-# toward ~1s/key. The cap is the fallback when the box is slow to mirror.
-_AC_NAV_READS = 2
-_AC_NAV_GAP_S = 0.4
-
-# Navigation keys that move the cursor / adjust a value but never toggle an
-# equipment relay — these take the adaptive read path above.
-_AC_NAV_KEYS = frozenset({'MENU', 'RIGHT', 'LEFT', 'PLUS', 'MINUS'})
-
 # LED nibble decode (each equipment LED is one 4-bit nibble in the state line).
 #   3 = absent / no key on this panel
 #   4 = off
@@ -637,12 +616,18 @@ class AquaConnectBackend:
     def __init__(self, host: str = '192.168.50.100', poll_s: float = 3.0):
         self._host = host
         self.lcd = LcdCapture()
-        self._http_lock = threading.Lock()   # serializes press+settle+read units
-        self._last_req = 0.0  # ts of last request (press or read); gates the gap
+        self._http_lock = threading.Lock()   # serializes all socket access
+        self._last_req = 0.0                  # ts of last request (gap enforcement)
         self._last_raw: Optional[str] = None  # last full body, for /debug calibration
         self._last_led: dict = {}
         self._poll_s = poll_s
         self._poll_stop = threading.Event()
+        # Shared frame notification: signaled after every successful read so
+        # send_nav_key can wait for confirmation instead of doing burst reads.
+        self._frame_cond = threading.Condition()
+        # Set by send_nav_key to wake the poll loop immediately after a keypress
+        # so confirmation arrives in ~1 read latency rather than up to poll_s.
+        self._read_wake = threading.Event()
         self._poll_thread = threading.Thread(
             target=self._poll_loop, daemon=True, name='ac-poll')
         self._poll_thread.start()
@@ -680,12 +665,12 @@ class AquaConnectBackend:
         side-effects on the keypad event queue. Using 'KeyId=00&' for reads
         injects ~29,000 phantom keypad events/day and wedges the box.
 
-        Use this everywhere we only want the current state (poll, confirm burst).
-        Use _post(code) only when we actually intend a keypress.
+        Use this everywhere we only want the current state (poll loop / frame
+        reader). Use _post(code) only when we actually intend a keypress.
         """
         return self._request('Update Local Server&')
 
-    def _request(self, body: str, is_press: bool = False) -> Optional[str]:
+    def _request(self, body: str) -> Optional[str]:
         """Send a POST /WNewSt.htm with the given body and return the response."""
         now = time.time()
         wait = _AC_MIN_GAP_S - (now - self._last_req)
@@ -821,42 +806,24 @@ class AquaConnectBackend:
 
     # ── Public navigator surface ──────────────────────────────────────────────
     def send_nav_key(self, key_name: str) -> None:
-        """Send one navigation key and block until the box has settled.
+        """Send one navigation key and wait for the frame reader to confirm.
 
-        Holds _http_lock across post → settle → reread so the poller cannot
-        interleave a second POST. Returns only once self.lcd reflects the
-        post-keypress screen, so the navigator's _send sees the change at once.
+        Sends the keypress under _http_lock, then releases it and signals the
+        frame reader to run immediately. Waits on _frame_cond for the next
+        frame — the panel shows the confirmation state right away, so one read
+        is enough. The frame reader (not this method) applies the frame to state,
+        so self.lcd reflects the post-keypress screen before we return.
         """
-        # Normalize underscores so navigator names (HEATER_1, AUX_1, …) match
-        # the underscore-free table keys (HEATER1, AUX1, …).
-        norm = key_name.upper().replace('_', '')
-        code = _AC_KEY_CODES.get(norm)
+        code = _AC_KEY_CODES.get(key_name.upper().replace('_', ''))
         if code is None:
             raise ValueError(f'No AquaConnect code for key: {key_name}')
-        is_nav = norm in _AC_NAV_KEYS
         with self._http_lock:
-            before = self.lcd.text()
             self._apply(self._post(code))
-            if is_nav:
-                # Navigation keys don't flash a confirmation — they move to a new
-                # item. Read adaptively: stop as soon as the frame differs from the
-                # pre-keypress frame, so a responsive box costs a single read
-                # instead of the full fixed burst. The cap bounds a slow box.
-                for _ in range(_AC_NAV_READS):
-                    time.sleep(_AC_NAV_GAP_S)
-                    self._apply(self._read())
-                    if self.lcd.text() != before:
-                        break
-            else:
-                # Equipment toggle: the panel flashes a transient confirmation of
-                # the new state (e.g. 'Filter ON', 'Heater1 Auto Control') before
-                # reverting to the idle scroll. A single read at the settle mark
-                # can land before or after that flash, so sample a short burst and
-                # apply each frame; whichever carries the confirmation updates
-                # state at once instead of waiting for the passive scroll.
-                for _ in range(_AC_CONFIRM_READS):
-                    time.sleep(_AC_CONFIRM_GAP_S)
-                    self._apply(self._read())
+        # Wake the frame reader so it reads confirmation immediately rather than
+        # waiting up to poll_s seconds.
+        self._read_wake.set()
+        with self._frame_cond:
+            self._frame_cond.wait(timeout=3.0)
 
     def _led_line(self, body: Optional[str]) -> Optional[str]:
         """Extract the raw field-3 LED/equipment-state line from a body."""
@@ -905,12 +872,19 @@ class AquaConnectBackend:
     # ── Background state poll ─────────────────────────────────────────────────
     def _poll_loop(self) -> None:
         while not self._poll_stop.is_set():
-            # Skip during navigation ops (or when one is queued) so we don't
-            # compete for the single GoAhead connection slot mid-sequence.
-            if not _nav_lock.busy():
-                with self._http_lock:
-                    self._apply(self._read())  # pure status read, no keypad event
-            self._poll_stop.wait(self._poll_s)
+            # Reads use 'Update Local Server&' which carries no keypad-event
+            # side-effect, so they are safe to interleave between nav keypresses.
+            # _http_lock serializes access to the socket; nav holds it only for
+            # the duration of each individual keypress, not the whole sequence.
+            with self._http_lock:
+                body = self._read()
+            if body:
+                self._apply(body)
+                with self._frame_cond:
+                    self._frame_cond.notify_all()
+            # Sleep for poll_s, but wake early if send_nav_key signals us.
+            self._read_wake.wait(timeout=self._poll_s)
+            self._read_wake.clear()
 
     def stop(self) -> None:
         self._poll_stop.set()
@@ -2461,11 +2435,9 @@ def run_wedge_test() -> Response:
 
 
 def _nav_timing_defaults() -> dict:
-    """Snapshot the current navigation timing tunables."""
+    """Snapshot the current navigation timing tunables (frame-reader model)."""
     return {
         'min_gap': _AC_MIN_GAP_S,
-        'nav_reads': _AC_NAV_READS, 'nav_gap': _AC_NAV_GAP_S,
-        'confirm_reads': _AC_CONFIRM_READS, 'confirm_gap': _AC_CONFIRM_GAP_S,
         'post_menu_settle': MenuNavigator._POST_MENU_SETTLE_S,
         'key_timeout': MenuNavigator._KEY_TIMEOUT,
     }
@@ -2474,12 +2446,9 @@ def _nav_timing_defaults() -> dict:
 def _apply_overrides(base: dict, body: dict) -> dict:
     """Merge requested timing overrides onto a base snapshot, coercing types."""
     applied = dict(base)
-    for k in ('min_gap', 'nav_gap', 'confirm_gap', 'post_menu_settle', 'key_timeout'):
+    for k in ('min_gap', 'post_menu_settle', 'key_timeout'):
         if body.get(k) is not None:
             applied[k] = float(body[k])
-    for k in ('nav_reads', 'confirm_reads'):
-        if body.get(k) is not None:
-            applied[k] = int(body[k])
     return applied
 
 
@@ -2490,16 +2459,11 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
     dict with per-lap detail and an aggregate summary. Always restores the
     previous tunables, even on error.
     """
-    global _AC_MIN_GAP_S, _AC_NAV_READS, _AC_NAV_GAP_S
-    global _AC_CONFIRM_READS, _AC_CONFIRM_GAP_S
+    global _AC_MIN_GAP_S
     saved = _nav_timing_defaults()
     laps_out: list = []
     try:
         _AC_MIN_GAP_S = applied['min_gap']
-        _AC_NAV_READS = applied['nav_reads']
-        _AC_NAV_GAP_S = applied['nav_gap']
-        _AC_CONFIRM_READS = applied['confirm_reads']
-        _AC_CONFIRM_GAP_S = applied['confirm_gap']
         MenuNavigator._POST_MENU_SETTLE_S = applied['post_menu_settle']
         MenuNavigator._KEY_TIMEOUT = applied['key_timeout']
 
@@ -2525,10 +2489,6 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
             })
     finally:
         _AC_MIN_GAP_S = saved['min_gap']
-        _AC_NAV_READS = saved['nav_reads']
-        _AC_NAV_GAP_S = saved['nav_gap']
-        _AC_CONFIRM_READS = saved['confirm_reads']
-        _AC_CONFIRM_GAP_S = saved['confirm_gap']
         MenuNavigator._POST_MENU_SETTLE_S = saved['post_menu_settle']
         MenuNavigator._KEY_TIMEOUT = saved['key_timeout']
 
@@ -2557,8 +2517,7 @@ def nav_benchmark() -> Response:
 
       POST /debug/nav-benchmark
         {"laps":5, "slot":1,
-         "min_gap":0.6, "nav_reads":2, "nav_gap":0.35,
-         "post_menu_settle":0.25, "key_timeout":3.0}
+         "min_gap":0.6, "post_menu_settle":0.25, "key_timeout":3.0}
 
     Omitted params keep their current value. Compare total_s / drops across runs
     to find the fastest settings that still complete every lap with few drops.
@@ -2586,13 +2545,12 @@ def nav_sweep() -> Response:
       POST /debug/nav-sweep
         {"laps":4, "slot":1,
          "min_gaps":[0.9,0.8,0.7,0.6,0.5,0.4,0.3],
-         "nav_reads":2,                 # optional fixed override for all runs
          "settle_between_s":2.0}        # pause between runs so the box recovers
 
-    You may also sweep nav_gaps:[...] and/or post_menu_settles:[...]; every
-    combination is run. Each row reports total_s/avg_s and drops so you can see
-    where drops start climbing — that gap is the floor; pick one step above it.
-    The 'ranking' lists clean runs (zero drops, all laps ok) fastest first.
+    You may also sweep post_menu_settles:[...]; every combination is run. Each
+    row reports total_s/avg_s and drops so you can see where drops start
+    climbing — that gap is the floor; pick one step above it. The 'ranking'
+    lists clean runs (all laps ok) fastest first.
     """
     nav = _get_navigator()
     if nav is None:
@@ -2603,10 +2561,9 @@ def nav_sweep() -> Response:
     settle = float(body.get('settle_between_s', 2.0))
 
     # Swept axes (lists). Default to a min_gap sweep if none given. The
-    # nav_gap / post_menu_settle axes default to a single [None] entry meaning
-    # "leave at the fixed value" — don't coerce that None to float.
+    # post_menu_settle axis defaults to a single [None] entry meaning "leave at
+    # the fixed value" — don't coerce that None to float.
     min_gaps = [float(x) for x in body.get('min_gaps', [_AC_MIN_GAP_S])]
-    nav_gaps = [None if x is None else float(x) for x in body.get('nav_gaps', [None])]
     settles = [None if x is None else float(x) for x in body.get('post_menu_settles', [None])]
 
     base = _nav_timing_defaults()
@@ -2616,40 +2573,35 @@ def nav_sweep() -> Response:
     aborted = None
     first = True
     for mg in min_gaps:
-        for ng in nav_gaps:
-            for pm in settles:
-                if not first:
-                    time.sleep(settle)
-                first = False
-                applied = dict(fixed)
-                applied['min_gap'] = mg
-                if ng is not None:
-                    applied['nav_gap'] = ng
-                if pm is not None:
-                    applied['post_menu_settle'] = pm
-                res = _run_nav_benchmark(nav, laps, slot, applied)
-                s = res['summary']
-                rows.append({
-                    'min_gap': mg, 'nav_gap': applied['nav_gap'],
-                    'post_menu_settle': applied['post_menu_settle'],
-                    'total_s': s['total_s'], 'avg_s': s['avg_s'],
-                    'drops': s['total_drops'], 'presses': s['total_presses'],
-                    'ok_laps': s['ok_laps'], 'laps': s['laps'],
-                })
-                # A run where EVERY lap failed is the wedge signature: presses
-                # are being dropped (ACKed but ignored at the RS-485 relay) and
-                # continuing would only grind out more failures while keeping the
-                # box hammered. Stop here and return what we have — the last
-                # clean run before this is the real floor.
-                if s['ok_laps'] == 0:
-                    aborted = {
-                        'at_min_gap': mg,
-                        'reason': 'all laps failed at this gap — likely the box '
-                                  'command path wedged; aborting sweep. '
-                                  'Power-cycle the AquaConnect box before retrying.',
-                    }
-                    break
-            if aborted:
+        for pm in settles:
+            if not first:
+                time.sleep(settle)
+            first = False
+            applied = dict(fixed)
+            applied['min_gap'] = mg
+            if pm is not None:
+                applied['post_menu_settle'] = pm
+            res = _run_nav_benchmark(nav, laps, slot, applied)
+            s = res['summary']
+            rows.append({
+                'min_gap': mg,
+                'post_menu_settle': applied['post_menu_settle'],
+                'total_s': s['total_s'], 'avg_s': s['avg_s'],
+                'drops': s['total_drops'], 'presses': s['total_presses'],
+                'ok_laps': s['ok_laps'], 'laps': s['laps'],
+            })
+            # A run where EVERY lap failed is the wedge signature: presses
+            # are being dropped (ACKed but ignored at the RS-485 relay) and
+            # continuing would only grind out more failures while keeping the
+            # box hammered. Stop here and return what we have — the last
+            # clean run before this is the real floor.
+            if s['ok_laps'] == 0:
+                aborted = {
+                    'at_min_gap': mg,
+                    'reason': 'all laps failed at this gap — likely the box '
+                              'command path wedged; aborting sweep. '
+                              'Power-cycle the AquaConnect box before retrying.',
+                }
                 break
         if aborted:
             break
@@ -2815,11 +2767,10 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
             _record_command_failure()
             _immediate_wedge_probe()
             return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
-        # The panel immediately shows "Heater1 Auto Control" / "Heater1 Manual Off"
-        # after the nav completes. Read it now so the confirmation lands in
-        # pool/spa_heater_enabled before any poll can see a stale scroll frame.
-        with _ac_backend._http_lock:
-            _ac_backend._apply(_ac_backend._read())
+        # Frame reader wakes immediately after set_heater_enabled releases
+        # _nav_lock (send_nav_key signals _read_wake on each keypress), so the
+        # confirmation screen lands in pool/spa_heater_enabled within one read
+        # cycle — no explicit read needed here.
         _record_command_success()
         log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
         return jsonify({'ok': True, 'which': which, **result})

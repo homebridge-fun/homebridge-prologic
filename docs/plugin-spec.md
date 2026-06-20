@@ -234,17 +234,19 @@ class PoolState:
 
 ### 5.3 AquaConnect Poll Loop
 
-Single background `_poll_loop` calls `_read()` (`Update Local Server&`) on a timer,
-skipping when `_nav_lock.busy()` (navigation in progress). Each response is passed to
-`_apply()` → `_apply_ac_scroll_to_state()` + `_apply_ac_led_to_state()`. Poll reads are
-pure reads — no keypad events.
+**Frame-reader architecture** (single shared reader). The background `_poll_loop` is the
+*only* thing that reads frames. It calls `_read()` (`Update Local Server&`) in a loop and,
+after each successful frame, `notify_all()`s a shared `_frame_cond`. Reads carry no keypad
+side-effect, so they are safe to interleave between keypresses — the poll loop no longer
+skips during navigation.
 
-**Per-key reads during navigation** (`send_nav_key`): pure navigation keys (MENU/RIGHT/
-LEFT/PLUS/MINUS, `_AC_NAV_KEYS`) read *adaptively* — they stop at the first read whose
-frame differs from the pre-keypress frame (`_AC_NAV_READS` cap, default 2). Equipment toggle
-keys keep the fixed confirm-read burst (`_AC_CONFIRM_READS`/`_AC_CONFIRM_GAP_S`) because the
-panel flashes a transient confirmation that a single read can miss. This adaptive split is
-the main contributor to the ~44% faster menu reads (see §3.3).
+`send_nav_key` presses the key under `_http_lock`, releases it, sets `_read_wake` to wake
+the poll loop immediately (instead of waiting up to `poll_s`), then blocks on `_frame_cond`
+for the next frame (3s timeout). The panel shows the confirmation state right away, so one
+read is enough. Net: **N keypresses make N+1 requests** (1 per key + 1 confirming read
+each), down from the old N×5 (1 press + 4 confirm reads each). This replaced the previous
+confirm-burst/adaptive-read approach. The explicit post-`set_heater_enabled` read is gone —
+the frame reader delivers the confirmation naturally.
 
 ### 5.4 `_PriorityLock`
 
@@ -631,7 +633,8 @@ homebridge-prologic/
 | Fan spinning | Done | `CurrentFanState` set explicitly per tile on each poll; `Active=1` re-pushed every poll so HomeKit's reconnect reset doesn't stop the animation |
 | Heater two-switch model | Done | "Heater Auto" (armed/Auto-mode, tappable) + "Heater Running" (read-only relay-firing indicator from `led['heater']`). Replaced the abandoned three-state Fanv2 — Apple Home ignores `CurrentFanState` and spins any `Active=1` fan |
 | Circuit label overrides | Done | `circuitLabels` config object, editable in Homebridge UI |
-| Nav timing optimization | Done | `_AC_MIN_GAP_S` 0.9→0.6s; adaptive nav-key reads (exit on first changed frame, `_AC_NAV_READS` cap 2). ~44% faster menu reads. Floor is ~0.5s; below that the box wedges |
+| Nav timing optimization | Done | `_AC_MIN_GAP_S` 0.9→0.6s. Floor is ~0.5s; below that the box wedges. Combined with the frame-reader (§5.3) for faster, lower-request-count menu reads |
+| Frame-reader architecture | Done | Single shared poll-loop reader + `_frame_cond`/`_read_wake`; `send_nav_key` waits for one confirming frame instead of a 4× burst (N+1 requests vs N×5). Replaced the confirm-burst/adaptive-read design |
 | Chlorinator % HomeKit write | Done | Fan tile `RotationSpeed` writes `/chlorinator/{which}`; valve-mode aware (pool vs spa); 600ms debounce so a drag is one menu write, not one per step; reverts the ring on failure. Sidecar snaps to the panel grid (1% below 10%, 5% at/above) |
 | Wedge-risk audit of write paths | Done | Every slider-driven `onSet` that triggers menu navigation is now debounced 600ms: fan (chlorinator/pump), VSP slot tiles, **and the thermostat setpoint** (was the last unguarded drag→nav path). Discrete toggles (circuit switches, spa mode, heater enable) are single-press and need no debounce |
 | `/debug/nav-sweep` harness | Done | Server-side timing sweep over `min_gaps` (and optionally `nav_gaps`/`post_menu_settles`), aborts early + returns partial results on a wedge, ranks clean runs fastest-first |
@@ -640,7 +643,7 @@ homebridge-prologic/
 
 | Item | Priority | Notes |
 |---|---|---|
-| **Dedicated LCD frame-watcher service** | Backlog | Always-running service that passively watches the AquaConnect frame and exposes a pub/sub API: latest value, change notifications, last-known value per field. Decouples state reads from navigation. **Won't speed up navigation** (the 0.6s/request box constraint is the real limit) — value is cleaner architecture + always-fresh state independent of poll interval |
+| **Dedicated LCD frame-watcher *service*** | Partial | The in-process frame-reader (§5.3) is now the single shared reader with a `_frame_cond` pub/sub inside the sidecar. A *separate* always-on service exposing an external pub/sub API (latest value, change notifications, last-known per field) to other consumers is still open. Won't speed up navigation (0.6s/request box limit) |
 | FILTER circuit as Fanv2 | Backlog | Could expose pump on/off alongside slot tiles |
 | RS-485 backend parity | Partial | Nav exists; not end-to-end verified on current codebase |
 | Spillover mode | Not tested | Not present on this installation |
