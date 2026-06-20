@@ -1819,9 +1819,19 @@ class MenuNavigator:
                 txt = self._press_until('RIGHT', lambda t: label in t,
                                         self._NAV_MAX, label)
                 was_off = 'Manual Off' in txt
+                # Whenever the heater ends up enabled the panel shows the stored
+                # °F, so capture it into state — otherwise the thermostat would
+                # keep showing its default until a separate read_heater navigated
+                # here (the user's "target says 80 but the panel says 65" bug).
+                setpoint_f = None
                 if on and was_off:
-                    # PLUS from Manual Off enables at the stored setpoint.
-                    self._send('PLUS')
+                    # PLUS from Manual Off enables at the stored setpoint and
+                    # reveals the °F on screen.
+                    txt = self._send('PLUS')
+                    setpoint_f = self._degf(txt)
+                elif on and not was_off:
+                    # Already enabled: the navigated screen already shows the °F.
+                    setpoint_f = self._degf(txt)
                 elif not on and not was_off:
                     # Toggle HEATER_1 on the item until 'Manual Off' appears.
                     self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
@@ -1829,9 +1839,14 @@ class MenuNavigator:
                 with state_lock:
                     if which == 'pool':
                         state.pool_heater_enabled = on
+                        if setpoint_f is not None:
+                            state.pool_setpoint_f = setpoint_f
                     else:
                         state.spa_heater_enabled = on
-                return {'which': which, 'enabled': on, 'was_off': was_off}
+                        if setpoint_f is not None:
+                            state.spa_setpoint_f = setpoint_f
+                return {'which': which, 'enabled': on, 'was_off': was_off,
+                        'setpoint_f': setpoint_f}
         finally:
             self.fast_exit()
 

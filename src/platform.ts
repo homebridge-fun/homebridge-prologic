@@ -204,6 +204,28 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       });
     }
 
+    // Heater setpoints live behind menu navigation and aren't in the idle
+    // scroll, so without a read they stay null and the thermostat shows its
+    // hardcoded default (80°F) instead of the panel's real setpoint. Fetch the
+    // active bodies' setpoints once on startup; the read caches them in the
+    // sidecar and the regular poll flows them to the thermostats. Sequential so
+    // the two menu navigations don't contend for the nav lock.
+    if (this.cfg.enablePoolHeaterThermostat || this.cfg.enableSpaHeaterThermostat
+        || this.cfg.enableActiveHeaterThermostat) {
+      const bodies = this.cfg.activeBodies.filter(
+        (b): b is 'pool' | 'spa' => b === 'pool' || b === 'spa');
+      (async () => {
+        for (const which of bodies) {
+          try {
+            await this.sidecar.getHeaterState(which);
+          } catch (err) {
+            this.log.warn(`Could not pre-fetch ${which} heater setpoint:`,
+              (err as Error).message);
+          }
+        }
+      })();
+    }
+
     // Salt level sensor
     if (this.cfg.enableSaltSensor) {
       const acc = register('Salt Level',

@@ -5,6 +5,11 @@ import type { Circuit } from './settings';
 export class SwitchAccessory {
   private service: Service;
   private currentState = false;
+  // True while a write is in flight. The heater write navigates the Settings
+  // menu (~15s); during that window the poll loop keeps reporting the old
+  // enabled state, which would revert our optimistic update. Suppress poll
+  // updates until the write resolves and the navigator has confirmed.
+  private writeInFlight = false;
 
   constructor(
     private readonly platform: ProLogicPlatform,
@@ -37,6 +42,7 @@ export class SwitchAccessory {
   async handleSet(value: CharacteristicValue): Promise<void> {
     const on = value as boolean;
     this.currentState = on; // optimistic update so onGet returns new value immediately
+    this.writeInFlight = true;
     try {
       if (this.circuit === 'SUPER_CHLORINATE') {
         await this.platform.sidecar.setSuperChlorinate(on);
@@ -49,10 +55,15 @@ export class SwitchAccessory {
       throw new this.platform.api.hap.HapStatusError(
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
       );
+    } finally {
+      this.writeInFlight = false;
     }
   }
 
   updateState(on: boolean): void {
+    // Hold our optimistic value while a write is committing — the poll loop
+    // still reports the pre-write state until the navigator confirms.
+    if (this.writeInFlight) return;
     if (this.currentState !== on) {
       this.currentState = on;
       this.service.updateCharacteristic(this.platform.Characteristic.On, on);
