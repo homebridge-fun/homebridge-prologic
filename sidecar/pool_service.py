@@ -2746,21 +2746,23 @@ def set_mode() -> Response:
                 with state_lock:
                     new_mode = state.valve_mode
         except Exception as e:
+            # An exception here means the keypress itself failed (socket/HTTP) —
+            # that IS a command-path failure worth a wedge probe.
             log.error(f'set_mode (AC) {target}: {e}')
             _record_command_failure()
             _immediate_wedge_probe()
             return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
-        if new_mode == target:
-            _record_command_success()
-            log.info(f'Mode -> {target} (AquaConnect)')
-            return jsonify({'ok': True, 'mode': target, 'changed': True})
-        log.warning('set_mode %s NOT CONFIRMED (now=%s) — probing bridge', target, new_mode)
-        _record_command_failure()
-        _immediate_wedge_probe()
-        return jsonify({
-            'error': f'mode toggle not confirmed (now={new_mode})',
-            'bridge_wedged': state.bridge_wedged,
-        }), 502
+        # The keypress landed. We do NOT hard-fail when valve_mode hasn't flipped
+        # yet: the valve actuates over ~10-30s and the mode LEDs lag during the
+        # transition, so a single confirming frame often still shows the old mode.
+        # Report success — the poll loop reconciles valve_mode as the valve
+        # finishes — and only note in the log whether it confirmed immediately.
+        _record_command_success()
+        confirmed = (new_mode == target)
+        log.info('Mode -> %s (AquaConnect)%s', target,
+                 '' if confirmed else ' (actuating, not yet confirmed)')
+        return jsonify({'ok': True, 'mode': target, 'changed': True,
+                        'confirmed': confirmed})
 
     p = _get_panel()
     if p is None:
