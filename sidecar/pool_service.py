@@ -941,11 +941,16 @@ def _apply_ac_led_to_state(led: dict) -> None:
             state.valve_mode = 'spa'
         # Equipment on/off → circuits dict (absent stays out of the map)
         for name, key in (('filter', 'FILTER'), ('lights', 'LIGHTS'),
-                          ('heater', 'HEATER_1'), ('aux1', 'AUX_1'),
-                          ('aux2', 'AUX_2')):
+                          ('aux1', 'AUX_1'), ('aux2', 'AUX_2')):
             st = led.get(name)
             if st in ('on', 'off', 'blink'):
                 state.circuits[key] = (st != 'off')
+        # Heater LED: 'on'/'blink' means the relay is actually firing right now.
+        # HEATER_AUTO_MODE (armed/Auto) overwrites circuits['HEATER_1'] later in
+        # on_change, so capture the relay bit separately here as heater_active.
+        heater_st = led.get('heater')
+        if heater_st in ('on', 'off', 'blink'):
+            state.heater_active = (heater_st != 'off')
         state.connected = True
         state.last_update = time.time()
 
@@ -1106,18 +1111,10 @@ def panel_thread(host: str, port: int) -> None:
                     state.circuits[name] = bool(aq.get_state(s))
                 except Exception:
                     pass
-            # HEATER_1's broadcast bit (States.HEATER_1) is the *relay* — true
-            # only while actively calling for heat. The enable state the keypad
-            # HEATER_1 button toggles is Auto vs Manual Off = HEATER_AUTO_MODE.
-            # Report the enable bit as the circuit (so the switch/thermostat
-            # tiles track armed/auto), and the relay bit separately as
-            # heater_active (so a fan tile can spin only while actually firing).
+            # circuits['HEATER_1'] = armed/Auto mode (not the firing relay).
+            # heater_active is set by _apply_ac_led_to_state from the LED field.
             try:
                 state.circuits['HEATER_1'] = bool(aq.get_state(States.HEATER_AUTO_MODE))
-            except Exception:
-                pass
-            try:
-                state.heater_active = bool(aq.get_state(States.HEATER_1))
             except Exception:
                 pass
             # Parse valve mode from default cycling display (§10).
