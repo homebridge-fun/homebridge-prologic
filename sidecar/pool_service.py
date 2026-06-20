@@ -2439,8 +2439,9 @@ def benchmark_named(name: str) -> Response:
     laps = max(1, int(body.get('laps', 3)))
     slot = int(body.get('slot', 1))
     applied = _apply_overrides(_nav_timing_defaults(), body)
+    is_rs = (name == 'rs485')
 
-    if name == 'rs485':
+    if is_rs:
         obs = _rs485_observer
         if obs is None:
             return jsonify({'error': 'rs485 observer not connected'}), 503
@@ -2452,9 +2453,64 @@ def benchmark_named(name: str) -> Response:
         if nav is None:
             return jsonify({'error': 'navigator unavailable'}), 503
 
-    result = _run_nav_benchmark(nav, laps, slot, applied)
+    result = _run_nav_benchmark(nav, laps, slot, applied, is_rs485=is_rs)
     result['backend'] = name
     return jsonify(result)
+
+
+@app.route('/benchmark/rs485/sweep', methods=['POST'])
+def rs485_sweep() -> Response:
+    """Sweep key_predelay_ms values to find the RS-485 panel's accept window.
+
+    Body: {"predelays_ms": [30,50,70,100,150], "laps"?: 2, "slot"?: 1,
+           "key_burst"?: 1, "key_timeout"?: 4.0, "post_menu_settle"?: 0.35}
+
+    Runs a benchmark lap for each predelay in order. Returns each run's drop
+    rate and avg key latency so you can pick the timing that minimises drops.
+    Aborts early if a run produces 0 successful keys (panel stuck).
+    """
+    obs = _rs485_observer
+    if obs is None:
+        return jsonify({'error': 'rs485 observer not connected'}), 503
+
+    body = request.get_json(force=True) or {}
+    predelays = body.get('predelays_ms',
+                         [20, 30, 50, 70, 100, 130, 160, 200])
+    laps = max(1, int(body.get('laps', 2)))
+    slot = int(body.get('slot', 1))
+    base = _apply_overrides(_nav_timing_defaults(), body)
+
+    runs = []
+    for pd in predelays:
+        applied = dict(base)
+        applied['key_predelay_ms'] = float(pd)
+        result = _run_nav_benchmark(obs.nav, laps, slot, applied, is_rs485=True)
+        s = result['summary']
+        entry = {
+            'key_predelay_ms': pd,
+            'ok_laps': s['ok_laps'],
+            'laps': s['laps'],
+            'avg_s': s['avg_s'],
+            'drop_rate_pct': s['drop_rate_pct'],
+            'avg_key_latency_ms': s.get('avg_key_latency_ms'),
+            'total_drops': s['total_drops'],
+            'total_presses': s['total_presses'],
+        }
+        runs.append(entry)
+        # If every lap failed with this predelay, the panel may be stuck in a
+        # menu — abort rather than compounding errors.
+        if s['ok_laps'] == 0 and s['laps'] >= 2:
+            log.warning('rs485_sweep: all laps failed at predelay=%sms — aborting', pd)
+            break
+
+    # Rank by drop rate (ascending), then avg_s
+    clean = [r for r in runs if r['ok_laps'] > 0]
+    clean.sort(key=lambda r: (r['drop_rate_pct'] or 999, r['avg_s'] or 999))
+    return jsonify({
+        'runs': runs,
+        'best': clean[0] if clean else None,
+        'params': {'laps': laps, 'slot': slot},
+    })
 
 
 @app.route('/bridge/health')
@@ -2714,41 +2770,59 @@ def run_wedge_test() -> Response:
 
 
 def _nav_timing_defaults() -> dict:
-    """Snapshot the current navigation timing tunables (frame-reader model)."""
+    """Snapshot the current navigation timing tunables."""
     return {
-        'min_gap': _AC_MIN_GAP_S,
+        'min_gap': _AC_MIN_GAP_S,                        # AC only
         'post_menu_settle': MenuNavigator._POST_MENU_SETTLE_S,
         'key_timeout': MenuNavigator._KEY_TIMEOUT,
+        'key_predelay_ms': KEY_PREDELAY_MS,              # RS-485 only
+        'key_burst': KEY_BURST,                          # RS-485 only
     }
 
 
 def _apply_overrides(base: dict, body: dict) -> dict:
     """Merge requested timing overrides onto a base snapshot, coercing types."""
     applied = dict(base)
-    for k in ('min_gap', 'post_menu_settle', 'key_timeout'):
+    for k in ('post_menu_settle', 'key_timeout'):
         if body.get(k) is not None:
             applied[k] = float(body[k])
+    if body.get('min_gap') is not None:
+        applied['min_gap'] = float(body['min_gap'])
+    if body.get('key_predelay_ms') is not None:
+        applied['key_predelay_ms'] = float(body['key_predelay_ms'])
+    if body.get('key_burst') is not None:
+        applied['key_burst'] = int(body['key_burst'])
     return applied
 
 
-def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
+def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict,
+                       is_rs485: bool = False) -> dict:
     """Apply `applied` tunables, time read_vsp_slot(slot) over `laps`, restore.
 
     read_vsp_slot is pure navigate-and-read — no panel state changes. Returns a
     dict with per-lap detail and an aggregate summary. Always restores the
     previous tunables, even on error.
+
+    For RS-485 benchmarks (is_rs485=True) the relevant tunables are
+    key_predelay_ms, key_burst, key_timeout, and post_menu_settle.  The AC
+    min_gap is not applicable. The 'requests' metric counts AC HTTP requests
+    that happened alongside (the AC poll loop keeps running), so it's omitted
+    from RS-485 results to avoid confusion.
     """
-    global _AC_MIN_GAP_S
+    global _AC_MIN_GAP_S, KEY_PREDELAY_MS, KEY_BURST
     saved = _nav_timing_defaults()
     laps_out: list = []
     try:
         _AC_MIN_GAP_S = applied['min_gap']
         MenuNavigator._POST_MENU_SETTLE_S = applied['post_menu_settle']
         MenuNavigator._KEY_TIMEOUT = applied['key_timeout']
+        if is_rs485:
+            KEY_PREDELAY_MS = applied['key_predelay_ms']
+            KEY_BURST = applied['key_burst']
 
         for i in range(laps):
             seq0 = _NAV_SEQ[0]
-            req0 = _ac_backend._req_count if _ac_backend else 0
+            req0 = _ac_backend._req_count if (_ac_backend and not is_rs485) else 0
             t0 = time.time()
             ok, err = True, None
             try:
@@ -2756,32 +2830,40 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
             except Exception as e:
                 ok, err = False, str(e)
             dt = time.time() - t0
-            # Count keypresses logged during this lap and how many were drops
-            # (a press that produced no display change → caller re-pressed).
             with _NAV_TRACE_LOCK:
                 lap_keys = [e for e in _NAV_TRACE if e['seq'] > seq0]
             presses = len(lap_keys)
             drops = sum(1 for e in lap_keys if not e['changed'])
-            # Total HTTP requests (presses + reads, incl. the background poll
-            # loop's reads that landed during this lap). With the frame-reader
-            # this should track ~presses + a small read overhead, vs the old
-            # confirm-burst's ~presses*5.
-            requests = (_ac_backend._req_count - req0) if _ac_backend else 0
-            laps_out.append({
+            lap: dict = {
                 'lap': i + 1, 'ok': ok, 'seconds': round(dt, 2),
-                'presses': presses, 'drops': drops, 'requests': requests,
+                'presses': presses, 'drops': drops,
                 **({'error': err} if err else {}),
-            })
+            }
+            if not is_rs485:
+                # AC: count HTTP requests (presses + frame-reader reads);
+                # validates the N+1-per-N-keys frame-reader design.
+                lap['requests'] = (_ac_backend._req_count - req0
+                                   if _ac_backend else 0)
+            else:
+                # RS-485: report avg per-key latency from the trace (bus
+                # round-trip from send_key → on_change confirmation).
+                key_latencies = [e['wait_s'] for e in lap_keys if e['changed']]
+                lap['avg_key_latency_ms'] = (
+                    round(sum(key_latencies) / len(key_latencies) * 1000, 1)
+                    if key_latencies else None)
+            laps_out.append(lap)
     finally:
         _AC_MIN_GAP_S = saved['min_gap']
         MenuNavigator._POST_MENU_SETTLE_S = saved['post_menu_settle']
         MenuNavigator._KEY_TIMEOUT = saved['key_timeout']
+        if is_rs485:
+            KEY_PREDELAY_MS = saved['key_predelay_ms']
+            KEY_BURST = saved['key_burst']
 
     ok_laps = [l for l in laps_out if l['ok']]
     times = [l['seconds'] for l in ok_laps]
     total_presses = sum(l['presses'] for l in laps_out)
-    total_requests = sum(l.get('requests', 0) for l in laps_out)
-    summary = {
+    summary: dict = {
         'laps': laps, 'ok_laps': len(ok_laps),
         'total_s': round(sum(l['seconds'] for l in laps_out), 2),
         'avg_s': round(sum(times) / len(times), 2) if times else None,
@@ -2789,11 +2871,25 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
         'max_s': max(times) if times else None,
         'total_presses': total_presses,
         'total_drops': sum(l['drops'] for l in laps_out),
-        'total_requests': total_requests,
-        # Requests per keypress: ~1 (frame-reader N+1) vs ~5 (old confirm burst).
-        'requests_per_press': round(total_requests / total_presses, 2) if total_presses else None,
+        'drop_rate_pct': round(
+            100 * sum(l['drops'] for l in laps_out) / total_presses, 1
+        ) if total_presses else None,
     }
-    return {'summary': summary, 'laps_detail': laps_out}
+    if not is_rs485:
+        total_requests = sum(l.get('requests', 0) for l in laps_out)
+        summary['total_requests'] = total_requests
+        summary['requests_per_press'] = (
+            round(total_requests / total_presses, 2) if total_presses else None)
+    else:
+        all_lat = [e['wait_s'] for e in
+                   [e for l in laps_out for e in []]  # placeholder
+                   if e.get('changed')]
+        # Pull latencies from the per-lap avg instead
+        valid_avgs = [l['avg_key_latency_ms'] for l in laps_out
+                      if l.get('avg_key_latency_ms') is not None]
+        summary['avg_key_latency_ms'] = (
+            round(sum(valid_avgs) / len(valid_avgs), 1) if valid_avgs else None)
+    return {'summary': summary, 'laps_detail': laps_out, 'applied': applied}
 
 
 @app.route('/debug/nav-benchmark', methods=['POST'])
