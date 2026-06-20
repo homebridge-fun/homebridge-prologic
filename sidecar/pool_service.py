@@ -2616,7 +2616,18 @@ def rs485_taptest() -> Response:
                 t0 = time.time()
                 after = nav._send(key)
                 dt_ms = round((time.time() - t0) * 1000, 1)
-                results.append({'landed': after != before, 'latency_ms': dt_ms})
+                # A true landing means display changed AND we're still in the
+                # Settings Menu ring (not a panel-auto-exit to status display).
+                # Without this check, panel timeouts that change the LCD text
+                # look like landed presses (false positives at slow timeouts).
+                real_nav = (after != before and nav._in_settings(after))
+                if not real_nav and after != before:
+                    # Panel escaped the menu — re-anchor before continuing.
+                    try:
+                        nav._anchor()
+                    except RuntimeError:
+                        break
+                results.append({'landed': real_nav, 'latency_ms': dt_ms})
     except RuntimeError as e:
         anchor_error = str(e)
     finally:
