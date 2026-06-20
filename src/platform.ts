@@ -290,7 +290,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
         this.chlorinatorFan?.updateRunning(filterOn && (status.chlorinator_percent ?? 0) > 0);
         this.pumpFan?.updateSpeed(status.pump_speed);
-        this.pumpFan?.updateRunning(filterOn);
+        this.pumpFan?.updateRunning(filterOn && (status.pump_speed ?? 0) > 0);
         this.pumpFan?.updateActiveSlot(status.vsp_active_slot);
         for (const slotAcc of this.vspSlots) {
           slotAcc.updateSpeed(status.vsp_slot_pct[String(slotAcc.slot)]);
