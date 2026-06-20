@@ -19,7 +19,8 @@
 Block 1 — Homebridge terminal:
 ```bash
 cd /home/greg/development/homebridge-prologic
-git pull origin claude/gracious-planck-1yz8v9
+git stash
+git pull --rebase origin claude/gracious-planck-1yz8v9
 sudo cp sidecar/pool_service.py /opt/pool-sidecar/pool_service.py
 sudo systemctl restart pool-sidecar
 npm run build
