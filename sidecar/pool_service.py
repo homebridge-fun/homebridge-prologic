@@ -2611,6 +2611,7 @@ def nav_sweep() -> Response:
     fixed = _apply_overrides(base, body)  # apply any scalar fixed overrides
 
     rows: list = []
+    aborted = None
     first = True
     for mg in min_gaps:
         for ng in nav_gaps:
@@ -2633,6 +2634,23 @@ def nav_sweep() -> Response:
                     'drops': s['total_drops'], 'presses': s['total_presses'],
                     'ok_laps': s['ok_laps'], 'laps': s['laps'],
                 })
+                # A run where EVERY lap failed is the wedge signature: presses
+                # are being dropped (ACKed but ignored at the RS-485 relay) and
+                # continuing would only grind out more failures while keeping the
+                # box hammered. Stop here and return what we have — the last
+                # clean run before this is the real floor.
+                if s['ok_laps'] == 0:
+                    aborted = {
+                        'at_min_gap': mg,
+                        'reason': 'all laps failed at this gap — likely the box '
+                                  'command path wedged; aborting sweep. '
+                                  'Power-cycle the AquaConnect box before retrying.',
+                    }
+                    break
+            if aborted:
+                break
+        if aborted:
+            break
 
     clean = [r for r in rows
              if r['drops'] == 0 and r['ok_laps'] == r['laps'] and r['avg_s'] is not None]
@@ -2641,6 +2659,7 @@ def nav_sweep() -> Response:
         'laps': laps, 'slot': slot, 'defaults': base,
         'fixed_overrides': {k: fixed[k] for k in fixed if fixed[k] != base[k]},
         'rows': rows,
+        'aborted': aborted,
         'fastest_clean': ranking[0] if ranking else None,
         'ranking': ranking,
     })
