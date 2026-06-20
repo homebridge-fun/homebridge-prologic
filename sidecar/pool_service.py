@@ -856,14 +856,14 @@ class AquaConnectBackend:
             return _decode_ac_led(line).get('aux2') if line else None
 
         with self._http_lock:
-            before = canary_bit(self._led_line(self._post('00')))
+            before = canary_bit(self._led_line(self._read()))
             self._apply(self._post(code))   # press canary
             after = before
             attempts = 0
             for _ in range(retries):
                 attempts += 1
                 time.sleep(gap_s)
-                body = self._post('00')
+                body = self._read()
                 self._apply(body)
                 after = canary_bit(self._led_line(body))
                 if after is not None and before is not None and after != before:
@@ -3008,7 +3008,7 @@ def debug_aquaconnect() -> Response:
                                  '(start with --backend aquaconnect)'}), 400
     if request.method == 'GET':
         with _ac_backend._http_lock:
-            body = _ac_backend._post('00')
+            body = _ac_backend._read()
         lcd, led = _ac_backend._parse(body) if body else (None, {})
         lines = _ac_backend._body_lines(body) if body else []
         out = {
