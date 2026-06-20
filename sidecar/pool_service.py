@@ -2458,48 +2458,39 @@ def run_wedge_test() -> Response:
     return jsonify(result), code
 
 
-@app.route('/debug/nav-benchmark', methods=['POST'])
-def nav_benchmark() -> Response:
-    """Time a real menu read under chosen timing params, to find the safe floor.
-
-    Runs read_vsp_slot(slot) `laps` times (pure navigate-and-read — no panel
-    state is changed) and reports wall-time per lap plus how many keypresses
-    were dropped and re-pressed. Temporarily overrides the timing tunables for
-    the run and restores them after, so you can sweep without editing code:
-
-      POST /debug/nav-benchmark
-        {"laps":5, "slot":1,
-         "min_gap":0.6, "nav_reads":2, "nav_gap":0.35,
-         "post_menu_settle":0.25, "key_timeout":3.0}
-
-    Omitted params keep their current value. Compare total_s / drops across runs
-    to find the fastest settings that still complete every lap with few drops.
-    """
-    global _AC_MIN_GAP_S, _AC_NAV_READS, _AC_NAV_GAP_S
-    global _AC_CONFIRM_READS, _AC_CONFIRM_GAP_S
-    nav = _get_navigator()
-    if nav is None:
-        return jsonify({'error': 'Not connected'}), 503
-    body = request.get_json(force=True, silent=True) or {}
-    laps = max(1, int(body.get('laps', 5)))
-    slot = int(body.get('slot', 1))
-
-    # Snapshot every tunable we might override, then apply the requested ones.
-    saved = {
+def _nav_timing_defaults() -> dict:
+    """Snapshot the current navigation timing tunables."""
+    return {
         'min_gap': _AC_MIN_GAP_S,
         'nav_reads': _AC_NAV_READS, 'nav_gap': _AC_NAV_GAP_S,
         'confirm_reads': _AC_CONFIRM_READS, 'confirm_gap': _AC_CONFIRM_GAP_S,
         'post_menu_settle': MenuNavigator._POST_MENU_SETTLE_S,
         'key_timeout': MenuNavigator._KEY_TIMEOUT,
     }
-    applied = dict(saved)
+
+
+def _apply_overrides(base: dict, body: dict) -> dict:
+    """Merge requested timing overrides onto a base snapshot, coercing types."""
+    applied = dict(base)
     for k in ('min_gap', 'nav_gap', 'confirm_gap', 'post_menu_settle', 'key_timeout'):
         if body.get(k) is not None:
             applied[k] = float(body[k])
     for k in ('nav_reads', 'confirm_reads'):
         if body.get(k) is not None:
             applied[k] = int(body[k])
+    return applied
 
+
+def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
+    """Apply `applied` tunables, time read_vsp_slot(slot) over `laps`, restore.
+
+    read_vsp_slot is pure navigate-and-read — no panel state changes. Returns a
+    dict with per-lap detail and an aggregate summary. Always restores the
+    previous tunables, even on error.
+    """
+    global _AC_MIN_GAP_S, _AC_NAV_READS, _AC_NAV_GAP_S
+    global _AC_CONFIRM_READS, _AC_CONFIRM_GAP_S
+    saved = _nav_timing_defaults()
     laps_out: list = []
     try:
         _AC_MIN_GAP_S = applied['min_gap']
@@ -2541,18 +2532,116 @@ def nav_benchmark() -> Response:
 
     ok_laps = [l for l in laps_out if l['ok']]
     times = [l['seconds'] for l in ok_laps]
-    total = round(sum(l['seconds'] for l in laps_out), 2)
     summary = {
         'laps': laps, 'ok_laps': len(ok_laps),
-        'total_s': total,
+        'total_s': round(sum(l['seconds'] for l in laps_out), 2),
         'avg_s': round(sum(times) / len(times), 2) if times else None,
         'min_s': min(times) if times else None,
         'max_s': max(times) if times else None,
         'total_presses': sum(l['presses'] for l in laps_out),
         'total_drops': sum(l['drops'] for l in laps_out),
     }
-    return jsonify({'applied': applied, 'saved_defaults': saved,
-                    'summary': summary, 'laps_detail': laps_out})
+    return {'summary': summary, 'laps_detail': laps_out}
+
+
+@app.route('/debug/nav-benchmark', methods=['POST'])
+def nav_benchmark() -> Response:
+    """Time a real menu read under chosen timing params, to find the safe floor.
+
+    Runs read_vsp_slot(slot) `laps` times (pure navigate-and-read — no panel
+    state is changed) and reports wall-time per lap plus how many keypresses
+    were dropped and re-pressed. Temporarily overrides the timing tunables for
+    the run and restores them after, so you can sweep without editing code:
+
+      POST /debug/nav-benchmark
+        {"laps":5, "slot":1,
+         "min_gap":0.6, "nav_reads":2, "nav_gap":0.35,
+         "post_menu_settle":0.25, "key_timeout":3.0}
+
+    Omitted params keep their current value. Compare total_s / drops across runs
+    to find the fastest settings that still complete every lap with few drops.
+    """
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    body = request.get_json(force=True, silent=True) or {}
+    laps = max(1, int(body.get('laps', 5)))
+    slot = int(body.get('slot', 1))
+    saved = _nav_timing_defaults()
+    applied = _apply_overrides(saved, body)
+    result = _run_nav_benchmark(nav, laps, slot, applied)
+    return jsonify({'applied': applied, 'saved_defaults': saved, **result})
+
+
+@app.route('/debug/nav-sweep', methods=['POST'])
+def nav_sweep() -> Response:
+    """Sweep one or more timing params in a single call and rank the results.
+
+    Runs _run_nav_benchmark once per combination of the swept values, holding
+    every other tunable at its current default (or at a fixed override you
+    supply). Designed to find the key-press gap floor in one shot:
+
+      POST /debug/nav-sweep
+        {"laps":4, "slot":1,
+         "min_gaps":[0.9,0.8,0.7,0.6,0.5,0.4,0.3],
+         "nav_reads":2,                 # optional fixed override for all runs
+         "settle_between_s":2.0}        # pause between runs so the box recovers
+
+    You may also sweep nav_gaps:[...] and/or post_menu_settles:[...]; every
+    combination is run. Each row reports total_s/avg_s and drops so you can see
+    where drops start climbing — that gap is the floor; pick one step above it.
+    The 'ranking' lists clean runs (zero drops, all laps ok) fastest first.
+    """
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    body = request.get_json(force=True, silent=True) or {}
+    laps = max(1, int(body.get('laps', 4)))
+    slot = int(body.get('slot', 1))
+    settle = float(body.get('settle_between_s', 2.0))
+
+    # Swept axes (lists). Default to a min_gap sweep if none given.
+    min_gaps = [float(x) for x in body.get('min_gaps', [_AC_MIN_GAP_S])]
+    nav_gaps = [float(x) for x in body.get('nav_gaps', [None])]
+    settles = [float(x) for x in body.get('post_menu_settles', [None])]
+
+    base = _nav_timing_defaults()
+    fixed = _apply_overrides(base, body)  # apply any scalar fixed overrides
+
+    rows: list = []
+    first = True
+    for mg in min_gaps:
+        for ng in nav_gaps:
+            for pm in settles:
+                if not first:
+                    time.sleep(settle)
+                first = False
+                applied = dict(fixed)
+                applied['min_gap'] = mg
+                if ng is not None:
+                    applied['nav_gap'] = ng
+                if pm is not None:
+                    applied['post_menu_settle'] = pm
+                res = _run_nav_benchmark(nav, laps, slot, applied)
+                s = res['summary']
+                rows.append({
+                    'min_gap': mg, 'nav_gap': applied['nav_gap'],
+                    'post_menu_settle': applied['post_menu_settle'],
+                    'total_s': s['total_s'], 'avg_s': s['avg_s'],
+                    'drops': s['total_drops'], 'presses': s['total_presses'],
+                    'ok_laps': s['ok_laps'], 'laps': s['laps'],
+                })
+
+    clean = [r for r in rows
+             if r['drops'] == 0 and r['ok_laps'] == r['laps'] and r['avg_s'] is not None]
+    ranking = sorted(clean, key=lambda r: r['avg_s'])
+    return jsonify({
+        'laps': laps, 'slot': slot, 'defaults': base,
+        'fixed_overrides': {k: fixed[k] for k in fixed if fixed[k] != base[k]},
+        'rows': rows,
+        'fastest_clean': ranking[0] if ranking else None,
+        'ranking': ranking,
+    })
 
 
 @app.route('/bridge/health/reset', methods=['POST'])
