@@ -30,7 +30,7 @@ export class SaltSensorAccessory {
     // saltwater pool levels (typically 2700–3500 PPM) down to 1000. Raise the
     // max with setProps so the full salt range comes through unclamped.
     this.service.getCharacteristic(this.platform.Characteristic.VOCDensity)
-      .setProps({ minValue: 0, maxValue: 10000 })
+      .setProps({ minValue: 0, maxValue: 4000 })
       .onGet(() => this.currentPpm);
   }
 
