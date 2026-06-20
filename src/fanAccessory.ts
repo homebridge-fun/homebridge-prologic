@@ -35,6 +35,9 @@ export class FanAccessory {
     this.service.getCharacteristic(C.Active)
       .onGet(() => 1)
       .onSet(() => { /* no-op */ });
+    // HomeKit caches Active=0 (Inactive) by default; push 1 now so the
+    // spinning animation works without waiting for a HAP poll.
+    this.service.updateCharacteristic(C.Active, 1);
 
     // CurrentFanState drives the spinning animation:
     // 0=Inactive, 1=Idle (on but not moving), 2=Blowing Air (spinning)
@@ -42,6 +45,7 @@ export class FanAccessory {
       .onGet(() => this.running
         ? C.CurrentFanState.BLOWING_AIR
         : C.CurrentFanState.IDLE);
+    this.service.updateCharacteristic(C.CurrentFanState, C.CurrentFanState.IDLE);
 
     this.service.getCharacteristic(C.RotationSpeed)
       .setProps({ minValue: 0, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })

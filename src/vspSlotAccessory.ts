@@ -36,11 +36,13 @@ export class VspSlotAccessory {
     this.service.getCharacteristic(C.Active)
       .onGet(() => 1)
       .onSet(() => { /* no-op */ });
+    this.service.updateCharacteristic(C.Active, 1);
 
     this.service.getCharacteristic(C.CurrentFanState)
       .onGet(() => this.running
         ? C.CurrentFanState.BLOWING_AIR
         : C.CurrentFanState.IDLE);
+    this.service.updateCharacteristic(C.CurrentFanState, C.CurrentFanState.IDLE);
 
     this.service.getCharacteristic(C.RotationSpeed)
       .setProps({ minValue: 0, maxValue: 100, minStep: 5 })
