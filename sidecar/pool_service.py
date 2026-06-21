@@ -3354,14 +3354,82 @@ _AC_CIRCUIT_KEYS = {
 }
 
 
+def _ac_heater_enable(which: str, on: bool) -> Response:
+    """Toggle a heater on/off via AquaConnect keypad press, then read the setpoint.
+
+    Two-phase:
+    1. Press HEATER1 key (code 13) directly if `which` matches the current active
+       body — the LCD response immediately shows 'Heater1 Auto Control' or
+       'Heater1 Manual Off' which _apply_ac_scroll_to_state captures, giving
+       HomeKit a sub-second confirmation.  If `which` is the non-active body
+       (e.g. pool heater while in spa mode), fall back to menu navigation.
+    2. If enabling: spawn a background thread to nav.read_heater(which) so the
+       thermostat's target-temperature field is populated from the Settings menu.
+    """
+    with state_lock:
+        cur = state.spa_heater_enabled if which == 'spa' else state.pool_heater_enabled
+        cur_mode = state.valve_mode
+
+    if cur == on:
+        return jsonify({'ok': True, 'already': True, 'which': which})
+
+    if cur_mode == which:
+        # Active body → direct keypad press; LCD response confirms the new state.
+        with _nav_lock:
+            _ac_backend.send_nav_key('HEATER1')   # key code '13'
+            with state_lock:
+                new = state.spa_heater_enabled if which == 'spa' else state.pool_heater_enabled
+        if new != on:
+            log.warning('Heater %s -> %s not confirmed from LCD (still %s)', which, on, new)
+            _record_command_failure()
+            _immediate_wedge_probe()
+            return jsonify({
+                'error': f'Heater {which} enable={on} not confirmed',
+                'bridge_wedged': state.bridge_wedged,
+            }), 502
+    else:
+        # Non-active body → must navigate Settings menu to reach the right heater.
+        nav = _get_navigator()
+        if nav is None:
+            return jsonify({'error': 'Not connected'}), 503
+        try:
+            with _nav_lock:
+                nav.set_heater_enabled(which, on)
+        except Exception as e:
+            log.error('Heater %s enable via nav failed: %s', which, e)
+            _record_command_failure()
+            _immediate_wedge_probe()
+            return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
+
+    _record_command_success()
+    log.info('Heater %s -> %s (AquaConnect)', which, 'ON' if on else 'OFF')
+
+    # Phase 2: if enabling, read the setpoint from the Settings menu in the
+    # background so the thermostat tile shows the target temperature without
+    # blocking the HomeKit response.
+    if on:
+        def _bg_read_setpoint():
+            nav = _get_navigator()
+            if nav is None:
+                return
+            try:
+                with _nav_lock:
+                    nav.read_heater(which)
+                log.debug('bg heater read %s: setpoint updated', which)
+            except Exception as exc:
+                log.debug('bg heater read %s: %s', which, exc)
+        threading.Thread(target=_bg_read_setpoint, daemon=True,
+                         name=f'bg-heater-{which}').start()
+
+    return jsonify({'ok': True, 'which': which})
+
+
 def _ac_set_circuit(key: str, on: bool) -> Response:
     """Drive a circuit on/off through the AquaConnect backend.
 
-    HEATER_1 is the shared heater: it follows the active valve mode (pool heater
-    in pool mode, spa heater in spa mode) and goes through the navigator's
-    Settings-menu enable toggle — the keypad HEATER_1 key is unreliable from the
-    idle screen. The simple equipment circuits send their keypad key once (only
-    if not already in the desired state) and confirm via the re-read LED state.
+    HEATER_1 routes through _ac_heater_enable (direct keypress + background
+    setpoint read). POOL/SPA are body-mode cycle presses. Simple equipment
+    circuits send their keypad key once and confirm via the re-read LED state.
     """
     log.info('HomeKit action: circuit %s -> %s', key, 'ON' if on else 'OFF')
     with state_lock:
@@ -3373,25 +3441,9 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
         }), 503
 
     if key == 'HEATER_1':
-        nav = _get_navigator()
-        if nav is None:
-            return jsonify({'error': 'Not connected'}), 503
         with state_lock:
             which = 'spa' if state.valve_mode == 'spa' else 'pool'
-        try:
-            result = nav.set_heater_enabled(which, on)
-        except Exception as e:
-            log.error('HomeKit action HEATER_1 failed: %s — probing bridge', e)
-            _record_command_failure()
-            _immediate_wedge_probe()
-            return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
-        # Frame reader wakes immediately after set_heater_enabled releases
-        # _nav_lock (send_nav_key signals _read_wake on each keypress), so the
-        # confirmation screen lands in pool/spa_heater_enabled within one read
-        # cycle — no explicit read needed here.
-        _record_command_success()
-        log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
-        return jsonify({'ok': True, 'which': which, **result})
+        return _ac_heater_enable(which, on)
 
     # POOL and SPA share key '07' (mode cycle: POOL → SPA → SPILLOVER → POOL).
     # Turning one on turns the other off (mutually exclusive body modes).
@@ -3859,11 +3911,17 @@ def get_heater_state(which: str) -> Response:
 @app.route('/heater/<which>/enable', methods=['POST'])
 def set_heater_enable(which: str) -> Response:
     """
-    Enable/disable a heater (Auto vs Manual Off) via menu navigation.
+    Enable/disable a heater (Auto vs Manual Off).
     Body: {"on": true|false}
+    AquaConnect: direct keypad press + background setpoint read (see _ac_heater_enable).
+    RS-485: menu navigation via navigator.
     """
     body = request.get_json(force=True)
     on = bool(body.get('on', False))
+    if which not in ('pool', 'spa'):
+        return jsonify({'error': 'which must be pool or spa'}), 400
+    if _ac_backend is not None:
+        return _ac_heater_enable(which, on)
     nav = _get_navigator()
     if nav is None:
         return jsonify({'error': 'Not connected'}), 503
