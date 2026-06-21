@@ -33,10 +33,6 @@ export class SidecarClient {
     await this.http.post(`/circuit/${encodeURIComponent(name)}`, { on });
   }
 
-  async setMode(mode: 'pool' | 'spa'): Promise<void> {
-    await this.http.post('/mode', { mode });
-  }
-
   // ── Bridge health ─────────────────────────────────────────────────────────
 
   /**

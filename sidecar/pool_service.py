@@ -1865,7 +1865,7 @@ class MenuNavigator:
     # start with one of these is a foreign submenu (Diagnostics, Network, etc.)
     # and we abort immediately rather than pressing further into it.
     _SETTINGS_ITEM_PREFIXES = (
-        'Settings Menu', 'Pool Heater', 'Spa Heater',
+        'Settings Menu', 'Default Menu', 'Pool Heater', 'Spa Heater',
         'Pool Chlorinator', 'Spa Chlorinator',
         'Pool Setpoint', 'Spa Setpoint',
         'VSP Speed', 'Filter Pump', 'Cleaner Pump',

@@ -106,12 +106,6 @@
         "default": true,
         "description": "Expose read-only air and pool temperature sensors."
       },
-      "enableSpaModeSwitch": {
-        "title": "Spa Mode Switch",
-        "type": "boolean",
-        "default": true,
-        "description": "Expose a single 'Spa' switch: On = spa mode, Off = pool mode. Replaces the separate Pool and Spa circuit switches."
-      },
       "enableChlorinatorFan": {
         "title": "Chlorinator Fan",
         "type": "boolean",

@@ -3,7 +3,6 @@ import { SwitchAccessory } from './switchAccessory';
 import { ThermostatAccessory, type ThermostatState } from './thermostatAccessory';
 import { TemperatureAccessory } from './temperatureAccessory';
 import { FanAccessory } from './fanAccessory';
-import { SpaModeAccessory } from './spaModeAccessory';
 import { BridgeHealthAccessory } from './bridgeHealthAccessory';
 import { SaltSensorAccessory } from './saltSensorAccessory';
 import { VspSlotAccessory } from './vspSlotAccessory';
@@ -31,7 +30,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private thermostatSpa?: ThermostatAccessory;
   private poolTempSensor?: TemperatureAccessory;
   private airTempSensor?: TemperatureAccessory;
-  private spaModeSwitch?: SpaModeAccessory;
   private chlorinatorFan?: FanAccessory;
   private pumpFan?: FanAccessory;
   private bridgeHealth?: BridgeHealthAccessory;
@@ -63,7 +61,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enablePoolHeaterThermostat: config['enablePoolHeaterThermostat'] ?? true,
       enableSpaHeaterThermostat: config['enableSpaHeaterThermostat'] ?? true,
       enableTemperatureSensors: config['enableTemperatureSensors'] ?? true,
-      enableSpaModeSwitch: config['enableSpaModeSwitch'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
       enableSaltSensor: config['enableSaltSensor'] ?? true,
@@ -103,13 +100,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       }
       return acc;
     };
-
-    // Spa mode switch (On=spa, Off=pool)
-    if (this.cfg.enableSpaModeSwitch) {
-      const acc = register('Spa',
-        this.api.hap.uuid.generate(`${PLUGIN_NAME}-mode-spa`));
-      this.spaModeSwitch = new SpaModeAccessory(this, acc);
-    }
 
     // Circuit switches. HEATER_1 is rendered as a tappable three-state Fanv2
     // HEATER_1 is split into two switches below ("Heater Auto" tappable +
@@ -281,8 +271,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         const status = await this.sidecar.getStatus();
 
         this.currentValveMode = status.valve_mode;
-
-        this.spaModeSwitch?.updateMode(status.valve_mode);
 
         for (const [circuit, sw] of this.switches) {
           if (circuit === 'HEATER_1') {
