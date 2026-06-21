@@ -136,9 +136,9 @@
         "description": "Per-slot hardware floor for the VSP speed tiles. The HomeKit slider stops at this value so you cannot target a speed the panel will silently clamp. Slot 1 defaults to 35%.",
         "properties": {
           "1": { "title": "Slot 1 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
-          "2": { "title": "Slot 2 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
-          "3": { "title": "Slot 3 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
-          "4": { "title": "Slot 4 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 }
+          "2": { "title": "Slot 2 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
+          "3": { "title": "Slot 3 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
+          "4": { "title": "Slot 4 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 }
         }
       },
       "circuitLabels": {
