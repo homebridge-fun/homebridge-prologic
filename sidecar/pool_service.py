@@ -1018,11 +1018,17 @@ def _apply_ac_scroll_to_state(lcd: str) -> None:
 def _apply_ac_led_to_state(led: dict) -> None:
     """Fold decoded AquaConnect LED state into the shared PoolState (§13.2)."""
     with state_lock:
-        # Active body/valve mode
+        # Active body/valve mode — also mirror into circuits so the plugin's
+        # status poll sees circuits['POOL']/circuits['SPA'] without needing
+        # to know about valve_mode separately.
         if led.get('pool_mode') in ('on', 'blink'):
             state.valve_mode = 'pool'
+            state.circuits['POOL'] = True
+            state.circuits['SPA'] = False
         elif led.get('spa_mode') in ('on', 'blink'):
             state.valve_mode = 'spa'
+            state.circuits['POOL'] = False
+            state.circuits['SPA'] = True
         # Equipment on/off → circuits dict (absent stays out of the map)
         for name, key in (('filter', 'FILTER'), ('lights', 'LIGHTS'),
                           ('aux1', 'AUX_1'), ('aux2', 'AUX_2')):
@@ -3341,9 +3347,8 @@ def set_mode() -> Response:
 
 
 # Equipment circuits that toggle with a single AquaConnect keypad key. Maps the
-# circuit name to its _AC_KEY_CODES entry. POOL/SPA/SPILLOVER are valve-mode
-# controls (handled via /mode) and HEATER_1 routes through the navigator below,
-# so neither appears here.
+# circuit name to its _AC_KEY_CODES entry. POOL/SPA are handled above (shared
+# key 07, mode cycle). HEATER_1 routes through the navigator's Settings menu.
 _AC_CIRCUIT_KEYS = {
     'FILTER': 'FILTER', 'LIGHTS': 'LIGHTS', 'AUX_1': 'AUX1', 'AUX_2': 'AUX2',
 }
@@ -3387,6 +3392,38 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
         _record_command_success()
         log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
         return jsonify({'ok': True, 'which': which, **result})
+
+    # POOL and SPA share key '07' (mode cycle: POOL → SPA → SPILLOVER → POOL).
+    # Turning one on turns the other off (mutually exclusive body modes).
+    # Turning one OFF means switching to the other body.
+    if key in ('POOL', 'SPA'):
+        dest = key.lower() if on else ('pool' if key == 'SPA' else 'spa')
+        with state_lock:
+            cur_mode = state.valve_mode
+        if cur_mode == dest:
+            return jsonify({'ok': True, 'already': True})
+        # Press the shared mode key up to 3 times (full cycle length) until
+        # the LED poll confirms the target mode. No menu navigation needed —
+        # this is a direct keypad press that the next read cycle confirms.
+        with _nav_lock:
+            for _ in range(3):
+                _ac_backend.send_nav_key('POOL')  # 'POOL'/'SPA'/'SPILLOVER' all → key 07
+                with state_lock:
+                    if state.valve_mode == dest:
+                        break
+            with state_lock:
+                confirmed = state.valve_mode == dest
+        if confirmed:
+            _record_command_success()
+            log.info('Body mode -> %s (AquaConnect circuit %s -> %s)', dest, key, 'ON' if on else 'OFF')
+            return jsonify({'ok': True, 'valve_mode': dest})
+        log.warning('Body mode switch to %s not confirmed (still %s) — probing bridge', dest, state.valve_mode)
+        _record_command_failure()
+        _immediate_wedge_probe()
+        return jsonify({
+            'error': f'Body mode switch to {dest} not confirmed',
+            'bridge_wedged': state.bridge_wedged,
+        }), 502
 
     keypad = _AC_CIRCUIT_KEYS.get(key)
     if keypad is None:
