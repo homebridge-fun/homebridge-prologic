@@ -1893,9 +1893,35 @@ class MenuNavigator:
         instant 'Settings Menu' appears. A generous budget tolerates dropped
         presses and overshoot without straying into any submenu's live settings.
 
+        If the panel is in the status cycle the display changes on its own every
+        few seconds — a MENU press that lands looks identical to a spontaneous
+        cycle advance. We first wait for two consecutive identical frames
+        (≤1.5s apart) to confirm the display is static (i.e. we are inside a
+        menu, not the status cycle) before starting to press MENU. If we are
+        already at 'Settings Menu', skip immediately.
+
         After landing on the header, wait _POST_MENU_SETTLE_S: the panel needs
         ~300ms before it will accept RIGHT.
         """
+        # Fast path: already there.
+        if self._lcd.text() == self._SETTINGS_HDR:
+            time.sleep(self._POST_MENU_SETTLE_S)
+            return
+
+        # Wait up to 6s for the display to stop cycling (two identical reads).
+        # If the panel is in a menu the display is already static so this
+        # returns immediately. If it's in the status cycle it settles once the
+        # current item holds for one read interval (~1.5s max).
+        deadline = time.time() + 6.0
+        prev = self._lcd.text()
+        while time.time() < deadline:
+            self._lcd._event.clear()
+            self._lcd._event.wait(min(1.5, max(0.0, deadline - time.time())))
+            cur = self._lcd.text()
+            if cur == prev and cur:
+                break  # display is static — we're in a menu
+            prev = cur
+
         self._press_until('MENU', lambda t: t == self._SETTINGS_HDR,
                           self._ANCHOR_MENU_MAX, self._SETTINGS_HDR)
         time.sleep(self._POST_MENU_SETTLE_S)
