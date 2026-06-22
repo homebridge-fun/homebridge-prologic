@@ -3456,8 +3456,11 @@ def _ac_heater_enable(which: str, on: bool) -> Response:
         if nav is None:
             return jsonify({'error': 'Not connected'}), 503
         try:
-            with _nav_lock:
-                nav.set_heater_enabled(which, on)
+            # set_heater_enabled acquires _nav_lock itself — do NOT wrap it in
+            # another `with _nav_lock:` here. _nav_lock is non-reentrant, so a
+            # nested acquire deadlocks the thread (and pins the lock forever,
+            # wedging every later command).
+            nav.set_heater_enabled(which, on)
         except Exception as e:
             log.error('Heater %s enable via nav failed: %s', which, e)
             _record_command_failure()
@@ -3476,8 +3479,10 @@ def _ac_heater_enable(which: str, on: bool) -> Response:
             if nav is None:
                 return
             try:
-                with _nav_lock:
-                    nav.read_heater(which)
+                # read_heater acquires _nav_lock itself — wrapping it in another
+                # `with _nav_lock:` here self-deadlocks (non-reentrant lock) and
+                # pins the lock forever, wedging every later command.
+                nav.read_heater(which)
                 log.debug('bg heater read %s: setpoint updated', which)
             except Exception as exc:
                 log.debug('bg heater read %s: %s', which, exc)
