@@ -2375,6 +2375,11 @@ app.logger.setLevel(logging.WARNING)
 
 @app.route('/status')
 def get_status() -> Response:
+    # Compute the cooldown remainder BEFORE taking state_lock: _wedge_cooling_down()
+    # acquires state_lock itself, and state_lock is non-reentrant, so calling it
+    # inside the `with state_lock:` block below self-deadlocks — pinning state_lock
+    # forever and taking every status poll (and the whole accessory set) offline.
+    cooldown = _wedge_cooling_down()
     with state_lock:
         return jsonify({
             'circuits':            dict(state.circuits),
@@ -2396,7 +2401,7 @@ def get_status() -> Response:
             'connected':           state.connected,
             'last_update':         state.last_update,
             'bridge_wedged':       state.bridge_wedged,
-            'wedge_cooldown_remaining_s': round(r) if (r := _wedge_cooling_down()) else 0,
+            'wedge_cooldown_remaining_s': round(cooldown) if cooldown else 0,
             'backend':             _active_backend,
         })
 
