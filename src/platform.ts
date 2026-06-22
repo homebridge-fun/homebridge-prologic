@@ -172,7 +172,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     if (this.cfg.enablePumpSpeedFan) {
       const acc = register('Filter Speed',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-fan-pump`));
-      this.pumpFan = new FanAccessory(this, acc, 'pump');
+      // The Filter Speed fan drives VSP slot 4, so it inherits slot 4's floor.
+      const pumpMinPct = this.cfg.vspSlotMinPct['4'] ?? 35;
+      this.pumpFan = new FanAccessory(this, acc, 'pump', pumpMinPct);
     }
 
     // VSP slot tiles (Speed 1–4), hidden from home tab by default

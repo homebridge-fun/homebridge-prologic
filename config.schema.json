@@ -133,7 +133,7 @@
       "vspSlotMinPct": {
         "title": "VSP Slot Minimum Speed %",
         "type": "object",
-        "description": "Per-slot hardware floor for the VSP speed tiles. The HomeKit slider stops at this value so you cannot target a speed the panel will silently clamp. Slot 1 defaults to 35%.",
+        "description": "Per-slot hardware floor for the VSP speed tiles and the Filter Speed fan. The HomeKit slider stops at this value so you cannot target a speed the panel will silently clamp. All slots default to 35%.",
         "properties": {
           "1": { "title": "Slot 1 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
           "2": { "title": "Slot 2 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },

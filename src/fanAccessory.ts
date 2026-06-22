@@ -18,6 +18,7 @@ export class FanAccessory {
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
     private readonly role: FanRole,
+    private readonly minPct: number = 0,
   ) {
     const serials: Record<FanRole, string> = {
       chlorinator: 'fan-chlorinator',
@@ -49,7 +50,7 @@ export class FanAccessory {
     this.service.updateCharacteristic(C.CurrentFanState, C.CurrentFanState.IDLE);
 
     this.service.getCharacteristic(C.RotationSpeed)
-      .setProps({ minValue: 0, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })
+      .setProps({ minValue: this.minPct, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })
       .onGet(() => this.currentPct)
       .onSet(this.handleSetSpeed.bind(this));
   }
@@ -67,7 +68,15 @@ export class FanAccessory {
     }, 600);
   }
 
-  private async commitSpeed(pct: number): Promise<void> {
+  private async commitSpeed(rawPct: number): Promise<void> {
+    // The pump writes VSP slot 4, which the panel silently clamps to its
+    // hardware floor. Enforce the same floor here so HomeKit never targets a
+    // speed the panel would reject (which would leave the ring out of sync).
+    const pct = this.role === 'pump' ? Math.max(rawPct, this.minPct) : rawPct;
+    if (pct !== rawPct) {
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.RotationSpeed, pct);
+    }
     this.platform.log.info(`[Fan ${this.role}] speed → ${pct}%`);
     try {
       if (this.role === 'chlorinator') {
