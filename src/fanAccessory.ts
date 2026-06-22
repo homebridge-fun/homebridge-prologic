@@ -68,11 +68,29 @@ export class FanAccessory {
     }, 600);
   }
 
+  /**
+   * Snap an arbitrary % to the nearest valid chlorinator position, matching the
+   * sidecar's _chlor_snap: 0–9 in 1% steps, then 10/15/…/100 in 5% steps.
+   */
+  private static snapChlorinator(pct: number): number {
+    const p = Math.max(0, Math.min(100, Math.round(pct)));
+    if (p <= 9) return p;
+    return Math.round(p / 5) * 5;
+  }
+
   private async commitSpeed(rawPct: number): Promise<void> {
-    // The pump writes VSP slot 4, which the panel silently clamps to its
-    // hardware floor. Enforce the same floor here so HomeKit never targets a
-    // speed the panel would reject (which would leave the ring out of sync).
-    const pct = this.role === 'pump' ? Math.max(rawPct, this.minPct) : rawPct;
+    // Resolve the raw slider value to a position the panel actually accepts,
+    // then push it back to the tile immediately so the user sees the real
+    // value with no flicker (rather than waiting for the next status poll to
+    // correct it).
+    //  - pump: VSP slot 4 silently clamps below its hardware floor.
+    //  - chlorinator: valid positions are 0–9 (1% steps) then 10,15,…100 (5%).
+    let pct: number;
+    if (this.role === 'pump') {
+      pct = Math.max(rawPct, this.minPct);
+    } else {
+      pct = FanAccessory.snapChlorinator(rawPct);
+    }
     if (pct !== rawPct) {
       this.service.updateCharacteristic(
         this.platform.Characteristic.RotationSpeed, pct);
