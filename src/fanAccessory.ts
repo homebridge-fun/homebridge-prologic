@@ -9,6 +9,8 @@ export type FanRole = 'chlorinator' | 'pump';
  */
 export class FanAccessory {
   private readonly service: Service;
+  // Seeded to minPct in the constructor so onGet never returns a value below
+  // the RotationSpeed floor before the first poll (which HAP rejects).
   private currentPct = 0;
   private running = false;
   private activeSlot: number | null = null;
@@ -20,6 +22,7 @@ export class FanAccessory {
     private readonly role: FanRole,
     private readonly minPct: number = 0,
   ) {
+    this.currentPct = minPct;
     const serials: Record<FanRole, string> = {
       chlorinator: 'fan-chlorinator',
       pump: 'fan-pump',
@@ -130,7 +133,10 @@ export class FanAccessory {
 
   updateSpeed(pct: number | null): void {
     if (pct === null) return;
-    const rounded = Math.round(pct);
+    // RotationSpeed has minValue = minPct (the pump's hardware floor). A reported
+    // speed below that floor — most commonly 0 when the filter is off — is an
+    // illegal value that HAP rejects with a warning, so clamp up to minPct.
+    const rounded = Math.max(this.minPct, Math.round(pct));
     if (this.currentPct !== rounded) {
       this.currentPct = rounded;
       this.service.updateCharacteristic(this.platform.Characteristic.RotationSpeed, rounded);
