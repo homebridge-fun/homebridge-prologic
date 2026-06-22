@@ -107,6 +107,9 @@ class PoolState:
     # True when the AquaConnect box has entered read-only mode (commands ACKed
     # but silently dropped at the RS-485 relay). Cleared by any confirmed write.
     bridge_wedged: bool = False
+    # Epoch time when wedge was first detected; used to enforce the power-cycle
+    # cooldown window before commands are retried. None = not currently wedged.
+    wedge_detected_at: Optional[float] = None
 
 state = PoolState()
 state_lock = threading.Lock()
@@ -133,6 +136,10 @@ _WEDGE_PROBE_INTERVAL_S = 300.0
 # Faster probe cadence while wedged, so recovery after a power-cycle shows up
 # quickly (the box stays wedged until power-cycled, so frequent probing is safe).
 _WEDGE_RECOVERY_INTERVAL_S = 30.0
+# After wedge detection the HomeKit automation power-cycles the AquaConnect box.
+# Block all write commands for this window so we don't hammer the box while it
+# is booting, then immediately probe to confirm recovery.
+_WEDGE_POWERCYCLE_COOLDOWN_S = 120.0
 
 
 def _record_command_success() -> None:
@@ -144,6 +151,7 @@ def _record_command_success() -> None:
     if changed:
         with state_lock:
             state.bridge_wedged = False
+            state.wedge_detected_at = None
         log.info('Bridge command path recovered — clearing wedge flag')
 
 
@@ -155,12 +163,53 @@ def _record_command_failure() -> None:
         streak = _wedge_fail_streak
         already = state.bridge_wedged
     if streak >= _WEDGE_FAIL_THRESHOLD and not already:
+        now = time.time()
         with state_lock:
             state.bridge_wedged = True
+            state.wedge_detected_at = now
         log.warning(
             'Bridge command path appears wedged (%d consecutive unconfirmed writes). '
-            'Power-cycle the AquaConnect box to recover.',
-            streak)
+            'HomeKit automation will power-cycle the AquaConnect box; '
+            'commands blocked for %.0fs cooldown.',
+            streak, _WEDGE_POWERCYCLE_COOLDOWN_S)
+
+
+def _wedge_cooling_down() -> Optional[float]:
+    """Return seconds remaining in the power-cycle cooldown, or None if clear."""
+    with state_lock:
+        if not state.bridge_wedged or state.wedge_detected_at is None:
+            return None
+        remaining = _WEDGE_POWERCYCLE_COOLDOWN_S - (time.time() - state.wedge_detected_at)
+        return remaining if remaining > 0 else None
+
+
+def _wedge_block_response() -> Optional[tuple]:
+    """Return a (Response, status) 503 tuple if commands should be blocked, else None.
+
+    Two cases:
+    - Still in power-cycle cooldown: box is rebooting, don't send anything yet.
+    - Wedged but cooldown elapsed: still blocked until the probe confirms recovery.
+    """
+    with state_lock:
+        wedged = state.bridge_wedged
+        detected_at = state.wedge_detected_at
+    if not wedged:
+        return None
+    remaining = None
+    if detected_at is not None:
+        remaining = _WEDGE_POWERCYCLE_COOLDOWN_S - (time.time() - detected_at)
+    if remaining is not None and remaining > 0:
+        return jsonify({
+            'error': f'AquaConnect power-cycling — commands blocked for {remaining:.0f}s cooldown',
+            'bridge_wedged': True,
+            'cooling_down': True,
+            'cooldown_remaining_s': round(remaining),
+        }), 503
+    return jsonify({
+        'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
+        'bridge_wedged': True,
+        'cooling_down': False,
+    }), 503
 
 def _immediate_wedge_probe() -> None:
     """Spawn a background daemon thread to probe wedge state right now.
@@ -2347,6 +2396,7 @@ def get_status() -> Response:
             'connected':           state.connected,
             'last_update':         state.last_update,
             'bridge_wedged':       state.bridge_wedged,
+            'wedge_cooldown_remaining_s': round(r) if (r := _wedge_cooling_down()) else 0,
             'backend':             _active_backend,
         })
 
@@ -3261,14 +3311,25 @@ def _ac_canary_probe() -> dict:
 def _canary_probe_loop() -> None:
     """Background thread: periodically probe the command path when idle.
 
-    Healthy: probe every _WEDGE_PROBE_INTERVAL_S (cheap liveness check).
-    Wedged:  probe every _WEDGE_RECOVERY_INTERVAL_S so recovery after a
-             power-cycle is reflected quickly instead of waiting a full cycle.
+    Healthy:  probe every _WEDGE_PROBE_INTERVAL_S (cheap liveness check).
+    Wedged:   wait out the power-cycle cooldown window (_WEDGE_POWERCYCLE_COOLDOWN_S)
+              so the box has time to reboot, then probe immediately. After that
+              probe every _WEDGE_RECOVERY_INTERVAL_S until recovery confirmed.
     """
     # Stagger first probe so it doesn't fire at startup during initial connect.
     time.sleep(60 + random.uniform(0, 30))
     while True:
         try:
+            remaining = _wedge_cooling_down()
+            if remaining is not None:
+                # Still in the power-cycle cooldown — sleep out the remainder
+                # then probe immediately on wake so recovery is detected fast.
+                log.debug('Wedge cooldown: %.0fs remaining — deferring probe', remaining)
+                time.sleep(remaining + 2)   # +2s margin for box to finish booting
+                if _ac_backend is not None and not _nav_lock.busy():
+                    log.info('Wedge cooldown elapsed — probing for recovery')
+                    _ac_canary_probe()
+                continue
             # Defer to any real action that is running OR queued so the probe's
             # canary presses never stomp on a user command (busy() covers both).
             if _ac_backend is not None and not _nav_lock.busy():
@@ -3300,11 +3361,9 @@ def set_mode() -> Response:
         return jsonify({'ok': True, 'mode': target, 'changed': False})
 
     if _ac_backend is not None:
-        if wedged:
-            return jsonify({
-                'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
-                'bridge_wedged': True,
-            }), 503
+        block = _wedge_block_response()
+        if block:
+            return block
         # SPA and POOL both share key code '07' (the panel's pool/spa cycle key).
         # We only press when not already in the target state (idempotency guard).
         key_name = 'SPA' if target == 'spa' else 'POOL'
@@ -3366,6 +3425,10 @@ def _ac_heater_enable(which: str, on: bool) -> Response:
     2. If enabling: spawn a background thread to nav.read_heater(which) so the
        thermostat's target-temperature field is populated from the Settings menu.
     """
+    block = _wedge_block_response()
+    if block:
+        return block
+
     with state_lock:
         cur = state.spa_heater_enabled if which == 'spa' else state.pool_heater_enabled
         cur_mode = state.valve_mode
@@ -3432,13 +3495,9 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
     circuits send their keypad key once and confirm via the re-read LED state.
     """
     log.info('HomeKit action: circuit %s -> %s', key, 'ON' if on else 'OFF')
-    with state_lock:
-        wedged = state.bridge_wedged
-    if wedged:
-        return jsonify({
-            'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
-            'bridge_wedged': True,
-        }), 503
+    block = _wedge_block_response()
+    if block:
+        return block
 
     if key == 'HEATER_1':
         with state_lock:
