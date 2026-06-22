@@ -1872,7 +1872,7 @@ class MenuNavigator:
     # and we abort immediately rather than pressing further into it.
     _SETTINGS_ITEM_PREFIXES = (
         'Settings Menu', 'Default Menu', 'Pool Heater', 'Spa Heater',
-        'Pool Chlorinator', 'Spa Chlorinator',
+        'Pool Chlorinator', 'Spa Chlorinator', 'Super Chlorinate',
         'Pool Setpoint', 'Spa Setpoint',
         'VSP Speed', 'Filter Pump', 'Cleaner Pump',
         'Light Show', 'Color Swim', 'Water Feature',
