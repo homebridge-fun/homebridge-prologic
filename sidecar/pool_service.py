@@ -2032,6 +2032,28 @@ class MenuNavigator:
 
     # ── Heater setpoints ─────────────────────────────────────────────────────
 
+    def _restore_heater_off(self, label: str) -> str:
+        """Toggle the currently-selected heater item back to Manual Off.
+
+        Called after a read pressed PLUS (which enabled the heater). Presses
+        HEATER_1 only while the frame is NOT yet Manual Off, re-reading after
+        each press so a dropped toggle simply re-presses and a landed toggle
+        stops immediately (never double-toggles back on). Returns the final
+        frame. Logs an error — but does not raise — if it cannot confirm Manual
+        Off, so a read never leaves the heater silently enabled.
+        """
+        _RESTORE_MAX = 10
+        txt = self._lcd.text()
+        for _ in range(_RESTORE_MAX):
+            if 'Manual Off' in txt:
+                return txt
+            txt = self._send('HEATER_1')
+        if 'Manual Off' not in txt:
+            log.error('Heater restore FAILED for %s — heater left ENABLED after '
+                      'read; manual intervention may be needed (frame=%r)',
+                      label, txt)
+        return txt
+
     def read_heater(self, which: str) -> dict:
         """Navigate to a heater item and read its state without changing it.
 
@@ -2048,15 +2070,23 @@ class MenuNavigator:
                 txt = self._press_until('RIGHT', lambda t: label in t,
                                         self._NAV_MAX, label)
                 was_off = 'Manual Off' in txt
-                enabled = not was_off
                 if was_off:
                     # PLUS from Manual Off reveals (and enables at) the stored °F.
                     txt = self._send('PLUS')
                 setpoint_f = self._degf(txt)
                 if was_off:
-                    # Restore Manual Off: toggle HEATER_1 on the item until it shows.
-                    self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
-                                      4, 'Manual Off (restore)')
+                    # We just enabled the heater to read its °F — restore Manual
+                    # Off. The WiFi bridge drops ~40% of presses, so a single
+                    # toggle (or a low _press_until budget) can fail and leave
+                    # the heater ON. Press HEATER_1 only while NOT yet Manual Off,
+                    # re-reading after each press, with a generous attempt budget;
+                    # never return until the frame confirms Manual Off (or we
+                    # give up loudly).
+                    txt = self._restore_heater_off(label)
+                # Reflect the TRUE end state: was_off heaters should be off again;
+                # if restore failed, txt still shows enabled and HomeKit will see
+                # it on (accurate) rather than a stale 'off'.
+                enabled = 'Manual Off' not in txt
                 with state_lock:
                     if which == 'pool':
                         state.pool_heater_enabled = enabled
@@ -2106,19 +2136,23 @@ class MenuNavigator:
                     # Already enabled: the navigated screen already shows the °F.
                     setpoint_f = self._degf(txt)
                 elif not on and not was_off:
-                    # Toggle HEATER_1 on the item until 'Manual Off' appears.
-                    self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
-                                      4, 'Manual Off')
+                    # Toggle HEATER_1 until 'Manual Off' appears, verifying after
+                    # each press so a dropped toggle re-presses and never leaves
+                    # the heater enabled (shared with read_heater's restore).
+                    txt = self._restore_heater_off(label)
+                # Reflect the true end state: if a disable couldn't confirm
+                # Manual Off, report it still enabled rather than a stale 'off'.
+                end_enabled = on if (on or was_off) else ('Manual Off' not in txt)
                 with state_lock:
                     if which == 'pool':
-                        state.pool_heater_enabled = on
+                        state.pool_heater_enabled = end_enabled
                         if setpoint_f is not None:
                             state.pool_setpoint_f = setpoint_f
                     else:
-                        state.spa_heater_enabled = on
+                        state.spa_heater_enabled = end_enabled
                         if setpoint_f is not None:
                             state.spa_setpoint_f = setpoint_f
-                return {'which': which, 'enabled': on, 'was_off': was_off,
+                return {'which': which, 'enabled': end_enabled, 'was_off': was_off,
                         'setpoint_f': setpoint_f}
         finally:
             self.fast_exit()
