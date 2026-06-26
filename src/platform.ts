@@ -189,14 +189,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         const minPct = this.cfg.vspSlotMinPct[String(slot)] ?? 35;
         this.vspSlots.push(new VspSlotAccessory(this, acc, slot, minPct));
       }
-      // Fetch real slot speeds on startup so tiles show current values.
-      this.sidecar.getAllVspSlots().then(result => {
-        for (const slotAcc of this.vspSlots) {
-          slotAcc.updateSpeed(result.slots[String(slotAcc.slot)]);
-        }
-      }).catch(err => {
-        this.log.warn('Could not pre-fetch VSP slot speeds:', (err as Error).message);
-      });
     }
 
     // Spa Speed tile — the VSP's dedicated spa-mode pump speed setting
@@ -208,18 +200,41 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
     // Several values live behind menu navigation and don't appear in the idle
     // scroll, so they stay null until navigated. Pre-fetch them sequentially on
-    // startup (sequential = no nav-lock contention); the sidecar caches the
-    // result and the regular poll picks it up.
-    //   - Heater setpoints: thermostat target-temp field (pool + spa)
-    //   - Chlorinator %: spa value never in idle scroll; pool captured there
-    //     but also pre-fetched so both are ready before the first poll cycle.
+    // startup so tiles show real values immediately; the sidecar caches each
+    // result and the regular poll picks it up from there.
+    //   - VSP slot speeds (1–4): only when slot tiles are enabled
+    //   - Spa Speed: when the spa speed tile is enabled
+    //   - Heater setpoints: thermostat target-temp (pool + spa)
+    //   - Chlorinator %: spa never in idle scroll; pool also pre-fetched
+    //
+    // All sequential so nav operations never contend for _nav_lock.
     const needsHeater = this.cfg.enablePoolHeaterThermostat
       || this.cfg.enableSpaHeaterThermostat
       || this.cfg.enableActiveHeaterThermostat;
     const bodies = this.cfg.activeBodies.filter(
       (b): b is 'pool' | 'spa' => b === 'pool' || b === 'spa');
-    if (needsHeater || this.cfg.enableChlorinatorFan) {
+    const needsPrefetch = needsHeater || this.cfg.enableChlorinatorFan
+      || this.cfg.enableVspSlotTiles || this.cfg.enableSpaSpeedTile;
+    if (needsPrefetch) {
       (async () => {
+        if (this.cfg.enableVspSlotTiles) {
+          try {
+            const result = await this.sidecar.getAllVspSlots();
+            for (const slotAcc of this.vspSlots) {
+              slotAcc.updateSpeed(result.slots[String(slotAcc.slot)]);
+            }
+          } catch (err) {
+            this.log.warn('Could not pre-fetch VSP slot speeds:', (err as Error).message);
+          }
+        }
+        if (this.cfg.enableSpaSpeedTile) {
+          try {
+            const result = await this.sidecar.getSpaSpeed();
+            this.spaSpeedFan?.updateSpeed(result.spa_speed);
+          } catch (err) {
+            this.log.warn('Could not pre-fetch Spa Speed:', (err as Error).message);
+          }
+        }
         for (const which of bodies) {
           if (needsHeater) {
             try {
