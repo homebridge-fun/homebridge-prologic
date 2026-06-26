@@ -9,8 +9,6 @@ export type FanRole = 'chlorinator' | 'pump';
  */
 export class FanAccessory {
   private readonly service: Service;
-  // Seeded to minPct in the constructor so onGet never returns a value below
-  // the RotationSpeed floor before the first poll (which HAP rejects).
   private currentPct = 0;
   private running = false;
   private activeSlot: number | null = null;
@@ -22,7 +20,6 @@ export class FanAccessory {
     private readonly role: FanRole,
     private readonly minPct: number = 0,
   ) {
-    this.currentPct = minPct;
     const serials: Record<FanRole, string> = {
       chlorinator: 'fan-chlorinator',
       pump: 'fan-pump',
@@ -52,8 +49,12 @@ export class FanAccessory {
         : C.CurrentFanState.IDLE);
     this.service.updateCharacteristic(C.CurrentFanState, C.CurrentFanState.IDLE);
 
+    // minValue stays 0: a non-zero RotationSpeed minimum makes the Home app
+    // render the slider across the (max - min) span starting at 0 (e.g. a 35
+    // floor shows as "0–65%"). We keep an honest 0–100 slider and enforce the
+    // hardware floor by snapping up to minPct on commit instead.
     this.service.getCharacteristic(C.RotationSpeed)
-      .setProps({ minValue: this.minPct, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })
+      .setProps({ minValue: 0, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })
       .onGet(() => this.currentPct)
       .onSet(this.handleSetSpeed.bind(this));
   }
@@ -133,10 +134,8 @@ export class FanAccessory {
 
   updateSpeed(pct: number | null): void {
     if (pct === null) return;
-    // RotationSpeed has minValue = minPct (the pump's hardware floor). A reported
-    // speed below that floor — most commonly 0 when the filter is off — is an
-    // illegal value that HAP rejects with a warning, so clamp up to minPct.
-    const rounded = Math.max(this.minPct, Math.round(pct));
+    // Slider is 0–100, so a reported 0 (filter off) is valid and shown as-is.
+    const rounded = Math.round(pct);
     if (this.currentPct !== rounded) {
       this.currentPct = rounded;
       this.service.updateCharacteristic(this.platform.Characteristic.RotationSpeed, rounded);

@@ -136,7 +136,7 @@
         "default": 35,
         "minimum": 0,
         "maximum": 100,
-        "description": "Hardware floor for the Spa Speed slider. The HomeKit slider stops here so you cannot target a speed the panel will silently clamp."
+        "description": "Hardware floor for the Spa Speed slider. The slider runs 0–100%, but a value set below this floor snaps up to it (the panel silently clamps lower speeds)."
       },
       "enableVspSlotTiles": {
         "title": "VSP Speed Slot Tiles",
@@ -147,7 +147,7 @@
       "vspSlotMinPct": {
         "title": "VSP Slot Minimum Speed %",
         "type": "object",
-        "description": "Per-slot hardware floor for the VSP speed tiles and the Filter Speed fan. The HomeKit slider stops at this value so you cannot target a speed the panel will silently clamp. All slots default to 35%.",
+        "description": "Per-slot hardware floor for the VSP speed tiles and the Filter Speed fan. The slider runs 0–100%, but a value set below this floor snaps up to it (the panel silently clamps lower speeds). All slots default to 35%.",
         "properties": {
           "1": { "title": "Slot 1 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
           "2": { "title": "Slot 2 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
