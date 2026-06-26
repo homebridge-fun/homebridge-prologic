@@ -1927,7 +1927,7 @@ class MenuNavigator:
         'Settings Menu', 'Default Menu', 'Pool Heater', 'Spa Heater',
         'Pool Chlorinator', 'Spa Chlorinator', 'Super Chlorinate',
         'Pool Setpoint', 'Spa Setpoint',
-        'VSP Speed', 'Spa Speed', 'Filter Pump', 'Cleaner Pump',
+        'VSP Speed', 'Filter Speed', 'Spa Speed', 'Filter Pump', 'Cleaner Pump',
         'Light Show', 'Color Swim', 'Water Feature',
         'Delay Cancel', 'Freeze Protect', 'Valve Delay',
         'Clock', 'Date', 'Time',
