@@ -206,23 +206,36 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.spaSpeedFan = new VspSlotAccessory(this, acc, 0, this.cfg.spaSpeedMinPct);
     }
 
-    // Heater setpoints live behind menu navigation and aren't in the idle
-    // scroll, so without a read they stay null and the thermostat shows its
-    // hardcoded default (80°F) instead of the panel's real setpoint. Fetch the
-    // active bodies' setpoints once on startup; the read caches them in the
-    // sidecar and the regular poll flows them to the thermostats. Sequential so
-    // the two menu navigations don't contend for the nav lock.
-    if (this.cfg.enablePoolHeaterThermostat || this.cfg.enableSpaHeaterThermostat
-        || this.cfg.enableActiveHeaterThermostat) {
-      const bodies = this.cfg.activeBodies.filter(
-        (b): b is 'pool' | 'spa' => b === 'pool' || b === 'spa');
+    // Several values live behind menu navigation and don't appear in the idle
+    // scroll, so they stay null until navigated. Pre-fetch them sequentially on
+    // startup (sequential = no nav-lock contention); the sidecar caches the
+    // result and the regular poll picks it up.
+    //   - Heater setpoints: thermostat target-temp field (pool + spa)
+    //   - Chlorinator %: spa value never in idle scroll; pool captured there
+    //     but also pre-fetched so both are ready before the first poll cycle.
+    const needsHeater = this.cfg.enablePoolHeaterThermostat
+      || this.cfg.enableSpaHeaterThermostat
+      || this.cfg.enableActiveHeaterThermostat;
+    const bodies = this.cfg.activeBodies.filter(
+      (b): b is 'pool' | 'spa' => b === 'pool' || b === 'spa');
+    if (needsHeater || this.cfg.enableChlorinatorFan) {
       (async () => {
         for (const which of bodies) {
-          try {
-            await this.sidecar.getHeaterState(which);
-          } catch (err) {
-            this.log.warn(`Could not pre-fetch ${which} heater setpoint:`,
-              (err as Error).message);
+          if (needsHeater) {
+            try {
+              await this.sidecar.getHeaterState(which);
+            } catch (err) {
+              this.log.warn(`Could not pre-fetch ${which} heater setpoint:`,
+                (err as Error).message);
+            }
+          }
+          if (this.cfg.enableChlorinatorFan) {
+            try {
+              await this.sidecar.getChlorinatorPercent(which);
+            } catch (err) {
+              this.log.warn(`Could not pre-fetch ${which} chlorinator %:`,
+                (err as Error).message);
+            }
           }
         }
       })();

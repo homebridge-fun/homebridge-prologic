@@ -2168,6 +2168,28 @@ class MenuNavigator:
 
     # ── Chlorinator output % ─────────────────────────────────────────────────
 
+    def read_chlorinator(self, which: str) -> dict:
+        """Navigate to a chlorinator item and read its current % (non-mutating)."""
+        if which not in ('pool', 'spa'):
+            raise ValueError('which must be "pool" or "spa"')
+        label = self._CHLOR_LABEL[which]
+        try:
+            with _nav_lock:
+                self._anchor()
+                txt = self._press_until('RIGHT', lambda t: label in t,
+                                        self._NAV_MAX, label)
+                pct = self._pct(txt)
+                if pct is None:
+                    raise RuntimeError(f'Cannot parse {label}: {txt!r}')
+                with state_lock:
+                    if which == 'pool':
+                        state.chlorinator_percent = float(pct)
+                    else:
+                        state.spa_chlorinator_percent = float(pct)
+                return {'which': which, 'percent': pct}
+        finally:
+            self.fast_exit()
+
     def set_chlorinator(self, which: str, target_pct: int) -> dict:
         """
         Write a chlorinator output % via menu navigation.
@@ -4218,6 +4240,21 @@ def set_vsp_slot4_compat() -> Response:
 @app.route('/vsp/slot4/activate', methods=['POST'])
 def activate_vsp_slot4_compat() -> Response:
     return activate_vsp_slot(4)
+
+
+@app.route('/chlorinator/<which>')
+def get_chlorinator_which(which: str) -> Response:
+    """Read pool or spa chlorinator output % via menu navigation."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        return jsonify(nav.read_chlorinator(which))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        log.error(f'read_chlorinator {which}: {e}')
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/chlorinator/<which>', methods=['POST'])

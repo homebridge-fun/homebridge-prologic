@@ -136,6 +136,11 @@ export class SidecarClient {
 
   // ── Chlorinator (menu navigation) ────────────────────────────────────────
 
+  async getChlorinatorPercent(which: 'pool' | 'spa'): Promise<{ which: string; percent: number }> {
+    const res = await this.http.get(`/chlorinator/${which}`);
+    return res.data;
+  }
+
   async setChlorinatorPercent(which: 'pool' | 'spa', percent: number): Promise<void> {
     await this.http.post(`/chlorinator/${which}`, { percent: Math.round(percent) });
   }
