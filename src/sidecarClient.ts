@@ -123,6 +123,17 @@ export class SidecarClient {
     await this.http.post('/vsp/slot4/activate');
   }
 
+  // ── VSP Spa Speed ─────────────────────────────────────────────────────────
+
+  async getSpaSpeed(): Promise<{ spa_speed: number }> {
+    const res = await this.http.get('/vsp/spa');
+    return res.data;
+  }
+
+  async setSpaSpeed(speedPct: number): Promise<void> {
+    await this.http.post('/vsp/spa', { speed_pct: Math.round(speedPct) });
+  }
+
   // ── Chlorinator (menu navigation) ────────────────────────────────────────
 
   async setChlorinatorPercent(which: 'pool' | 'spa', percent: number): Promise<void> {

@@ -20,6 +20,7 @@ export class VspSlotAccessory {
   constructor(
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
+    /** VSP slot number 1–4, or 0 to indicate the dedicated Spa Speed setting. */
     public readonly slot: number,
     private readonly minPct: number = 0,
   ) {
@@ -77,13 +78,18 @@ export class VspSlotAccessory {
   }
 
   private async commitSpeed(pct: number): Promise<void> {
-    this.platform.log.info(`[VSP Slot ${this.slot}] speed → ${pct}%`);
+    const label = this.slot === 0 ? 'Spa Speed' : `Slot ${this.slot}`;
+    this.platform.log.info(`[VSP ${label}] speed → ${pct}%`);
     try {
-      await this.platform.sidecar.setVspSlot(this.slot, pct);
-      await this.platform.sidecar.activateVspSlot(this.slot);
+      if (this.slot === 0) {
+        await this.platform.sidecar.setSpaSpeed(pct);
+      } else {
+        await this.platform.sidecar.setVspSlot(this.slot, pct);
+        await this.platform.sidecar.activateVspSlot(this.slot);
+      }
       this.configuredPct = pct;
     } catch (err) {
-      this.platform.log.error(`[VSP Slot ${this.slot}] set speed failed:`, err);
+      this.platform.log.error(`[VSP ${label}] set speed failed:`, err);
       this.service.updateCharacteristic(
         this.platform.Characteristic.RotationSpeed, this.configuredPct);
     }

@@ -35,6 +35,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private bridgeHealth?: BridgeHealthAccessory;
   private saltSensor?: SaltSensorAccessory;
   private vspSlots: VspSlotAccessory[] = [];
+  private spaSpeedFan?: VspSlotAccessory;
   private heaterRunning?: HeaterRunningAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
 
@@ -65,6 +66,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
       enableSaltSensor: config['enableSaltSensor'] ?? true,
       enableVspSlotTiles: config['enableVspSlotTiles'] ?? false,
+      enableSpaSpeedTile: config['enableSpaSpeedTile'] ?? true,
+      spaSpeedMinPct: config['spaSpeedMinPct'] ?? 35,
       vspSlotMinPct: config['vspSlotMinPct'] ?? { '1': 35, '2': 35, '3': 35, '4': 35 },
       circuitLabels: config['circuitLabels'] ?? {},
     };
@@ -196,6 +199,13 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       });
     }
 
+    // Spa Speed tile — the VSP's dedicated spa-mode pump speed setting
+    if (this.cfg.enableSpaSpeedTile) {
+      const acc = register('Spa Speed',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-vsp-spa`));
+      this.spaSpeedFan = new VspSlotAccessory(this, acc, 0, this.cfg.spaSpeedMinPct);
+    }
+
     // Heater setpoints live behind menu navigation and aren't in the idle
     // scroll, so without a read they stay null and the thermostat shows its
     // hardcoded default (80°F) instead of the panel's real setpoint. Fetch the
@@ -313,11 +323,21 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.heaterRunning?.updateFiring(status.heater_active ?? false);
 
         const filterOn = status.circuits['FILTER'] ?? false;
-        this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
-        this.chlorinatorFan?.updateRunning(filterOn && (status.chlorinator_percent ?? 0) > 0);
+        // Chlorinator % is body-specific: show the spa value in spa mode,
+        // pool value otherwise. Both are updated by the idle LCD scroll.
+        const chlorPct = status.valve_mode === 'spa'
+          ? status.spa_chlorinator_percent
+          : status.chlorinator_percent;
+        this.chlorinatorFan?.updateSpeed(chlorPct);
+        this.chlorinatorFan?.updateRunning(filterOn && (chlorPct ?? 0) > 0);
         this.pumpFan?.updateSpeed(status.pump_speed);
         this.pumpFan?.updateRunning(filterOn && (status.pump_speed ?? 0) > 0);
         this.pumpFan?.updateActiveSlot(status.vsp_active_slot);
+        // Spa Speed tile: shows the VSP's dedicated spa-mode speed setting.
+        // Slot 0 is a sentinel meaning "spa speed" — updateRunning uses vsp_active_slot
+        // which is 1-4, so the spa speed tile never shows as spinning (correct:
+        // the panel has no "Filter On:Spa" in the slot-selection window).
+        this.spaSpeedFan?.updateSpeed(status.spa_speed ?? undefined);
         for (const slotAcc of this.vspSlots) {
           slotAcc.updateSpeed(status.vsp_slot_pct[String(slotAcc.slot)]);
           slotAcc.updateRunning(status.vsp_active_slot, filterOn);

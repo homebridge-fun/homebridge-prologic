@@ -91,8 +91,10 @@ class PoolState:
     air_temp: Optional[float] = None
     spa_temp: Optional[float] = None
     salt_level: Optional[float] = None
-    chlorinator_percent: Optional[float] = None
+    chlorinator_percent: Optional[float] = None      # pool chlorinator %
+    spa_chlorinator_percent: Optional[float] = None  # spa chlorinator %
     pump_speed: Optional[int] = None
+    spa_speed: Optional[int] = None                  # VSP Spa Speed setting %
     # populated by menu navigator reads; None = not yet read
     pool_setpoint_f: Optional[int] = None
     spa_setpoint_f: Optional[int] = None
@@ -1029,9 +1031,11 @@ _AC_SCROLL_PATTERNS = (
     ('air_temp',            re.compile(r'Air Temp\s+(-?\d+)', re.I)),
     ('spa_temp',            re.compile(r'Spa Temp\s+(-?\d+)', re.I)),
     ('salt_level',          re.compile(r'Salt Level\s+(\d+)', re.I)),
-    ('chlorinator_percent', re.compile(r'Pool Chlorinator\s+(\d+)\s*%', re.I)),
-    ('pump_speed',          re.compile(r'Filter Speed\s+(\d+)\s*%', re.I)),
-    ('vsp_active_slot',     re.compile(r'Filter On:Spd(\d)', re.I)),
+    ('chlorinator_percent',     re.compile(r'Pool Chlorinator\s+(\d+)\s*%', re.I)),
+    ('spa_chlorinator_percent', re.compile(r'Spa Chlorinator\s+(\d+)\s*%', re.I)),
+    ('pump_speed',              re.compile(r'Filter Speed\s+(\d+)\s*%', re.I)),
+    ('spa_speed',               re.compile(r'Spa Speed\s+(\d+)\s*%', re.I)),
+    ('vsp_active_slot',         re.compile(r'Filter On:Spd(\d)', re.I)),
 )
 
 
@@ -1923,7 +1927,7 @@ class MenuNavigator:
         'Settings Menu', 'Default Menu', 'Pool Heater', 'Spa Heater',
         'Pool Chlorinator', 'Spa Chlorinator', 'Super Chlorinate',
         'Pool Setpoint', 'Spa Setpoint',
-        'VSP Speed', 'Filter Pump', 'Cleaner Pump',
+        'VSP Speed', 'Spa Speed', 'Filter Pump', 'Cleaner Pump',
         'Light Show', 'Color Swim', 'Water Feature',
         'Delay Cancel', 'Freeze Protect', 'Valve Delay',
         'Clock', 'Date', 'Time',
@@ -2351,6 +2355,43 @@ class MenuNavigator:
     def activate_vsp_slot4(self) -> dict:
         return self.activate_vsp_slot(4)
 
+    def _goto_spa_speed(self) -> str:
+        """Anchor, enter the VSP submenu, and land on 'Spa Speed'. Returns frame."""
+        self._anchor()
+        self._press_until('RIGHT', lambda t: 'VSP Speed Settings' in t,
+                          self._NAV_MAX, 'VSP Speed Settings')
+        self._press_until('PLUS', lambda t: 'Filter Speed' in t, 6, 'VSP submenu')
+        # Walk RIGHT past Filter Speed1–4 to reach Spa Speed.
+        return self._press_until('RIGHT', lambda t: 'Spa Speed' in t, 8, 'Spa Speed')
+
+    def read_spa_speed(self) -> dict:
+        """Read the Spa Speed setting from the VSP submenu (non-mutating)."""
+        try:
+            with _nav_lock:
+                txt = self._goto_spa_speed()
+                pct = self._pct(txt)
+                if pct is None:
+                    raise RuntimeError(f'Cannot parse Spa Speed: {txt!r}')
+                with state_lock:
+                    state.spa_speed = pct
+                return {'spa_speed': pct}
+        finally:
+            self.fast_exit()
+
+    def set_spa_speed(self, target_pct: int) -> dict:
+        """Write the Spa Speed setting. Snaps to 5% grid (same step size as slots)."""
+        target_pct = int(_clamp(round(target_pct / 5) * 5, 0, 100))
+        try:
+            with _nav_lock:
+                self._goto_spa_speed()
+                self._step_to(self._pct, target_pct,
+                              'PLUS', 'MINUS', self._STEP_MAX, 'Spa Speed')
+                with state_lock:
+                    state.spa_speed = target_pct
+                return {'spa_speed': target_pct}
+        finally:
+            self.fast_exit()
+
 
 def _get_panel():
     with panel_lock:
@@ -2387,8 +2428,10 @@ def get_status() -> Response:
             'air_temp':            state.air_temp,
             'spa_temp':            state.spa_temp,
             'salt_level':          state.salt_level,
-            'chlorinator_percent': state.chlorinator_percent,
-            'pump_speed':          state.pump_speed,
+            'chlorinator_percent':     state.chlorinator_percent,
+            'spa_chlorinator_percent': state.spa_chlorinator_percent,
+            'pump_speed':              state.pump_speed,
+            'spa_speed':               state.spa_speed,
             # heater setpoints are read via menu navigation, cached here after reads
             'pool_setpoint_f':     state.pool_setpoint_f,
             'spa_setpoint_f':      state.spa_setpoint_f,
@@ -4129,6 +4172,38 @@ def activate_vsp_slot(slot: int) -> Response:
     except (ValueError, Exception) as e:
         log.error(f'activate_vsp_slot {slot}: {e}')
         return jsonify({'error': str(e)}), (400 if isinstance(e, ValueError) else 500)
+
+
+@app.route('/vsp/spa')
+def get_vsp_spa() -> Response:
+    """Read the Spa Speed setting from the VSP submenu."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        return jsonify(nav.read_spa_speed())
+    except Exception as e:
+        log.error(f'read_spa_speed: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/vsp/spa', methods=['POST'])
+def set_vsp_spa() -> Response:
+    """Set the Spa Speed setting. Body: {"speed_pct": 80}. Snaps to 5% grid."""
+    body = request.get_json(force=True)
+    pct = body.get('speed_pct')
+    if pct is None:
+        return jsonify({'error': 'speed_pct is required'}), 400
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        result = nav.set_spa_speed(int(pct))
+        log.info(f'VSP spa speed -> {result["spa_speed"]}%')
+        return jsonify(result)
+    except Exception as e:
+        log.error(f'set_spa_speed: {e}')
+        return jsonify({'error': str(e)}), 500
 
 
 # Legacy slot-4 aliases — kept for backwards compatibility with existing callers.

@@ -124,6 +124,20 @@
         "default": true,
         "description": "Expose salt level (PPM) as an Air Quality sensor tile."
       },
+      "enableSpaSpeedTile": {
+        "title": "Spa Speed Tile",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose a Fan tile showing the VSP's dedicated Spa Speed setting %. Setting the speed writes that value to the panel's Spa Speed slot."
+      },
+      "spaSpeedMinPct": {
+        "title": "Spa Speed Minimum %",
+        "type": "integer",
+        "default": 35,
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Hardware floor for the Spa Speed slider. The HomeKit slider stops here so you cannot target a speed the panel will silently clamp."
+      },
       "enableVspSlotTiles": {
         "title": "VSP Speed Slot Tiles",
         "type": "boolean",
