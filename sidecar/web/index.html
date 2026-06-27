@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b1f33">
+<title>Pool Cockpit</title>
+<style>
+  :root {
+    --bg: #0b1f33; --panel: #13314d; --panel2: #0f2840; --line: #244a6e;
+    --ink: #eaf2fb; --dim: #9fb6cf; --accent: #38bdf8;
+    --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --off: #54708c;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; position: sticky; top: 0; background: var(--bg);
+    border-bottom: 1px solid var(--line); z-index: 5;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .conn { font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .dot.warn { background: var(--warn); }
+  main { padding: 14px; max-width: 640px; margin: 0 auto; display: grid; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .card h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; align-items: baseline; justify-content: space-between; padding: 5px 0; }
+  .row + .row { border-top: 1px solid var(--panel2); }
+  .label { color: var(--dim); }
+  .val { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .big { font-size: 26px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
+  .stat { display: flex; flex-direction: column; gap: 2px; }
+  .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 12px; color: var(--dim); }
+  .pill { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+    background: var(--panel2); color: var(--dim); }
+  .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
+  .pill.off { background: rgba(84,112,140,.2); color: var(--off); }
+  .mode { display: flex; gap: 6px; }
+  .mode .seg { flex: 1; text-align: center; padding: 8px; border-radius: 9px;
+    background: var(--panel2); color: var(--dim); font-weight: 600; }
+  .mode .seg.active { background: var(--accent); color: #04263a; }
+  .slots { display: flex; gap: 8px; flex-wrap: wrap; }
+  .slot { flex: 1; min-width: 60px; text-align: center; background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; }
+  .slot.run { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+  .slot .s { font-size: 12px; color: var(--dim); } .slot .p { font-size: 18px; font-weight: 700; }
+  .lcd { font-family: "SF Mono", ui-monospace, Menlo, monospace; background: #02101d;
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    color: #7dd3fc; letter-spacing: .04em; min-height: 22px; white-space: pre-wrap; word-break: break-word; }
+  .lcd .t { font-size: 11px; color: var(--dim); margin-top: 6px; letter-spacing: 0; }
+  .banner { background: rgba(251,191,36,.12); border: 1px solid var(--warn); color: var(--warn);
+    border-radius: 12px; padding: 12px 14px; font-weight: 600; display: none; }
+  .banner.bad { background: rgba(248,113,113,.12); border-color: var(--bad); color: var(--bad); }
+  .banner.show { display: block; }
+  .muted { color: var(--off); }
+  footer { text-align: center; color: var(--off); font-size: 12px; padding: 8px 0 18px; }
+  .ro { font-size: 11px; color: var(--off); border: 1px solid var(--line); border-radius: 999px;
+    padding: 1px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pool Cockpit</h1>
+  <div class="conn"><span class="ro">read-only</span><span id="dot" class="dot"></span><span id="conn">connecting…</span></div>
+</header>
+<main>
+  <div id="banner" class="banner"></div>
+
+  <div class="card">
+    <h2>Mode</h2>
+    <div class="mode">
+      <div class="seg" id="seg-pool">Pool</div>
+      <div class="seg" id="seg-spa">Spa</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Conditions</h2>
+    <div class="grid">
+      <div class="stat"><span class="n" id="pool_temp">—</span><span class="k">Pool °F</span></div>
+      <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air °F</span></div>
+      <div class="stat"><span class="n" id="spa_temp">—</span><span class="k">Spa °F</span></div>
+      <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt ppm</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Heat</h2>
+    <div class="row"><span class="label">State</span><span class="pill" id="heat_state">—</span></div>
+    <div class="row"><span class="label">Setpoint (active)</span><span class="val big" id="heat_set">—</span></div>
+    <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Water</h2>
+    <div class="row"><span class="label">Filter</span><span class="pill" id="filter_state">—</span></div>
+    <div class="row"><span class="label">Running speed</span><span class="val" id="pump_speed">—</span></div>
+    <div class="row"><span class="label">Chlorinator (active)</span><span class="val" id="chlor">—</span></div>
+    <div class="row"><span class="label">Spa speed (set)</span><span class="val" id="spa_speed">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>VSP Slots</h2>
+    <div class="slots" id="slots"></div>
+  </div>
+
+  <div class="card">
+    <h2>Panel Display</h2>
+    <div class="lcd" id="lcd">—<div class="t" id="lcd_t"></div></div>
+  </div>
+</main>
+<footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const txt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+  const num = v => (v === null || v === undefined) ? '—' : v;
+  let lastStatusTs = 0;
+
+  function setPill(id, on, onLabel, offLabel) {
+    const e = $(id); if (!e) return;
+    e.textContent = on ? onLabel : offLabel;
+    e.className = 'pill ' + (on ? 'on' : 'off');
+  }
+
+  function renderStatus(s) {
+    lastStatusTs = Date.now();
+    const connected = s.connected;
+    $('dot').className = 'dot ' + (s.bridge_wedged ? 'bad' : (connected ? 'ok' : 'warn'));
+    txt('conn', connected ? 'connected' : 'no panel');
+
+    // Mode
+    $('seg-pool').className = 'seg' + (s.valve_mode === 'pool' ? ' active' : '');
+    $('seg-spa').className = 'seg' + (s.valve_mode === 'spa' ? ' active' : '');
+
+    // Conditions
+    txt('pool_temp', num(s.pool_temp));
+    txt('air_temp', num(s.air_temp));
+    txt('spa_temp', num(s.spa_temp));
+    txt('salt_level', num(s.salt_level));
+
+    // Heat — active body
+    const spa = s.valve_mode === 'spa';
+    const heatOn = spa ? s.spa_heater_enabled : s.pool_heater_enabled;
+    const setp = spa ? s.spa_setpoint_f : s.pool_setpoint_f;
+    setPill('heat_state', !!heatOn, 'On (Auto)', 'Off');
+    txt('heat_set', setp == null ? '—' : setp + '°');
+    setPill('heat_fire', !!s.heater_active, 'Yes', 'No');
+
+    // Water
+    const filterOn = s.circuits && s.circuits.FILTER;
+    setPill('filter_state', !!filterOn, 'On', 'Off');
+    txt('pump_speed', s.pump_speed == null ? '—' : s.pump_speed + '%');
+    const chlor = spa ? s.spa_chlorinator_percent : s.chlorinator_percent;
+    txt('chlor', (chlor == null ? '—' : chlor + '%') + (spa ? ' · spa' : ' · pool'));
+    txt('spa_speed', s.spa_speed == null ? '—' : s.spa_speed + '%');
+
+    // Slots
+    const slots = $('slots'); slots.innerHTML = '';
+    for (let i = 1; i <= 4; i++) {
+      const pct = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
+      const running = filterOn && s.vsp_active_slot === i;
+      const d = document.createElement('div');
+      d.className = 'slot' + (running ? ' run' : '');
+      d.innerHTML = `<div class="s">Speed ${i}${running ? ' ●' : ''}</div><div class="p">${pct == null ? '—' : pct + '%'}</div>`;
+      slots.appendChild(d);
+    }
+
+    // Banner
+    const b = $('banner');
+    if (s.bridge_wedged) {
+      const cd = s.wedge_cooldown_remaining_s;
+      b.className = 'banner bad show';
+      b.textContent = cd > 0
+        ? `⚠ Panel wedged — power-cycle cooldown, ${cd}s remaining`
+        : '⚠ Panel command path wedged — power-cycle the AquaConnect box';
+    } else { b.className = 'banner'; }
+
+    txt('backend', s.backend || '—');
+  }
+
+  async function pollStatus() {
+    try {
+      const r = await fetch('/status', { cache: 'no-store' });
+      if (r.ok) renderStatus(await r.json());
+    } catch (e) { /* keep last values; dot handled by age tick */ }
+  }
+
+  // Fallback for the LCD mirror: poll /display when the SSE stream is quiet so
+  // the panel display is never blank. Live SSE frames (below) take over and
+  // refresh it immediately whenever the panel actually changes.
+  let lastFrameTs = 0;
+  async function pollDisplay() {
+    if (Date.now() - lastFrameTs < 4000) return;   // SSE is live; don't fight it
+    try {
+      const r = await fetch('/display', { cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      const t = [d.line1, d.line2].filter(Boolean).join('  ').trim();
+      if (t) $('lcd').firstChild.nodeValue = t;
+    } catch (e) {}
+  }
+
+  // Live LCD via SSE
+  function connectStream() {
+    try {
+      const es = new EventSource('/stream');
+      es.onmessage = ev => {
+        try {
+          const f = JSON.parse(ev.data);
+          if (f && f.text) {
+            lastFrameTs = Date.now();
+            $('lcd').firstChild.nodeValue = f.text;
+            txt('lcd_t', new Date((f.ts || 0) * 1000).toLocaleTimeString());
+          }
+        } catch (e) {}
+      };
+      es.onerror = () => { es.close(); setTimeout(connectStream, 3000); };
+    } catch (e) { setTimeout(connectStream, 3000); }
+  }
+
+  // Freshness ticker
+  setInterval(() => {
+    if (!lastStatusTs) return;
+    const age = Math.round((Date.now() - lastStatusTs) / 1000);
+    txt('age', age <= 1 ? 'just now' : age + 's ago');
+    if (age > 12) { $('dot').className = 'dot warn'; txt('conn', 'stale'); }
+  }, 1000);
+
+  pollStatus();
+  setInterval(pollStatus, 3000);
+  pollDisplay();
+  setInterval(pollDisplay, 3000);
+  connectStream();
+})();
+</script>
+</body>
+</html>

@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple
 from types import SimpleNamespace
 
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, send_from_directory
 
 logging.basicConfig(
     level=logging.INFO,
@@ -4395,6 +4395,25 @@ def health() -> Response:
         connected = state.connected
         age = time.time() - state.last_update if state.last_update else None
     return jsonify({'connected': connected, 'data_age_seconds': age}), (200 if connected else 503)
+
+
+# ---------------------------------------------------------------------------
+# Local web UI (read-only cockpit — Screen 1). Static single-page app served
+# from sidecar/web/, consuming the existing /status and /stream endpoints. No
+# control endpoints are called from here, so it cannot touch the panel.
+# ---------------------------------------------------------------------------
+_WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
+
+
+@app.route('/')
+@app.route('/ui')
+def web_index() -> Response:
+    return send_from_directory(_WEB_DIR, 'index.html')
+
+
+@app.route('/ui/<path:filename>')
+def web_asset(filename: str) -> Response:
+    return send_from_directory(_WEB_DIR, filename)
 
 
 # ---------------------------------------------------------------------------
