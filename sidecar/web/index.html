@@ -53,7 +53,16 @@
   .slot { flex: 1; min-width: 60px; text-align: center; background: var(--panel2);
     border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; }
   .slot.run { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+  .slot.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .slot .s { font-size: 12px; color: var(--dim); } .slot .p { font-size: 18px; font-weight: 700; }
+  .slot .p.pend { color: var(--accent); }
+  .slot-editor { display: none; align-items: center; justify-content: space-between;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel2); }
+  .slot-editor.show { display: flex; }
+  .se-label { font-size: 13px; color: var(--dim); }
+  .setrow-inline { display: flex; align-items: center; gap: 10px; }
+  .setrow-inline .bd-v { min-width: 64px; }
+  .slot-editor .step { display: flex; }
   .lcd { font-family: "SF Mono", ui-monospace, Menlo, monospace; background: #02101d;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
     color: #7dd3fc; letter-spacing: .04em; min-height: 22px; white-space: pre-wrap; word-break: break-word; }
@@ -162,6 +171,12 @@
   </div>
 
   <div class="card">
+    <h2>Water</h2>
+    <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
+    <div class="row"><span class="label">Running speed</span><span class="val" id="pump_speed">—</span></div>
+  </div>
+
+  <div class="card">
     <h2>Chlorinator</h2>
     <div class="duo">
       <div class="bd ctl" id="chlor_pool" data-field="chlor_pool"><div class="bd-k">Pool</div>
@@ -172,15 +187,13 @@
   </div>
 
   <div class="card">
-    <h2>Water</h2>
-    <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
-    <div class="row"><span class="label">Running speed</span><span class="val" id="pump_speed">—</span></div>
-  </div>
-
-  <div class="card">
     <h2>Speeds</h2>
     <div class="speedgrp"><div class="grp-k">Pool</div><div class="slots" id="slots"></div></div>
     <div class="speedgrp"><div class="grp-k">Spa</div><div class="slots" id="spa_slots"></div></div>
+    <div class="slot-editor" id="slot_editor">
+      <span class="se-label" id="se_label"></span>
+      <span class="setrow-inline"><button class="step ctl" id="se_dn">−</button><span class="bd-v" id="se_val">—</span><button class="step ctl" id="se_up">+</button></span>
+    </div>
   </div>
 
   <div class="card">
@@ -239,7 +252,8 @@
   }
 
   // ── Staged changes — NOTHING is sent until Apply ──────────────────────────
-  const staged = {};   // mode, filter, heat(+heatWhich), setPool, setSpa, chlorPool, chlorSpa
+  const staged = {};   // mode, filter, heat(+heatWhich), setPool, setSpa, chlorPool, chlorSpa, slot1-4, spaSpeed
+  let selectedSlot = null;   // which speed slot is open in the inline editor
   const SRC  = { heat_pool:'pool_setpoint_f', heat_spa:'spa_setpoint_f',
                  chlor_pool:'chlorinator_percent', chlor_spa:'spa_chlorinator_percent' };
   const SKEY = { heat_pool:'setPool', heat_spa:'setSpa', chlor_pool:'chlorPool', chlor_spa:'chlorSpa' };
@@ -288,8 +302,29 @@
     if (v === realv) delete staged[key]; else staged[key] = v;
     reRender();
   }
+  // Speed slots: tap a tile to open the inline editor; ± stages a 5% step.
+  function slotReal(key) {
+    if (key === 'spaSpeed') return last.spa_speed;
+    return last.vsp_slot_pct ? last.vsp_slot_pct[key.replace('slot', '')] : null;
+  }
+  function selectSlot(key) {
+    if (busy) return;
+    selectedSlot = (selectedSlot === key) ? null : key;   // tap again to close
+    setEditing(null);
+    reRender();
+  }
+  function stageSlotStep(dir) {
+    if (busy || !selectedSlot) return;
+    const key = selectedSlot, realv = slotReal(key);
+    let v = (key in staged) ? staged[key] : realv;
+    if (v == null) v = 35;
+    v = Math.max(35, Math.min(100, (Math.round(v / 5) * 5) + dir * 5));
+    if (v === realv) delete staged[key]; else staged[key] = v;
+    reRender();
+  }
   function cancelStaged() {
     for (const k in staged) delete staged[k];
+    selectedSlot = null;
     setEditing(null);
     reRender();
   }
@@ -304,7 +339,11 @@
     if ('setSpa' in staged) items.push([`Set spa heat ${staged.setSpa}°`, '/heater/spa/setpoint', { temp_f: staged.setSpa }]);
     if ('chlorPool' in staged) items.push([`Set pool chlorinator ${staged.chlorPool}%`, '/chlorinator/pool', { percent: staged.chlorPool }]);
     if ('chlorSpa' in staged) items.push([`Set spa chlorinator ${staged.chlorSpa}%`, '/chlorinator/spa', { percent: staged.chlorSpa }]);
+    for (let n = 1; n <= 4; n++)
+      if (('slot' + n) in staged) items.push([`Set Speed ${n} to ${staged['slot' + n]}%`, `/vsp/slot/${n}`, { speed_pct: staged['slot' + n] }]);
+    if ('spaSpeed' in staged) items.push([`Set Spa Speed to ${staged.spaSpeed}%`, '/vsp/spa', { speed_pct: staged.spaSpeed }]);
     for (const k in staged) delete staged[k];
+    selectedSlot = null;
     setEditing(null);
     setBusy(true, items[0][0]);
     try {
@@ -414,30 +453,43 @@
     $('chlor_pool').classList.toggle('active', s.valve_mode === 'pool');
     $('chlor_spa').classList.toggle('active', s.valve_mode === 'spa');
 
-    // Water
+    // Water — running speed calls out the active speed slot
     const filterOn = s.circuits && s.circuits.FILTER;   // real, drives the speed running flag
     const effFilter = ('filter' in staged) ? staged.filter : !!filterOn;
     setPill('filter_state', effFilter, 'On', 'Off');
     $('filter_state').classList.toggle('staged', 'filter' in staged);
-    txt('pump_speed', pctv(s.pump_speed));
+    let speedTag = '';
+    if (filterOn) speedTag = spa ? ' · Spa' : (s.vsp_active_slot ? ' · Speed ' + s.vsp_active_slot : '');
+    txt('pump_speed', pctv(s.pump_speed) + speedTag);
 
-    // Speeds (read-only)
+    // Speeds — tap a tile to edit (staged); running slot highlighted
+    function slotTile(label, key, real, running) {
+      const eff = (key in staged) ? staged[key] : real;
+      const sel = selectedSlot === key;
+      const d = document.createElement('div');
+      d.className = 'slot ctl' + (running ? ' run' : '') + (sel ? ' sel' : '');
+      d.innerHTML = `<div class="s">${label}${running ? ' ●' : ''}</div>` +
+                    `<div class="p${key in staged ? ' pend' : ''}">${pctv(eff)}</div>`;
+      d.onclick = () => selectSlot(key);
+      return d;
+    }
     const slots = $('slots'); slots.innerHTML = '';
     for (let i = 1; i <= 4; i++) {
       const pct = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
-      const running = filterOn && !spa && s.vsp_active_slot === i;
-      const d = document.createElement('div');
-      d.className = 'slot' + (running ? ' run' : '');
-      d.innerHTML = `<div class="s">Speed ${i}${running ? ' ●' : ''}</div><div class="p">${pctv(pct)}</div>`;
-      slots.appendChild(d);
+      slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, filterOn && !spa && s.vsp_active_slot === i));
     }
     const spaSlots = $('spa_slots'); spaSlots.innerHTML = '';
-    {
-      const running = filterOn && spa;
-      const d = document.createElement('div');
-      d.className = 'slot' + (running ? ' run' : '');
-      d.innerHTML = `<div class="s">Spa Speed${running ? ' ●' : ''}</div><div class="p">${pctv(s.spa_speed)}</div>`;
-      spaSlots.appendChild(d);
+    spaSlots.appendChild(slotTile('Spa Speed', 'spaSpeed', s.spa_speed, filterOn && spa));
+    // Inline slot editor
+    const ed = $('slot_editor');
+    if (selectedSlot) {
+      ed.classList.add('show');
+      txt('se_label', selectedSlot === 'spaSpeed' ? 'Spa Speed' : 'Speed ' + selectedSlot.replace('slot', ''));
+      const v = (selectedSlot in staged) ? staged[selectedSlot] : slotReal(selectedSlot);
+      $('se_val').textContent = pctv(v);
+      $('se_val').classList.toggle('pend', selectedSlot in staged);
+    } else {
+      ed.classList.remove('show');
     }
 
     // Wedge banner
@@ -518,6 +570,8 @@
   $('cs_up').onclick = stepBtn('chlor_spa', 1);
   $('apply_btn').onclick = applyStaged;
   $('cancel_btn').onclick = cancelStaged;
+  $('se_dn').onclick = () => stageSlotStep(-1);
+  $('se_up').onclick = () => stageSlotStep(1);
   // Manual nav D-pad (direct, not staged): ▲=PLUS ▼=MINUS ◀=LEFT ▶=RIGHT
   $('nav_up').onclick = () => sendKey('PLUS');
   $('nav_down').onclick = () => sendKey('MINUS');
