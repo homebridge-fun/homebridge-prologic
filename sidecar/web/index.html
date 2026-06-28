@@ -109,6 +109,12 @@
   .nav.menu { font-size: 14px; letter-spacing: .06em; }
   #nav_up { grid-area: 1 / 2; } #nav_left { grid-area: 2 / 1; }
   #nav_menu { grid-area: 2 / 2; } #nav_right { grid-area: 2 / 3; } #nav_down { grid-area: 3 / 2; }
+  .card h2.hrow { display: flex; align-items: center; justify-content: space-between; }
+  .lockbtn { font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel2); color: var(--dim);
+    letter-spacing: 0; text-transform: none; }
+  .lockbtn.unlocked { border-color: var(--accent); color: var(--accent); }
+  .dpad.locked { opacity: .35; pointer-events: none; }
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
     background: var(--bad); color: #fff; padding: 11px 16px; border-radius: 10px;
     font-weight: 600; z-index: 10; opacity: 0; transition: opacity .2s; pointer-events: none;
@@ -183,8 +189,8 @@
   </div>
 
   <div class="card">
-    <h2>Manual Navigation</h2>
-    <div class="dpad">
+    <h2 class="hrow">Manual Navigation <button class="lockbtn" id="nav_lock">🔒 Locked</button></h2>
+    <div class="dpad locked" id="dpad">
       <button class="nav ctl" id="nav_up">▲</button>
       <button class="nav ctl" id="nav_left">◀</button>
       <button class="nav ctl menu" id="nav_menu">MENU</button>
@@ -325,10 +331,29 @@
     }
   }
 
-  // Manual navigation — send one raw nav key and reflect the resulting LCD.
-  // Direct (not staged): this is the power-user surface for driving the menu.
+  // Manual navigation — locked by default so a stray tap can't drive the menu.
+  let navLocked = true;
+  let navLockTimer;
+  function setNavLock(locked) {
+    navLocked = locked;
+    $('dpad').classList.toggle('locked', locked);
+    const b = $('nav_lock');
+    b.textContent = locked ? '🔒 Locked' : '🔓 Unlocked';
+    b.classList.toggle('unlocked', !locked);
+    clearTimeout(navLockTimer);
+    if (!locked) navLockTimer = setTimeout(() => setNavLock(true), 60000);
+  }
+  function bumpNavLock() {     // keep it unlocked while actively in use
+    if (navLocked) return;
+    clearTimeout(navLockTimer);
+    navLockTimer = setTimeout(() => setNavLock(true), 60000);
+  }
+
+  // Send one raw nav key and reflect the resulting LCD. Direct (not staged):
+  // this is the power-user surface for driving the menu.
   async function sendKey(key) {
-    if (busy) return;
+    if (busy || navLocked) return;
+    bumpNavLock();
     setBusy(true, key);
     try {
       const r = await fetch('/key/' + key, { method: 'POST' });
@@ -499,6 +524,7 @@
   $('nav_left').onclick = () => sendKey('LEFT');
   $('nav_right').onclick = () => sendKey('RIGHT');
   $('nav_menu').onclick = () => sendKey('MENU');
+  $('nav_lock').onclick = () => setNavLock(!navLocked);
 
   // Freshness ticker
   setInterval(() => {
