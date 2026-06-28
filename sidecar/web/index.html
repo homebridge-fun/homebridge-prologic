@@ -109,10 +109,11 @@
   <div class="card">
     <h2>Heat</h2>
     <div class="duo">
-      <div class="bd" id="heat_pool"><div class="bd-k">Pool</div><div class="bd-v" id="heat_pool_set">—</div><div class="bd-s" id="heat_pool_st">—</div></div>
-      <div class="bd" id="heat_spa"><div class="bd-k">Spa</div><div class="bd-v" id="heat_spa_set">—</div><div class="bd-s" id="heat_spa_st">—</div></div>
+      <div class="bd" id="heat_pool"><div class="bd-k">Pool</div><div class="bd-v" id="heat_pool_set">—</div></div>
+      <div class="bd" id="heat_spa"><div class="bd-k">Spa</div><div class="bd-v" id="heat_spa_set">—</div></div>
     </div>
-    <div class="row" style="margin-top:10px"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
+    <div class="row" style="margin-top:10px"><span class="label">Heater Mode</span><span class="pill" id="heat_mode">—</span></div>
+    <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
   </div>
 
   <div class="card">
@@ -177,15 +178,12 @@
     txt('air_temp', num(s.air_temp));
     txt('salt_level', num(s.salt_level));
 
-    // Heat — both setpoints, active body flagged
+    // Heat — both setpoints, active body flagged; active heater's mode below
     txt('heat_pool_set', deg(s.pool_setpoint_f));
     txt('heat_spa_set', deg(s.spa_setpoint_f));
-    const hp = $('heat_pool_st'); hp.textContent = s.pool_heater_enabled ? 'Auto' : 'Off';
-    hp.className = 'bd-s ' + (s.pool_heater_enabled ? 'on' : 'off');
-    const hs = $('heat_spa_st'); hs.textContent = s.spa_heater_enabled ? 'Auto' : 'Off';
-    hs.className = 'bd-s ' + (s.spa_heater_enabled ? 'on' : 'off');
     $('heat_pool').className = 'bd' + (s.valve_mode === 'pool' ? ' active' : '');
     $('heat_spa').className = 'bd' + (s.valve_mode === 'spa' ? ' active' : '');
+    setPill('heat_mode', !!(spa ? s.spa_heater_enabled : s.pool_heater_enabled), 'Auto', 'Off');
     setPill('heat_fire', !!s.heater_active, 'Yes', 'No');
 
     // Chlorinator — both, active body flagged
