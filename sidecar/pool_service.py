@@ -1714,7 +1714,12 @@ def _trace_key(key: str, before: str, after: str, wait_s: float,
 class MenuNavigator:
     _SETTINGS_HDR = 'Settings Menu'
     _DEFAULT_MENU_HDR = 'Default Menu'
-    _KEY_TIMEOUT = 4.0   # seconds to wait for the frame to change after a press
+    # Seconds to wait for the frame to change after a press before treating it
+    # as dropped and re-pressing. AquaConnect confirms in ~1.3s, so 3.0 gives a
+    # >2x margin while recovering dropped presses ~1s faster than the old 4.0.
+    # Benchmarks/taptests still override this explicitly when probing the lossy
+    # RS-485 path.
+    _KEY_TIMEOUT = 3.0   # seconds to wait for the frame to change after a press
     _MENU_MAX = 10       # MENU presses to find Settings Menu header
     _NAV_MAX = 30        # RIGHT presses to walk the Settings ring (11 items + margin)
     _STEP_MAX = 90       # +/- presses before aborting a value adjust
