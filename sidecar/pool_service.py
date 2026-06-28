@@ -4495,7 +4495,10 @@ def main() -> None:
     aquaconnect_host = cfg.get('aquaconnect_host', args.aquaconnect_host)
     rs485_host = cfg.get('rs485_host', args.host)
     rs485_port = cfg.get('rs485_port', args.port)
-    observe_rs485 = cfg.get('observe_rs485', args.observe_rs485)
+    # The CLI flag force-enables the observer even if backend.json persisted
+    # observe_rs485=false (e.g. from a prior /backend/toggle single-transport
+    # run). Persisted true also enables it. Otherwise off.
+    observe_rs485 = bool(args.observe_rs485 or cfg.get('observe_rs485', False))
     observe_rs485_host = (cfg.get('observe_rs485_host')
                           or args.observe_rs485_host or rs485_host or args.host)
     observe_rs485_port = cfg.get('observe_rs485_port', args.observe_rs485_port)
