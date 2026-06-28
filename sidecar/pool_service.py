@@ -4556,6 +4556,41 @@ def health() -> Response:
     return jsonify({'connected': connected, 'data_age_seconds': age}), (200 if connected else 503)
 
 
+# Manual navigation: send ONE menu-navigation keypress on the active backend
+# and return the resulting LCD text. Limited to the five nav keys so the manual
+# keypad in the cockpit can't fire an equipment circuit by accident (circuits,
+# heater, etc. have their own dedicated, guarded endpoints).
+_MANUAL_NAV_KEYS = {'MENU', 'RIGHT', 'LEFT', 'PLUS', 'MINUS'}
+
+
+@app.route('/key/<name>', methods=['POST'])
+def send_key(name: str) -> Response:
+    key = name.upper()
+    if key not in _MANUAL_NAV_KEYS:
+        return jsonify({'error': f'{name!r} is not a manual-nav key; '
+                                 f'allowed: {sorted(_MANUAL_NAV_KEYS)}'}), 400
+    block = _wedge_block_response()
+    if block:
+        return block
+    try:
+        if _ac_backend is not None:
+            with _nav_lock:
+                _ac_backend.send_nav_key(key)
+                lcd_txt = lcd.text()
+        else:
+            nav = _get_navigator()
+            if nav is None:
+                return jsonify({'error': 'Not connected'}), 503
+            with _nav_lock:
+                lcd_txt = nav._send(key)
+        _record_command_success()
+        return jsonify({'ok': True, 'key': key, 'lcd': lcd_txt})
+    except Exception as e:
+        log.error('manual key %s: %s', key, e)
+        _record_command_failure()
+        return jsonify({'error': str(e)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Local web UI (read-only cockpit — Screen 1). Static single-page app served
 # from sidecar/web/, consuming the existing /status and /stream endpoints. No
