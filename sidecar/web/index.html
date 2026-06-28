@@ -90,6 +90,18 @@
     background: rgba(56,189,248,.14); border: 1px solid var(--accent); color: var(--accent);
     border-radius: 10px; padding: 9px 13px; font-weight: 600; }
   #busy.show { display: block; }
+  #apply { position: sticky; top: 53px; z-index: 4; display: none; margin: 0 14px;
+    background: rgba(56,189,248,.14); border: 1px solid var(--accent); color: var(--accent);
+    border-radius: 10px; padding: 9px 13px; font-weight: 600;
+    align-items: center; justify-content: space-between; gap: 10px; }
+  #apply.show { display: flex; }
+  #apply .n { font-size: 13px; }
+  #apply .btns { display: flex; gap: 8px; flex: 0 0 auto; }
+  #apply button { border-radius: 8px; border: 1px solid var(--accent); padding: 7px 16px;
+    font-weight: 700; font-size: 13px; }
+  #apply_btn { background: var(--accent); color: #04263a; }
+  #cancel_btn { background: transparent; color: var(--accent); }
+  .staged { outline: 1px dashed var(--accent); outline-offset: 2px; }
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
     background: var(--bad); color: #fff; padding: 11px 16px; border-radius: 10px;
     font-weight: 600; z-index: 10; opacity: 0; transition: opacity .2s; pointer-events: none;
@@ -103,6 +115,7 @@
   <div class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></div>
 </header>
 <div id="busy"></div>
+<div id="apply"><span class="n" id="apply_n"></span><span class="btns"><button id="cancel_btn">Cancel</button><button id="apply_btn">Apply</button></span></div>
 <main>
   <div id="banner" class="banner"></div>
 
@@ -175,7 +188,6 @@
   let lastStatusTs = 0;
   let last = {};                 // most recent /status
   let busy = false;              // a command is in flight (panel is single-lane)
-  const pending = {};            // field -> {value, timer} for debounced steppers
 
   function setPill(id, on, onLabel, offLabel) {
     const e = $(id); if (!e) return;
@@ -190,6 +202,7 @@
     const e = $('busy');
     e.classList.toggle('show', on);
     if (on) e.textContent = '⟳ ' + label + '…';
+    updateApplyBar();
   }
   let toastTimer;
   function toast(msg) {
@@ -200,75 +213,97 @@
     const r = await fetch('/status', { cache: 'no-store' });
     if (r.ok) renderStatus(await r.json());
   }
-  // One command at a time — mirrors the sidecar's single nav lock. Disables all
-  // controls, runs the POST, then re-reads state to confirm (or revert on fail).
-  async function cmd(label, path, body) {
-    if (busy) return;
-    setBusy(true, label);
-    try {
-      const r = await fetch(path, { method: 'POST',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-      let j = {}; try { j = await r.json(); } catch (e) {}
-      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      await fetchStatus();
-    } catch (e) {
-      toast('⚠ ' + label + ' failed' + (e.message ? ': ' + e.message : ''));
-      try { await fetchStatus(); } catch (_) {}   // revert any optimistic value
-    } finally {
-      setBusy(false);
-    }
-  }
 
-  // ── Controls ──────────────────────────────────────────────────────────────
-  function setMode(mode) {
-    if (busy || last.valve_mode === mode) return;
-    cmd('Switch to ' + mode, '/mode', { mode });
-  }
-  function toggleHeat() {
-    if (busy) return;
-    const which = last.valve_mode === 'spa' ? 'spa' : 'pool';
-    const on = !(which === 'spa' ? last.spa_heater_enabled : last.pool_heater_enabled);
-    cmd((on ? 'Set ' : 'Turn off ') + which + ' heater' + (on ? ' to Auto' : ''),
-        `/heater/${which}/enable`, { on });
-  }
-  function toggleFilter() {
-    if (busy) return;
-    const on = !(last.circuits && last.circuits.FILTER);
-    cmd((on ? 'Turn on' : 'Turn off') + ' filter', '/circuit/FILTER', { on });
-  }
-
-  const DISP = { heat_pool:'heat_pool_set', heat_spa:'heat_spa_set',
-                 chlor_pool:'chlor_pool_v', chlor_spa:'chlor_spa_v' };
+  // ── Staged changes — NOTHING is sent until Apply ──────────────────────────
+  const staged = {};   // mode, filter, heat(+heatWhich), setPool, setSpa, chlorPool, chlorSpa
   const SRC  = { heat_pool:'pool_setpoint_f', heat_spa:'spa_setpoint_f',
                  chlor_pool:'chlorinator_percent', chlor_spa:'spa_chlorinator_percent' };
+  const SKEY = { heat_pool:'setPool', heat_spa:'setSpa', chlor_pool:'chlorPool', chlor_spa:'chlorSpa' };
+  const hasStaged = () => Object.keys(staged).length > 0;
+  function reRender() { if (last.connected !== undefined) renderStatus(last); }
+  function updateApplyBar() {
+    const n = Object.keys(staged).length;
+    $('apply').classList.toggle('show', n > 0 && !busy);
+    if (n > 0) txt('apply_n', n + (n === 1 ? ' pending change' : ' pending changes'));
+  }
   function chlorStep(cur, dir) {
     cur = cur || 0;
     if (dir > 0) return cur < 10 ? Math.min(10, cur + 1) : Math.min(100, cur + 5);
     return cur <= 10 ? Math.max(0, cur - 1) : cur - 5;
   }
-  function step(field, dir) {
+  // Stagers — flip/adjust the staged target; if it returns to the real value,
+  // drop it so Apply never sends a no-op.
+  function stageMode(mode) {
+    if (busy) return;
+    if (mode === last.valve_mode) delete staged.mode; else staged.mode = mode;
+    reRender();
+  }
+  function stageFilter() {
+    if (busy) return;
+    const real = !!(last.circuits && last.circuits.FILTER);
+    const eff = ('filter' in staged) ? staged.filter : real;
+    if (!eff === real) delete staged.filter; else staged.filter = !eff;
+    reRender();
+  }
+  function stageHeat() {
+    if (busy) return;
+    const which = last.valve_mode === 'spa' ? 'spa' : 'pool';   // current active body
+    const real = which === 'spa' ? !!last.spa_heater_enabled : !!last.pool_heater_enabled;
+    const eff = ('heat' in staged && staged.heatWhich === which) ? staged.heat : real;
+    if (!eff === real) { delete staged.heat; delete staged.heatWhich; }
+    else { staged.heat = !eff; staged.heatWhich = which; }
+    reRender();
+  }
+  function stageStep(field, dir) {
     if (busy) return;
     const heat = field.startsWith('heat');
-    let v = pending[field] ? pending[field].value : last[SRC[field]];
+    const key = SKEY[field], realv = last[SRC[field]];
+    let v = (key in staged) ? staged[key] : realv;
     if (v == null) v = heat ? 80 : 0;
     v = heat ? Math.max(65, Math.min(104, v + dir)) : chlorStep(v, dir);
-    pending[field] = pending[field] || {};
-    pending[field].value = v;
-    const el = $(DISP[field]);
-    el.textContent = heat ? v + '°' : v + '%';
-    el.classList.add('pend');
-    clearTimeout(pending[field].timer);
-    pending[field].timer = setTimeout(() => sendStep(field), 900);
+    if (v === realv) delete staged[key]; else staged[key] = v;
+    reRender();
   }
-  async function sendStep(field) {
-    const v = pending[field].value;
-    delete pending[field];                       // clear before send so polls show truth
-    $(DISP[field]).classList.remove('pend');
-    const which = field.endsWith('pool') ? 'pool' : 'spa';
-    if (field.startsWith('heat')) {
-      await cmd(`Set ${which} heat to ${v}°`, `/heater/${which}/setpoint`, { temp_f: v });
-    } else {
-      await cmd(`Set ${which} chlorinator to ${v}%`, `/chlorinator/${which}`, { percent: v });
+  function cancelStaged() {
+    for (const k in staged) delete staged[k];
+    setEditing(null);
+    reRender();
+  }
+  // Apply — send each staged change in sequence (the panel is single-lane).
+  async function applyStaged() {
+    if (busy || !hasStaged()) return;
+    const items = [];
+    if ('mode' in staged) items.push(['Switch to ' + staged.mode, '/mode', { mode: staged.mode }]);
+    if ('filter' in staged) items.push([(staged.filter ? 'Turn on' : 'Turn off') + ' filter', '/circuit/FILTER', { on: staged.filter }]);
+    if ('heat' in staged) items.push([(staged.heat ? 'Enable' : 'Turn off') + ' ' + staged.heatWhich + ' heater', `/heater/${staged.heatWhich}/enable`, { on: staged.heat }]);
+    if ('setPool' in staged) items.push([`Set pool heat ${staged.setPool}°`, '/heater/pool/setpoint', { temp_f: staged.setPool }]);
+    if ('setSpa' in staged) items.push([`Set spa heat ${staged.setSpa}°`, '/heater/spa/setpoint', { temp_f: staged.setSpa }]);
+    if ('chlorPool' in staged) items.push([`Set pool chlorinator ${staged.chlorPool}%`, '/chlorinator/pool', { percent: staged.chlorPool }]);
+    if ('chlorSpa' in staged) items.push([`Set spa chlorinator ${staged.chlorSpa}%`, '/chlorinator/spa', { percent: staged.chlorSpa }]);
+    for (const k in staged) delete staged[k];
+    setEditing(null);
+    setBusy(true, items[0][0]);
+    try {
+      for (let i = 0; i < items.length; i++) {
+        const [label, path, body] = items[i];
+        $('busy').textContent = `⟳ (${i + 1}/${items.length}) ${label}…`;
+        if (!(await sendOne(path, body, label))) break;   // stop on first failure
+      }
+      await fetchStatus();
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function sendOne(path, body, label) {
+    try {
+      const r = await fetch(path, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+      let j = {}; try { j = await r.json(); } catch (e) {}
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      return true;
+    } catch (e) {
+      toast('⚠ ' + label + ' failed' + (e.message ? ': ' + e.message : ''));
+      return false;
     }
   }
 
@@ -280,10 +315,11 @@
     $('dot').className = 'dot ' + (s.bridge_wedged ? 'bad' : (connected ? 'ok' : 'warn'));
     txt('conn', connected ? 'connected' : 'no panel');
 
-    $('seg-pool').className = 'seg ctl' + (s.valve_mode === 'pool' ? ' active' : '');
-    $('seg-spa').className = 'seg ctl' + (s.valve_mode === 'spa' ? ' active' : '');
+    const effMode = staged.mode || s.valve_mode;
+    $('seg-pool').className = 'seg ctl' + (effMode === 'pool' ? ' active' : '') + (('mode' in staged) && effMode === 'pool' ? ' staged' : '');
+    $('seg-spa').className = 'seg ctl' + (effMode === 'spa' ? ' active' : '') + (('mode' in staged) && effMode === 'spa' ? ' staged' : '');
 
-    const spa = s.valve_mode === 'spa';
+    const spa = s.valve_mode === 'spa';   // real mode drives temps + active-body flags
 
     // Conditions — single water temp tagged with the live mode
     txt('water_temp', num(spa ? s.spa_temp : s.pool_temp));
@@ -291,23 +327,37 @@
     txt('air_temp', num(s.air_temp));
     txt('salt_level', num(s.salt_level));
 
-    // Heat — both setpoints (skip a field with a pending edit), active flagged
-    if (!pending.heat_pool) txt('heat_pool_set', deg(s.pool_setpoint_f));
-    if (!pending.heat_spa)  txt('heat_spa_set', deg(s.spa_setpoint_f));
+    // Heat — both setpoints (staged value overlaid + dashed), active body flagged
+    const effSetPool = ('setPool' in staged) ? staged.setPool : s.pool_setpoint_f;
+    const effSetSpa  = ('setSpa'  in staged) ? staged.setSpa  : s.spa_setpoint_f;
+    $('heat_pool_set').textContent = deg(effSetPool);
+    $('heat_pool_set').classList.toggle('pend', 'setPool' in staged);
+    $('heat_spa_set').textContent = deg(effSetSpa);
+    $('heat_spa_set').classList.toggle('pend', 'setSpa' in staged);
     $('heat_pool').classList.toggle('active', s.valve_mode === 'pool');
     $('heat_spa').classList.toggle('active', s.valve_mode === 'spa');
-    setPill('heat_mode', !!(spa ? s.spa_heater_enabled : s.pool_heater_enabled), 'Auto', 'Off');
+    const aw = spa ? 'spa' : 'pool';
+    const realHeat = spa ? !!s.spa_heater_enabled : !!s.pool_heater_enabled;
+    const effHeat = ('heat' in staged && staged.heatWhich === aw) ? staged.heat : realHeat;
+    setPill('heat_mode', effHeat, 'Auto', 'Off');
+    $('heat_mode').classList.toggle('staged', 'heat' in staged);
     setPill('heat_fire', !!s.heater_active, 'Yes', 'No');
 
-    // Chlorinator
-    if (!pending.chlor_pool) txt('chlor_pool_v', pctv(s.chlorinator_percent));
-    if (!pending.chlor_spa)  txt('chlor_spa_v', pctv(s.spa_chlorinator_percent));
+    // Chlorinator — staged value overlaid + dashed
+    const effCP = ('chlorPool' in staged) ? staged.chlorPool : s.chlorinator_percent;
+    const effCS = ('chlorSpa'  in staged) ? staged.chlorSpa  : s.spa_chlorinator_percent;
+    $('chlor_pool_v').textContent = pctv(effCP);
+    $('chlor_pool_v').classList.toggle('pend', 'chlorPool' in staged);
+    $('chlor_spa_v').textContent = pctv(effCS);
+    $('chlor_spa_v').classList.toggle('pend', 'chlorSpa' in staged);
     $('chlor_pool').classList.toggle('active', s.valve_mode === 'pool');
     $('chlor_spa').classList.toggle('active', s.valve_mode === 'spa');
 
     // Water
-    const filterOn = s.circuits && s.circuits.FILTER;
-    setPill('filter_state', !!filterOn, 'On', 'Off');
+    const filterOn = s.circuits && s.circuits.FILTER;   // real, drives the speed running flag
+    const effFilter = ('filter' in staged) ? staged.filter : !!filterOn;
+    setPill('filter_state', effFilter, 'On', 'Off');
+    $('filter_state').classList.toggle('staged', 'filter' in staged);
     txt('pump_speed', pctv(s.pump_speed));
 
     // Speeds (read-only)
@@ -340,6 +390,7 @@
     } else { b.className = 'banner'; }
 
     txt('backend', s.backend || '—');
+    updateApplyBar();
   }
 
   async function pollStatus() {
@@ -386,14 +437,14 @@
     if (field) editTimer = setTimeout(() => setEditing(null), 6000);
   }
   function stepBtn(field, dir) {
-    return (e) => { e.stopPropagation(); step(field, dir); setEditing(field); };
+    return (e) => { e.stopPropagation(); stageStep(field, dir); setEditing(field); };
   }
 
-  // Wire controls
-  $('seg-pool').onclick = () => { setEditing(null); setMode('pool'); };
-  $('seg-spa').onclick = () => { setEditing(null); setMode('spa'); };
-  $('heat_mode').onclick = () => { setEditing(null); toggleHeat(); };
-  $('filter_state').onclick = () => { setEditing(null); toggleFilter(); };
+  // Wire controls — every interaction STAGES; nothing is sent until Apply.
+  $('seg-pool').onclick = () => { setEditing(null); stageMode('pool'); };
+  $('seg-spa').onclick = () => { setEditing(null); stageMode('spa'); };
+  $('heat_mode').onclick = () => { setEditing(null); stageHeat(); };
+  $('filter_state').onclick = () => { setEditing(null); stageFilter(); };
   document.querySelectorAll('.bd[data-field]').forEach(card =>
     card.onclick = () => setEditing(card.dataset.field));
   $('hp_dn').onclick = stepBtn('heat_pool', -1);
@@ -404,6 +455,8 @@
   $('cp_up').onclick = stepBtn('chlor_pool', 1);
   $('cs_dn').onclick = stepBtn('chlor_spa', -1);
   $('cs_up').onclick = stepBtn('chlor_spa', 1);
+  $('apply_btn').onclick = applyStaged;
+  $('cancel_btn').onclick = cancelStaged;
 
   // Freshness ticker
   setInterval(() => {
