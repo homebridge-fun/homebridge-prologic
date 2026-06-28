@@ -40,7 +40,7 @@
   .stat { display: flex; flex-direction: column; gap: 2px; }
   .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .stat .k { font-size: 12px; color: var(--dim); }
-  .pill { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+  .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
   .pill.off { background: rgba(84,112,140,.2); color: var(--off); }
@@ -57,15 +57,15 @@
   .lcd { font-family: "SF Mono", ui-monospace, Menlo, monospace; background: #02101d;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
     color: #7dd3fc; letter-spacing: .04em; min-height: 22px; white-space: pre-wrap; word-break: break-word; }
-  .lcd .t { font-size: 11px; color: var(--dim); margin-top: 6px; letter-spacing: 0; }
+  .lcd .t { font-size: 12px; color: var(--dim); margin-top: 6px; letter-spacing: 0; }
   /* Dual-body (pool/spa) panel with the active one flagged */
   .duo { display: flex; gap: 10px; }
   .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
     border-radius: 10px; padding: 10px 12px; }
   .bd.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
-  .bd.active .bd-k::after { content: ' ● active'; color: var(--accent); font-size: 10px; letter-spacing: 0; }
-  .bd-v { flex: 1; text-align: center; font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bd.active .bd-k::after { content: ' ● active'; color: var(--accent); letter-spacing: 0; }
+  .bd-v { flex: 1; text-align: center; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .bd-v.pend { color: var(--accent); }
   .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
   .step { width: 36px; height: 36px; flex: 0 0 auto; border-radius: 9px;
@@ -106,11 +106,11 @@
   .nav { height: 54px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel2);
     color: var(--ink); font-size: 22px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
   .nav:active { background: var(--accent); color: #04263a; }
-  .nav.menu { font-size: 14px; letter-spacing: .06em; }
+  .nav.menu { font-size: 13px; letter-spacing: .06em; }
   #nav_up { grid-area: 1 / 2; } #nav_left { grid-area: 2 / 1; }
   #nav_menu { grid-area: 2 / 2; } #nav_right { grid-area: 2 / 3; } #nav_down { grid-area: 3 / 2; }
   .card h2.hrow { display: flex; align-items: center; justify-content: space-between; }
-  .lockbtn { font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: 999px;
+  .lockbtn { font-size: 13px; font-weight: 700; padding: 5px 12px; border-radius: 999px;
     border: 1px solid var(--line); background: var(--panel2); color: var(--dim);
     letter-spacing: 0; text-transform: none; }
   .lockbtn.unlocked { border-color: var(--accent); color: var(--accent); }
