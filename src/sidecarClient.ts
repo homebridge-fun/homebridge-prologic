@@ -36,7 +36,11 @@ export class SidecarClient {
    * state, which the regular poll then flows to the accessories.
    */
   async prefetchAll(): Promise<void> {
-    await this.http.post('/prefetch');
+    // The single-pass menu sweep is ~25-30 keypresses at ~1.3s each on the
+    // AquaConnect backend (~40s total), well over the client's default 30s
+    // timeout. Give it a generous window so the call doesn't spuriously time
+    // out while the sidecar is still (successfully) navigating.
+    await this.http.post('/prefetch', undefined, { timeout: 120000 });
   }
 
   async setCircuit(name: string, on: boolean): Promise<void> {
