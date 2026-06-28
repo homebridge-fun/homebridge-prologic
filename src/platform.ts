@@ -54,7 +54,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       pollInterval: config['pollInterval'] ?? 5000,
       backend: config['backend'] ?? 'aquaconnect',
       aquaconnectHost: config['aquaconnectHost'] ?? '192.168.50.100',
-      rs485Host: config['rs485Host'] ?? '192.168.68.101',
+      rs485Host: config['rs485Host'] ?? '192.168.50.101',
       rs485Port: config['rs485Port'] ?? 8899,
       circuits: config['circuits'] ?? ['FILTER', 'LIGHTS', 'HEATER_1'],
       activeBodies: config['activeBodies'] ?? ['pool', 'spa'],

@@ -51,8 +51,8 @@
       "rs485Host": {
         "title": "RS-485 Bridge Host",
         "type": "string",
-        "default": "192.168.68.101",
-        "description": "IP of the USR-W610 WiFi serial bridge (used when backend = rs485)."
+        "default": "192.168.50.101",
+        "description": "IP of the RS-485 serial bridge (used when backend = rs485)."
       },
       "rs485Port": {
         "title": "RS-485 Bridge Port",

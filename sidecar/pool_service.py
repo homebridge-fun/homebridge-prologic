@@ -63,21 +63,43 @@ log.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 # Rotating debug log — /tmp/pool_sidecar_debug.log, replaced every hour.
 # Keeps 1 backup so the previous hour is still readable while the new one grows.
+#
+# The file log is best-effort: a failure to open it (e.g. a stale
+# /tmp/pool_sidecar_debug.log owned by a different user from an earlier run)
+# must NEVER crash the sidecar — losing debug logging is acceptable, taking
+# down pool control because a log file isn't writable is not. We try the
+# default path, then a per-uid fallback the current user can always create,
+# then give up on file logging entirely. Override the path with
+# POOL_SIDECAR_DEBUG_LOG if you want it somewhere specific.
 # ---------------------------------------------------------------------------
-_DEBUG_LOG_PATH = '/tmp/pool_sidecar_debug.log'
-_debug_file_handler = logging.handlers.TimedRotatingFileHandler(
-    _DEBUG_LOG_PATH,
-    when='h',         # rotate every hour
-    interval=1,
-    backupCount=1,    # keep one previous hour
-    encoding='utf-8',
-)
-_debug_file_handler.setLevel(logging.DEBUG)
-_debug_file_handler.setFormatter(
-    logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-)
-log.addHandler(_debug_file_handler)
+_DEBUG_LOG_PATH = os.environ.get('POOL_SIDECAR_DEBUG_LOG', '/tmp/pool_sidecar_debug.log')
+
+
+def _make_debug_handler(path: str) -> logging.Handler:
+    h = logging.handlers.TimedRotatingFileHandler(
+        path, when='h', interval=1, backupCount=1, encoding='utf-8')
+    h.setLevel(logging.DEBUG)
+    h.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    return h
+
+
 log.setLevel(logging.DEBUG)   # file gets DEBUG; console handler keeps INFO via basicConfig root level
+_debug_file_handler = None
+for _candidate in (_DEBUG_LOG_PATH, f'/tmp/pool_sidecar_debug_{os.getuid()}.log'):
+    try:
+        _debug_file_handler = _make_debug_handler(_candidate)
+        log.addHandler(_debug_file_handler)
+        if _candidate != _DEBUG_LOG_PATH:
+            log.warning('Debug log %r not writable; using fallback %r',
+                        _DEBUG_LOG_PATH, _candidate)
+        break
+    except OSError as _e:
+        continue
+else:
+    # No file handler could be opened — continue with console logging only.
+    logging.getLogger('pool_sidecar').warning(
+        'Could not open any debug log file (%s); continuing without file logging',
+        _DEBUG_LOG_PATH)
 
 
 # ---------------------------------------------------------------------------
