@@ -29,6 +29,16 @@ Established live on the actual hardware (ProLogic PS, main board sticker `G1--11
 - A correct connection shows a clean **8-byte repeating frame** in a raw TCP capture. If you see that but **no `10 02` frame starts**, A/B polarity is reversed — swap A and B on the bridge.
 - Symptom map: `socket timeout` = no bytes at all (wrong pins / no link); `Frame timeout` / `Bad CRC` = bytes arriving but mis-framed (wrong pair, polarity, or stop bits); clean `10 02 … 10 03` with ASCII payload = success.
 
+**RS-485 over a TCP bridge: reads work, writes do NOT `[VERIFIED 2026-06-28]`**
+
+Tested three serial-to-Ethernet bridges (USR-W610 WiFi, Waveshare RS485-to-ETH, USR-TCP232-410S) — current test bridge at `192.168.50.101:8899`:
+- **Reads are reliable on all of them.** LCD frames + equipment state decode cleanly; the parallel observer (`--observe-rs485`) mirrors live state perfectly.
+- **Writes (keypresses) are not.** Across every bridge and every knob — predelay sweep 20–210 ms, `pad_bytes`, the 410S's `485 Anti-Collision` + idle-time, AC box unplugged to rule out bus contention — keypresses fail to land. Navigation never reaches the Settings menu; the only LCD changes observed are the panel's own ~6-second idle scroll. The 410S additionally corrupts the RX stream on transmit (`Connection lost: index out of range` — it echoes our TX back into the receive path).
+
+**Root cause** (confirmed against the `aqualogic` source + Hayward/Goldline protocol): the panel polls remotes for a pending key ~every 100 ms and expects the answer in a **narrow window immediately after the keep-alive frame**. A TCP bridge inserts network round-trip latency (keep-alive → TCP → Pi → TCP → wire) into that window, so the keypress always arrives too late. Reads are passive and latency-insensitive, which is exactly why they work and writes don't. Predelay tuning can't fix it (it only *adds* delay; the round-trip already blew the window — drop rate is flat across all predelays).
+
+**Conclusion:** reliable RS-485 **writes require a direct serial connection** — an **isolated USB-RS485 adapter on the Pi** (FT232+SP485 class), no TCP in the loop. Two viable topologies: (a) Pi local at the pad, or (b) run the RS-485 twisted pair to the house Pi (add TVS/surge protection at both ends; galvanic isolation is mandatory for the long pool-to-house run). The TCP bridge remains useful as a **read-only observer**. The current daily-control path is the **AquaConnect HTTP backend**, which is unaffected by all of this.
+
 ---
 
 ## 1. System facts

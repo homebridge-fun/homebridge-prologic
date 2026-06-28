@@ -648,6 +648,16 @@ homebridge-prologic/
 
 ## 10. Known Limitations and Future Work
 
+### 10.0 Recent changes (week of 2026-06-28)
+
+- **Critical deadlock fixes.** `/status` self-deadlocked on the non-reentrant `state_lock` (it called `_wedge_cooling_down()` while already holding the lock) — this took the **whole plugin offline** (all tiles unresponsive). Separately, `_ac_heater_enable` self-deadlocked on `_nav_lock` via a nested acquire on the heater enable/setpoint-read path. Both fixed and are the most important changes of the week.
+- **Spa support.** Added spa chlorinator % (`spa_chlorinator_percent`) and a **Spa Speed** VSP tile; the chlorinator fan is now **valve-mode aware** (shows pool % in pool mode, spa % in spa mode). Both bodies' chlorinator % and heater setpoints are pre-fetched on startup.
+- **Speed slider fix.** A non-zero `RotationSpeed` `minValue` made the Home app render speed sliders as **0–65% instead of 35–100%**. All speed fans now use `minValue: 0` (honest 0–100%) and **snap up to the floor on commit** instead. The per-slot floor still applies, just enforced in software rather than via `minValue`.
+- **Heater restore hardening.** A setpoint read briefly enables the heater to reveal the stored °F; the restore-to-Manual-Off now **verifies and retries** (`_restore_heater_off`) so a read can never leave the heater on (it did once, on the lossy RS-485 path).
+- **Read-only web cockpit (Screen 1).** Self-contained SPA served by the sidecar at `/` and `/ui`, consuming `/status` + `/stream` (SSE) + `/display`. **No control endpoints** — cannot touch the panel. Designed to be exposed via a Tailscale `tailscale serve` proxy so the sidecar stays localhost-bound.
+- **Log hardening.** The debug-log handler is now best-effort with a per-uid fallback; a non-writable `/tmp/pool_sidecar_debug.log` (stale owner from a prior run) **no longer crashes sidecar startup**.
+- **Wedge power-cycle cooldown.** 2-minute command block after wedge detection, then an immediate recovery probe — pairs with a HomeKit smart-plug auto-power-cycle automation.
+
 ### 10.1 Completed
 
 | Item | Status | Notes |
@@ -674,9 +684,10 @@ homebridge-prologic/
 |---|---|---|
 | **Dedicated LCD frame-watcher *service*** | Partial | The in-process frame-reader (§5.3) is now the single shared reader with a `_frame_cond` pub/sub inside the sidecar. A *separate* always-on service exposing an external pub/sub API (latest value, change notifications, last-known per field) to other consumers is still open. Won't speed up navigation (0.6s/request box limit) |
 | FILTER circuit as Fanv2 | Backlog | Could expose pump on/off alongside slot tiles |
-| RS-485 backend parity | Partial | Nav exists; not end-to-end verified on current codebase |
+| RS-485 backend: reads | Done | Verified on three TCP bridges; live state decodes cleanly (observer-confirmed) |
+| RS-485 backend: writes | Blocked on hardware | **Writes do NOT work over a TCP serial bridge** — the bridge's network latency misses the panel's keypress-response window (see automation-spec §0). Reliable writes need a **direct serial** connection (isolated USB-RS485 on the Pi). The `--serial-device` sidecar option for this is not yet implemented |
 | Spillover mode | Not tested | Not present on this installation |
 | Valve mode detection lag | ~10–30s | Scroll-dependent; no event-driven update (would benefit from the frame-watcher) |
 | System fault indicator | Not implemented | "Check System" / "Inspect Cell" LCD frames not surfaced to HomeKit |
-| Spa heater setpoint | Not confirmed | `spa_heater_enabled` shows null; needs a spa-mode test session |
+| Spa heater setpoint | Done | Spa heater enable + setpoint work on AquaConnect; both bodies' setpoints pre-fetched on startup so the thermostats show real values |
 | `/debug/aquaconnect` GET uses `_post('00')` | Minor | The only remaining read path that injects a keypad event; manual diagnostic only, but could switch to `_read()` for zero phantom events anywhere |

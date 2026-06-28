@@ -2,7 +2,7 @@
   "pluginAlias": "ProLogic",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaPlus pool controllers via RS-485 WiFi serial bridge. Requires the Python sidecar service — see sidecar/install.sh.",
+  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaPlus pool controllers. Talks to the panel through the Python sidecar service (AquaConnect HTTP box by default, or an RS-485 serial bridge). See sidecar/install.sh.",
   "footerDisplay": "See the [README](https://github.com/homebridge-fun/homebridge-prologic) for wiring and setup instructions.",
   "schema": {
     "type": "object",
@@ -38,9 +38,9 @@
         "default": "aquaconnect",
         "oneOf": [
           { "title": "AquaConnect (HTTP web box)", "enum": ["aquaconnect"] },
-          { "title": "RS-485 (USR-W610 serial bridge)", "enum": ["rs485"] }
+          { "title": "RS-485 (serial bridge)", "enum": ["rs485"] }
         ],
-        "description": "Which navigation backend the sidecar should use. Changing this restarts the sidecar to apply."
+        "description": "Which navigation backend the sidecar should use. Changing this restarts the sidecar to apply. NOTE: over a TCP serial bridge the RS-485 backend reads reliably but writes (keypresses) are not reliable — the bridge's network latency misses the panel's keypress-response window. Reliable RS-485 writes require a direct serial connection (USB-RS485 on the Pi)."
       },
       "aquaconnectHost": {
         "title": "AquaConnect Host",
@@ -58,7 +58,7 @@
         "title": "RS-485 Bridge Port",
         "type": "integer",
         "default": 8899,
-        "description": "TCP port of the USR-W610 serial bridge (used when backend = rs485)."
+        "description": "TCP port of the RS-485 serial bridge (used when backend = rs485)."
       },
       "circuits": {
         "title": "Circuit switches to expose",
