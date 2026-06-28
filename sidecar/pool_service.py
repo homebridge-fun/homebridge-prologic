@@ -4642,6 +4642,40 @@ def startup_prefetch_thread() -> None:
         log.warning('Startup pre-fetch failed: %s', e)
 
 
+def setpoint_backfill_thread() -> None:
+    """Self-heal a missing heater setpoint.
+
+    The heater's on/off (Auto) state updates passively from the idle scroll, but
+    the target °F is only readable by navigating the Settings menu. So a heater
+    can read 'enabled' with a null setpoint — e.g. turned on AT THE PANEL (no
+    HomeKit action to trigger a read), at startup before the sweep reached it,
+    or after a failed background read. This loop notices that gap and navigates
+    once to read the °F; once the setpoint is known the condition clears, so it
+    stops on its own (no constant menu churn). Defers while the nav lock is busy
+    or the bridge is wedged.
+    """
+    while True:
+        time.sleep(45)
+        with state_lock:
+            wedged = state.bridge_wedged
+            need = []
+            if state.pool_heater_enabled and state.pool_setpoint_f is None:
+                need.append('pool')
+            if state.spa_heater_enabled and state.spa_setpoint_f is None:
+                need.append('spa')
+        if wedged or not need or _nav_lock.busy():
+            continue
+        nav = _get_navigator()
+        if nav is None:
+            continue
+        for which in need:
+            try:
+                nav.read_heater(which)
+                log.info('Backfilled %s heater setpoint (was on with no target)', which)
+            except Exception as e:
+                log.debug('setpoint backfill %s: %s', which, e)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -4745,6 +4779,9 @@ def main() -> None:
         # without waiting for a Homebridge restart.
         threading.Thread(target=startup_prefetch_thread, daemon=True,
                          name='startup-prefetch').start()
+        # Self-heal a heater enabled-but-no-setpoint gap (e.g. enabled at the panel).
+        threading.Thread(target=setpoint_backfill_thread, daemon=True,
+                         name='setpoint-backfill').start()
         # AquaConnect mode: no RS-485 panel thread needed
         app.run(host=args.api_host, port=args.api_port, threaded=True)
         return
@@ -4761,11 +4798,13 @@ def main() -> None:
         threading.Thread(target=refresher_thread, args=(args.heater_refresh,),
                          daemon=True, name='refresher').start()
 
-    # One-shot startup pre-fetch (skip in simulation — SimPanel has no _aq for
-    # the navigator key-sends).
+    # One-shot startup pre-fetch + heater setpoint backfill (skip in simulation
+    # — SimPanel has no _aq for the navigator key-sends).
     if not args.simulate:
         threading.Thread(target=startup_prefetch_thread, daemon=True,
                          name='startup-prefetch').start()
+        threading.Thread(target=setpoint_backfill_thread, daemon=True,
+                         name='setpoint-backfill').start()
 
     log.info('REST API listening on %s:%s (key-burst=%d)',
              args.api_host, args.api_port, KEY_BURST)
