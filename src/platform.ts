@@ -198,21 +198,12 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.spaSpeedFan = new VspSlotAccessory(this, acc, 0, this.cfg.spaSpeedMinPct);
     }
 
-    // Several values live behind menu navigation and don't appear in the idle
-    // scroll, so they stay null until navigated: heater setpoints, chlorinator
-    // %, VSP slot speeds, spa speed. Read them ALL in one menu session via
-    // /prefetch (a single anchor-in/exit-out instead of 5–6 separate trips —
-    // faster and far gentler on the bridge), then let the regular poll flow the
-    // sidecar's cached values to the accessories.
-    const needsHeater = this.cfg.enablePoolHeaterThermostat
-      || this.cfg.enableSpaHeaterThermostat
-      || this.cfg.enableActiveHeaterThermostat;
-    const needsPrefetch = needsHeater || this.cfg.enableChlorinatorFan
-      || this.cfg.enableVspSlotTiles || this.cfg.enableSpaSpeedTile;
-    if (needsPrefetch) {
-      this.sidecar.prefetchAll().catch(err =>
-        this.log.warn('Startup pre-fetch failed:', (err as Error).message));
-    }
+    // Note: the menu-navigable values (heater setpoints, chlorinator %, VSP
+    // slot speeds, spa speed) are pre-fetched by the SIDECAR itself on its
+    // startup (one menu pass via read_all_settings), so they populate on every
+    // sidecar restart — not just when this plugin restarts. We just poll
+    // /status and the cached values flow to the accessories; no plugin-side
+    // pre-fetch call is needed.
 
     // Salt level sensor
     if (this.cfg.enableSaltSensor) {

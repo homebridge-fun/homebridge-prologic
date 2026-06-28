@@ -4628,6 +4628,36 @@ def refresher_thread(interval: float) -> None:
         time.sleep(interval if did_initial else 10)
 
 
+# Seconds to let the backend settle (link up + first frames) before the
+# one-shot startup pre-fetch navigates the menu.
+_STARTUP_PREFETCH_SETTLE_S = 10.0
+
+
+def startup_prefetch_thread() -> None:
+    """One-shot: once the backend is up, read every menu-navigable value
+    (heater setpoints, chlorinator %, VSP slot speeds, spa speed) in a single
+    pass so they populate on EVERY sidecar restart — deploy, crash, reboot —
+    not just when the Homebridge plugin restarts. Best-effort; never raises.
+    """
+    # Wait for a navigator (immediate on AquaConnect; after the panel connects
+    # on RS-485), then let the first frames settle before navigating.
+    for _ in range(120):
+        if _get_navigator() is not None:
+            break
+        time.sleep(1)
+    nav = _get_navigator()
+    if nav is None:
+        log.warning('Startup pre-fetch skipped: navigator unavailable')
+        return
+    time.sleep(_STARTUP_PREFETCH_SETTLE_S)
+    try:
+        result = nav.read_all_settings()
+        got = {k: v for k, v in result.items() if v}
+        log.info('Startup pre-fetch complete: %s', got)
+    except Exception as e:
+        log.warning('Startup pre-fetch failed: %s', e)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -4726,6 +4756,11 @@ def main() -> None:
             else:
                 log.warning('--observe-rs485 set but no RS-485 host given; '
                             'observer not started')
+        # Read all menu-navigable values once on startup (every sidecar
+        # restart), so heater setpoints / chlorinator % / VSP speeds populate
+        # without waiting for a Homebridge restart.
+        threading.Thread(target=startup_prefetch_thread, daemon=True,
+                         name='startup-prefetch').start()
         # AquaConnect mode: no RS-485 panel thread needed
         app.run(host=args.api_host, port=args.api_port, threaded=True)
         return
@@ -4741,6 +4776,12 @@ def main() -> None:
     if args.heater_refresh > 0:
         threading.Thread(target=refresher_thread, args=(args.heater_refresh,),
                          daemon=True, name='refresher').start()
+
+    # One-shot startup pre-fetch (skip in simulation — SimPanel has no _aq for
+    # the navigator key-sends).
+    if not args.simulate:
+        threading.Thread(target=startup_prefetch_thread, daemon=True,
+                         name='startup-prefetch').start()
 
     log.info('REST API listening on %s:%s (key-burst=%d)',
              args.api_host, args.api_port, KEY_BURST)
