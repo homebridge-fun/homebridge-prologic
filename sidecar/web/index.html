@@ -100,9 +100,8 @@
   <div class="card">
     <h2>Conditions</h2>
     <div class="grid">
-      <div class="stat"><span class="n" id="pool_temp">—</span><span class="k">Pool °F</span></div>
+      <div class="stat"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water °F</span></div>
       <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air °F</span></div>
-      <div class="stat"><span class="n" id="spa_temp">—</span><span class="k">Spa °F</span></div>
       <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt ppm</span></div>
     </div>
   </div>
@@ -166,15 +165,17 @@
     $('seg-pool').className = 'seg' + (s.valve_mode === 'pool' ? ' active' : '');
     $('seg-spa').className = 'seg' + (s.valve_mode === 'spa' ? ' active' : '');
 
-    // Conditions
-    txt('pool_temp', num(s.pool_temp));
-    txt('air_temp', num(s.air_temp));
-    txt('spa_temp', num(s.spa_temp));
-    txt('salt_level', num(s.salt_level));
-
     const spa = s.valve_mode === 'spa';
     const deg = v => (v == null ? '—' : v + '°');
     const pctv = v => (v == null ? '—' : v + '%');
+
+    // Conditions — one physical water-temp sensor; the active body labels it.
+    // Show a single value tagged with the live mode rather than letting a stale
+    // Pool reading linger next to the live Spa reading (and vice-versa).
+    txt('water_temp', num(spa ? s.spa_temp : s.pool_temp));
+    txt('water_k', 'Water °F · ' + (spa ? 'Spa' : 'Pool'));
+    txt('air_temp', num(s.air_temp));
+    txt('salt_level', num(s.salt_level));
 
     // Heat — both setpoints, active body flagged
     txt('heat_pool_set', deg(s.pool_setpoint_f));

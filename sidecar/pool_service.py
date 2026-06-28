@@ -4588,15 +4588,23 @@ def health() -> Response:
 _WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
 
 
+def _no_cache(resp: Response) -> Response:
+    # The cockpit is iterated on often; without this the browser serves a stale
+    # cached copy after a deploy ("I don't see my changes"). no-cache forces a
+    # revalidate every load (cheap — it 304s when unchanged).
+    resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+    return resp
+
+
 @app.route('/')
 @app.route('/ui')
 def web_index() -> Response:
-    return send_from_directory(_WEB_DIR, 'index.html')
+    return _no_cache(send_from_directory(_WEB_DIR, 'index.html'))
 
 
 @app.route('/ui/<path:filename>')
 def web_asset(filename: str) -> Response:
-    return send_from_directory(_WEB_DIR, filename)
+    return _no_cache(send_from_directory(_WEB_DIR, filename))
 
 
 # ---------------------------------------------------------------------------
