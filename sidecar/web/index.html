@@ -32,11 +32,10 @@
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
   .card h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
     color: var(--dim); margin: 0 0 10px; font-weight: 600; }
-  .row { display: flex; align-items: baseline; justify-content: space-between; padding: 5px 0; }
+  .row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; min-height: 34px; }
   .row + .row { border-top: 1px solid var(--panel2); }
   .label { color: var(--dim); }
   .val { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .big { font-size: 26px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
   .stat { display: flex; flex-direction: column; gap: 2px; }
   .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -45,8 +44,9 @@
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
   .pill.off { background: rgba(84,112,140,.2); color: var(--off); }
+  .pill.ctl { padding: 6px 14px; font-size: 13px; }
   .mode { display: flex; gap: 6px; }
-  .mode .seg { flex: 1; text-align: center; padding: 8px; border-radius: 9px;
+  .mode .seg { flex: 1; text-align: center; padding: 11px; border-radius: 9px;
     background: var(--panel2); color: var(--dim); font-weight: 600; }
   .mode .seg.active { background: var(--accent); color: #04263a; }
   .slots { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -65,9 +65,14 @@
   .bd.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
   .bd.active .bd-k::after { content: ' ● active'; color: var(--accent); font-size: 10px; letter-spacing: 0; }
-  .bd-v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
-  .bd-s { font-size: 12px; margin-top: 2px; color: var(--off); }
-  .bd-s.on { color: var(--ok); }
+  .bd-v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bd-v.pend { color: var(--accent); }
+  .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+  .step { width: 36px; height: 36px; flex: 0 0 auto; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    font-size: 20px; font-weight: 700; line-height: 1; display: flex;
+    align-items: center; justify-content: center; }
+  .step:active { background: var(--accent); color: #04263a; }
   /* Grouped speeds (pool slots vs spa) */
   .speedgrp + .speedgrp { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel2); }
   .grp-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 7px; }
@@ -75,25 +80,35 @@
     border-radius: 12px; padding: 12px 14px; font-weight: 600; display: none; }
   .banner.bad { background: rgba(248,113,113,.12); border-color: var(--bad); color: var(--bad); }
   .banner.show { display: block; }
-  .muted { color: var(--off); }
   footer { text-align: center; color: var(--off); font-size: 12px; padding: 8px 0 18px; }
-  .ro { font-size: 11px; color: var(--off); border: 1px solid var(--line); border-radius: 999px;
-    padding: 1px 8px; }
+  /* Interactivity */
+  .ctl { cursor: pointer; user-select: none; }
+  body.busy .ctl { pointer-events: none; opacity: .45; }
+  #busy { position: sticky; top: 53px; z-index: 4; display: none; margin: 0 14px 0;
+    background: rgba(56,189,248,.14); border: 1px solid var(--accent); color: var(--accent);
+    border-radius: 10px; padding: 9px 13px; font-weight: 600; }
+  #busy.show { display: block; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: var(--bad); color: #fff; padding: 11px 16px; border-radius: 10px;
+    font-weight: 600; z-index: 10; opacity: 0; transition: opacity .2s; pointer-events: none;
+    max-width: 92%; text-align: center; }
+  #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
 <header>
   <h1>Pool Cockpit</h1>
-  <div class="conn"><span class="ro">read-only</span><span id="dot" class="dot"></span><span id="conn">connecting…</span></div>
+  <div class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></div>
 </header>
+<div id="busy"></div>
 <main>
   <div id="banner" class="banner"></div>
 
   <div class="card">
     <h2>Mode</h2>
     <div class="mode">
-      <div class="seg" id="seg-pool">Pool</div>
-      <div class="seg" id="seg-spa">Spa</div>
+      <div class="seg ctl" id="seg-pool">Pool</div>
+      <div class="seg ctl" id="seg-spa">Spa</div>
     </div>
   </div>
 
@@ -109,24 +124,28 @@
   <div class="card">
     <h2>Heat</h2>
     <div class="duo">
-      <div class="bd" id="heat_pool"><div class="bd-k">Pool</div><div class="bd-v" id="heat_pool_set">—</div></div>
-      <div class="bd" id="heat_spa"><div class="bd-k">Spa</div><div class="bd-v" id="heat_spa_set">—</div></div>
+      <div class="bd" id="heat_pool"><div class="bd-k">Pool</div>
+        <div class="setrow"><button class="step ctl" id="hp_dn">−</button><div class="bd-v" id="heat_pool_set">—</div><button class="step ctl" id="hp_up">+</button></div></div>
+      <div class="bd" id="heat_spa"><div class="bd-k">Spa</div>
+        <div class="setrow"><button class="step ctl" id="hs_dn">−</button><div class="bd-v" id="heat_spa_set">—</div><button class="step ctl" id="hs_up">+</button></div></div>
     </div>
-    <div class="row" style="margin-top:10px"><span class="label">Heater Mode</span><span class="pill" id="heat_mode">—</span></div>
+    <div class="row" style="margin-top:10px"><span class="label">Heater Mode</span><span class="pill ctl" id="heat_mode">—</span></div>
     <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
   </div>
 
   <div class="card">
     <h2>Chlorinator</h2>
     <div class="duo">
-      <div class="bd" id="chlor_pool"><div class="bd-k">Pool</div><div class="bd-v" id="chlor_pool_v">—</div></div>
-      <div class="bd" id="chlor_spa"><div class="bd-k">Spa</div><div class="bd-v" id="chlor_spa_v">—</div></div>
+      <div class="bd" id="chlor_pool"><div class="bd-k">Pool</div>
+        <div class="setrow"><button class="step ctl" id="cp_dn">−</button><div class="bd-v" id="chlor_pool_v">—</div><button class="step ctl" id="cp_up">+</button></div></div>
+      <div class="bd" id="chlor_spa"><div class="bd-k">Spa</div>
+        <div class="setrow"><button class="step ctl" id="cs_dn">−</button><div class="bd-v" id="chlor_spa_v">—</div><button class="step ctl" id="cs_up">+</button></div></div>
     </div>
   </div>
 
   <div class="card">
     <h2>Water</h2>
-    <div class="row"><span class="label">Filter</span><span class="pill" id="filter_state">—</span></div>
+    <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
     <div class="row"><span class="label">Running speed</span><span class="val" id="pump_speed">—</span></div>
   </div>
 
@@ -142,53 +161,145 @@
   </div>
 </main>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
+<div id="toast"></div>
 
 <script>
 (() => {
   const $ = id => document.getElementById(id);
   const txt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
   const num = v => (v === null || v === undefined) ? '—' : v;
+  const deg = v => (v == null ? '—' : v + '°');
+  const pctv = v => (v == null ? '—' : v + '%');
   let lastStatusTs = 0;
+  let last = {};                 // most recent /status
+  let busy = false;              // a command is in flight (panel is single-lane)
+  const pending = {};            // field -> {value, timer} for debounced steppers
 
   function setPill(id, on, onLabel, offLabel) {
     const e = $(id); if (!e) return;
     e.textContent = on ? onLabel : offLabel;
-    e.className = 'pill ' + (on ? 'on' : 'off');
+    e.className = 'pill' + (e.classList.contains('ctl') ? ' ctl' : '') + (on ? ' on' : ' off');
   }
 
+  // ── Command plumbing ──────────────────────────────────────────────────────
+  function setBusy(on, label) {
+    busy = on;
+    document.body.classList.toggle('busy', on);
+    const e = $('busy');
+    e.classList.toggle('show', on);
+    if (on) e.textContent = '⟳ ' + label + '…';
+  }
+  let toastTimer;
+  function toast(msg) {
+    const e = $('toast'); e.textContent = msg; e.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => e.classList.remove('show'), 4500);
+  }
+  async function fetchStatus() {
+    const r = await fetch('/status', { cache: 'no-store' });
+    if (r.ok) renderStatus(await r.json());
+  }
+  // One command at a time — mirrors the sidecar's single nav lock. Disables all
+  // controls, runs the POST, then re-reads state to confirm (or revert on fail).
+  async function cmd(label, path, body) {
+    if (busy) return;
+    setBusy(true, label);
+    try {
+      const r = await fetch(path, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+      let j = {}; try { j = await r.json(); } catch (e) {}
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      await fetchStatus();
+    } catch (e) {
+      toast('⚠ ' + label + ' failed' + (e.message ? ': ' + e.message : ''));
+      try { await fetchStatus(); } catch (_) {}   // revert any optimistic value
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── Controls ──────────────────────────────────────────────────────────────
+  function setMode(mode) {
+    if (busy || last.valve_mode === mode) return;
+    cmd('Switch to ' + mode, '/mode', { mode });
+  }
+  function toggleHeat() {
+    if (busy) return;
+    const which = last.valve_mode === 'spa' ? 'spa' : 'pool';
+    const on = !(which === 'spa' ? last.spa_heater_enabled : last.pool_heater_enabled);
+    cmd((on ? 'Set ' : 'Turn off ') + which + ' heater' + (on ? ' to Auto' : ''),
+        `/heater/${which}/enable`, { on });
+  }
+  function toggleFilter() {
+    if (busy) return;
+    const on = !(last.circuits && last.circuits.FILTER);
+    cmd((on ? 'Turn on' : 'Turn off') + ' filter', '/circuit/FILTER', { on });
+  }
+
+  const DISP = { heat_pool:'heat_pool_set', heat_spa:'heat_spa_set',
+                 chlor_pool:'chlor_pool_v', chlor_spa:'chlor_spa_v' };
+  const SRC  = { heat_pool:'pool_setpoint_f', heat_spa:'spa_setpoint_f',
+                 chlor_pool:'chlorinator_percent', chlor_spa:'spa_chlorinator_percent' };
+  function chlorStep(cur, dir) {
+    cur = cur || 0;
+    if (dir > 0) return cur < 10 ? Math.min(10, cur + 1) : Math.min(100, cur + 5);
+    return cur <= 10 ? Math.max(0, cur - 1) : cur - 5;
+  }
+  function step(field, dir) {
+    if (busy) return;
+    const heat = field.startsWith('heat');
+    let v = pending[field] ? pending[field].value : last[SRC[field]];
+    if (v == null) v = heat ? 80 : 0;
+    v = heat ? Math.max(65, Math.min(104, v + dir)) : chlorStep(v, dir);
+    pending[field] = pending[field] || {};
+    pending[field].value = v;
+    const el = $(DISP[field]);
+    el.textContent = heat ? v + '°' : v + '%';
+    el.classList.add('pend');
+    clearTimeout(pending[field].timer);
+    pending[field].timer = setTimeout(() => sendStep(field), 900);
+  }
+  async function sendStep(field) {
+    const v = pending[field].value;
+    delete pending[field];                       // clear before send so polls show truth
+    $(DISP[field]).classList.remove('pend');
+    const which = field.endsWith('pool') ? 'pool' : 'spa';
+    if (field.startsWith('heat')) {
+      await cmd(`Set ${which} heat to ${v}°`, `/heater/${which}/setpoint`, { temp_f: v });
+    } else {
+      await cmd(`Set ${which} chlorinator to ${v}%`, `/chlorinator/${which}`, { percent: v });
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
   function renderStatus(s) {
+    last = s;
     lastStatusTs = Date.now();
     const connected = s.connected;
     $('dot').className = 'dot ' + (s.bridge_wedged ? 'bad' : (connected ? 'ok' : 'warn'));
     txt('conn', connected ? 'connected' : 'no panel');
 
-    // Mode
-    $('seg-pool').className = 'seg' + (s.valve_mode === 'pool' ? ' active' : '');
-    $('seg-spa').className = 'seg' + (s.valve_mode === 'spa' ? ' active' : '');
+    $('seg-pool').className = 'seg ctl' + (s.valve_mode === 'pool' ? ' active' : '');
+    $('seg-spa').className = 'seg ctl' + (s.valve_mode === 'spa' ? ' active' : '');
 
     const spa = s.valve_mode === 'spa';
-    const deg = v => (v == null ? '—' : v + '°');
-    const pctv = v => (v == null ? '—' : v + '%');
 
-    // Conditions — one physical water-temp sensor; the active body labels it.
-    // Show a single value tagged with the live mode rather than letting a stale
-    // Pool reading linger next to the live Spa reading (and vice-versa).
+    // Conditions — single water temp tagged with the live mode
     txt('water_temp', num(spa ? s.spa_temp : s.pool_temp));
     txt('water_k', 'Water °F · ' + (spa ? 'Spa' : 'Pool'));
     txt('air_temp', num(s.air_temp));
     txt('salt_level', num(s.salt_level));
 
-    // Heat — both setpoints, active body flagged; active heater's mode below
-    txt('heat_pool_set', deg(s.pool_setpoint_f));
-    txt('heat_spa_set', deg(s.spa_setpoint_f));
+    // Heat — both setpoints (skip a field with a pending edit), active flagged
+    if (!pending.heat_pool) txt('heat_pool_set', deg(s.pool_setpoint_f));
+    if (!pending.heat_spa)  txt('heat_spa_set', deg(s.spa_setpoint_f));
     $('heat_pool').className = 'bd' + (s.valve_mode === 'pool' ? ' active' : '');
     $('heat_spa').className = 'bd' + (s.valve_mode === 'spa' ? ' active' : '');
     setPill('heat_mode', !!(spa ? s.spa_heater_enabled : s.pool_heater_enabled), 'Auto', 'Off');
     setPill('heat_fire', !!s.heater_active, 'Yes', 'No');
 
-    // Chlorinator — both, active body flagged
-    txt('chlor_pool_v', pctv(s.chlorinator_percent));
-    txt('chlor_spa_v', pctv(s.spa_chlorinator_percent));
+    // Chlorinator
+    if (!pending.chlor_pool) txt('chlor_pool_v', pctv(s.chlorinator_percent));
+    if (!pending.chlor_spa)  txt('chlor_spa_v', pctv(s.spa_chlorinator_percent));
     $('chlor_pool').className = 'bd' + (s.valve_mode === 'pool' ? ' active' : '');
     $('chlor_spa').className = 'bd' + (s.valve_mode === 'spa' ? ' active' : '');
 
@@ -197,7 +308,7 @@
     setPill('filter_state', !!filterOn, 'On', 'Off');
     txt('pump_speed', pctv(s.pump_speed));
 
-    // Speeds — pool slots 1–4 (running slot highlighted) + spa speed
+    // Speeds (read-only)
     const slots = $('slots'); slots.innerHTML = '';
     for (let i = 1; i <= 4; i++) {
       const pct = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
@@ -216,7 +327,7 @@
       spaSlots.appendChild(d);
     }
 
-    // Banner
+    // Wedge banner
     const b = $('banner');
     if (s.bridge_wedged) {
       const cd = s.wedge_cooldown_remaining_s;
@@ -230,18 +341,14 @@
   }
 
   async function pollStatus() {
-    try {
-      const r = await fetch('/status', { cache: 'no-store' });
-      if (r.ok) renderStatus(await r.json());
-    } catch (e) { /* keep last values; dot handled by age tick */ }
+    if (busy) return;                 // don't fight a command in flight
+    try { await fetchStatus(); } catch (e) {}
   }
 
-  // Fallback for the LCD mirror: poll /display when the SSE stream is quiet so
-  // the panel display is never blank. Live SSE frames (below) take over and
-  // refresh it immediately whenever the panel actually changes.
+  // LCD fallback poll (SSE preferred)
   let lastFrameTs = 0;
   async function pollDisplay() {
-    if (Date.now() - lastFrameTs < 4000) return;   // SSE is live; don't fight it
+    if (Date.now() - lastFrameTs < 4000) return;
     try {
       const r = await fetch('/display', { cache: 'no-store' });
       if (!r.ok) return;
@@ -250,8 +357,6 @@
       if (t) $('lcd').firstChild.nodeValue = t;
     } catch (e) {}
   }
-
-  // Live LCD via SSE
   function connectStream() {
     try {
       const es = new EventSource('/stream');
@@ -269,12 +374,26 @@
     } catch (e) { setTimeout(connectStream, 3000); }
   }
 
+  // Wire controls
+  $('seg-pool').onclick = () => setMode('pool');
+  $('seg-spa').onclick = () => setMode('spa');
+  $('heat_mode').onclick = toggleHeat;
+  $('filter_state').onclick = toggleFilter;
+  $('hp_dn').onclick = () => step('heat_pool', -1);
+  $('hp_up').onclick = () => step('heat_pool', 1);
+  $('hs_dn').onclick = () => step('heat_spa', -1);
+  $('hs_up').onclick = () => step('heat_spa', 1);
+  $('cp_dn').onclick = () => step('chlor_pool', -1);
+  $('cp_up').onclick = () => step('chlor_pool', 1);
+  $('cs_dn').onclick = () => step('chlor_spa', -1);
+  $('cs_up').onclick = () => step('chlor_spa', 1);
+
   // Freshness ticker
   setInterval(() => {
     if (!lastStatusTs) return;
     const age = Math.round((Date.now() - lastStatusTs) / 1000);
     txt('age', age <= 1 ? 'just now' : age + 's ago');
-    if (age > 12) { $('dot').className = 'dot warn'; txt('conn', 'stale'); }
+    if (!busy && age > 12) { $('dot').className = 'dot warn'; txt('conn', 'stale'); }
   }, 1000);
 
   pollStatus();
