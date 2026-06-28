@@ -199,61 +199,19 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     }
 
     // Several values live behind menu navigation and don't appear in the idle
-    // scroll, so they stay null until navigated. Pre-fetch them sequentially on
-    // startup so tiles show real values immediately; the sidecar caches each
-    // result and the regular poll picks it up from there.
-    //   - VSP slot speeds (1–4): only when slot tiles are enabled
-    //   - Spa Speed: when the spa speed tile is enabled
-    //   - Heater setpoints: thermostat target-temp (pool + spa)
-    //   - Chlorinator %: spa never in idle scroll; pool also pre-fetched
-    //
-    // All sequential so nav operations never contend for _nav_lock.
+    // scroll, so they stay null until navigated: heater setpoints, chlorinator
+    // %, VSP slot speeds, spa speed. Read them ALL in one menu session via
+    // /prefetch (a single anchor-in/exit-out instead of 5–6 separate trips —
+    // faster and far gentler on the bridge), then let the regular poll flow the
+    // sidecar's cached values to the accessories.
     const needsHeater = this.cfg.enablePoolHeaterThermostat
       || this.cfg.enableSpaHeaterThermostat
       || this.cfg.enableActiveHeaterThermostat;
-    const bodies = this.cfg.activeBodies.filter(
-      (b): b is 'pool' | 'spa' => b === 'pool' || b === 'spa');
     const needsPrefetch = needsHeater || this.cfg.enableChlorinatorFan
       || this.cfg.enableVspSlotTiles || this.cfg.enableSpaSpeedTile;
     if (needsPrefetch) {
-      (async () => {
-        if (this.cfg.enableVspSlotTiles) {
-          try {
-            const result = await this.sidecar.getAllVspSlots();
-            for (const slotAcc of this.vspSlots) {
-              slotAcc.updateSpeed(result.slots[String(slotAcc.slot)]);
-            }
-          } catch (err) {
-            this.log.warn('Could not pre-fetch VSP slot speeds:', (err as Error).message);
-          }
-        }
-        if (this.cfg.enableSpaSpeedTile) {
-          try {
-            const result = await this.sidecar.getSpaSpeed();
-            this.spaSpeedFan?.updateSpeed(result.spa_speed);
-          } catch (err) {
-            this.log.warn('Could not pre-fetch Spa Speed:', (err as Error).message);
-          }
-        }
-        for (const which of bodies) {
-          if (needsHeater) {
-            try {
-              await this.sidecar.getHeaterState(which);
-            } catch (err) {
-              this.log.warn(`Could not pre-fetch ${which} heater setpoint:`,
-                (err as Error).message);
-            }
-          }
-          if (this.cfg.enableChlorinatorFan) {
-            try {
-              await this.sidecar.getChlorinatorPercent(which);
-            } catch (err) {
-              this.log.warn(`Could not pre-fetch ${which} chlorinator %:`,
-                (err as Error).message);
-            }
-          }
-        }
-      })();
+      this.sidecar.prefetchAll().catch(err =>
+        this.log.warn('Startup pre-fetch failed:', (err as Error).message));
     }
 
     // Salt level sensor

@@ -29,6 +29,16 @@ export class SidecarClient {
     return res.data;
   }
 
+  /**
+   * Read every menu-navigable value (heater setpoints, chlorinator %, VSP slot
+   * speeds, spa speed) in a single menu session. Used once at startup instead
+   * of several separate read calls. The sidecar caches the results into its
+   * state, which the regular poll then flows to the accessories.
+   */
+  async prefetchAll(): Promise<void> {
+    await this.http.post('/prefetch');
+  }
+
   async setCircuit(name: string, on: boolean): Promise<void> {
     await this.http.post(`/circuit/${encodeURIComponent(name)}`, { on });
   }

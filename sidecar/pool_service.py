@@ -2470,6 +2470,107 @@ class MenuNavigator:
         finally:
             self.fast_exit()
 
+    # ── Consolidated startup pre-fetch ───────────────────────────────────────
+
+    def read_all_settings(self) -> dict:
+        """Read every menu-navigable value in ONE menu session.
+
+        Replaces the 5–6 separate anchor/read/exit trips the plugin made at
+        startup (heater ×2, chlorinator ×2, VSP slots, spa speed). ONE anchor,
+        a single pass around the ring, one exit. The Settings ring navigates
+        both directions, so:
+
+          1. Walk RIGHT reading Spa Heater1, Pool Heater1, then Spa Chlorinator,
+             Pool Chlorinator. `_press_until` walks straight past VSP Speed
+             Settings + Super Chlorinate (both allow-listed) to the next target.
+          2. VSP submenu LAST: walk **LEFT** from Pool Chlorinator back to VSP
+             Speed Settings (rather than re-anchoring), descend, read Filter
+             Speed1–4 then Spa Speed. Leaving VSP for last means we exit the
+             submenu straight to fast_exit — no fragile submenu→ring return.
+
+        Best-effort: a failure on one item is logged and the pass continues, so
+        a single bad read doesn't cost every value. Heater reads reveal the
+        stored °F via PLUS and restore Manual Off (hardened, never left on).
+        Always fast_exits.
+        """
+        out = {'heaters': {}, 'chlorinators': {}, 'vsp_slots': {}, 'spa_speed': None}
+        try:
+            with _nav_lock:
+                # ── Single pass: heaters + chlorinators going RIGHT ─────────
+                self._anchor()
+                for which in ('spa', 'pool'):
+                    label = self._HEATER_LABEL[which]
+                    try:
+                        txt = self._press_until('RIGHT', lambda t, l=label: l in t,
+                                                self._NAV_MAX, label)
+                        was_off = 'Manual Off' in txt
+                        if was_off:
+                            txt = self._send('PLUS')   # reveal stored °F (enables)
+                        setpoint_f = self._degf(txt)
+                        if was_off:
+                            txt = self._restore_heater_off(label)
+                        enabled = 'Manual Off' not in txt
+                        with state_lock:
+                            if which == 'pool':
+                                state.pool_heater_enabled = enabled
+                                state.pool_setpoint_f = setpoint_f
+                            else:
+                                state.spa_heater_enabled = enabled
+                                state.spa_setpoint_f = setpoint_f
+                        out['heaters'][which] = {'enabled': enabled,
+                                                 'setpoint_f': setpoint_f}
+                    except Exception as e:
+                        log.warning('read_all_settings heater %s: %s', which, e)
+                for which in ('spa', 'pool'):
+                    label = self._CHLOR_LABEL[which]
+                    try:
+                        txt = self._press_until('RIGHT', lambda t, l=label: l in t,
+                                                self._NAV_MAX, label)
+                        pct = self._pct(txt)
+                        if pct is not None:
+                            with state_lock:
+                                if which == 'pool':
+                                    state.chlorinator_percent = float(pct)
+                                else:
+                                    state.spa_chlorinator_percent = float(pct)
+                            out['chlorinators'][which] = pct
+                    except Exception as e:
+                        log.warning('read_all_settings chlorinator %s: %s', which, e)
+
+                # ── VSP submenu LAST: walk LEFT back to it, no re-anchor ────
+                try:
+                    self._press_until('LEFT', lambda t: 'VSP Speed Settings' in t,
+                                      self._NAV_MAX, 'VSP Speed Settings')
+                    self._press_until('PLUS', lambda t: 'Filter Speed' in t,
+                                      6, 'VSP submenu')
+                    txt = self._press_until('RIGHT', lambda t: 'Filter Speed1' in t,
+                                            2, 'Filter Speed1')
+                    slots = {}
+                    for slot in (1, 2, 3, 4):
+                        if slot > 1:
+                            txt = self._press_until(
+                                'RIGHT', lambda t, s=slot: f'Filter Speed{s}' in t,
+                                4, f'Filter Speed{slot}')
+                        pct = self._pct(txt)
+                        if pct is not None:
+                            slots[slot] = pct
+                    with state_lock:
+                        state.vsp_slot_pct.update(slots)
+                    out['vsp_slots'] = slots
+                    # Spa Speed is the sub-item after Filter Speed4.
+                    txt = self._press_until('RIGHT', lambda t: 'Spa Speed' in t,
+                                            4, 'Spa Speed')
+                    spa_pct = self._pct(txt)
+                    if spa_pct is not None:
+                        with state_lock:
+                            state.spa_speed = spa_pct
+                        out['spa_speed'] = spa_pct
+                except Exception as e:
+                    log.warning('read_all_settings vsp/spa-speed: %s', e)
+        finally:
+            self.fast_exit()
+        return out
+
 
 def _get_panel():
     with panel_lock:
@@ -4187,6 +4288,22 @@ def set_heater_setpoint_legacy() -> Response:
     if temp_f is None:
         return jsonify({'error': 'temp_f and which ("pool"|"spa") are required'}), 400
     return set_heater_setpoint(which)
+
+
+@app.route('/prefetch', methods=['POST'])
+def prefetch_all() -> Response:
+    """Read every menu-navigable value (heater setpoints, chlorinator %, VSP
+    slot speeds, spa speed) in a SINGLE menu session. The plugin calls this
+    once at startup instead of 5–6 separate read endpoints — far fewer menu
+    entries/exits, so it's faster and a lot gentler on the bridge."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        return jsonify(nav.read_all_settings())
+    except Exception as e:
+        log.error(f'prefetch: {e}')
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/vsp/slots')
