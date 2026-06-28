@@ -65,13 +65,15 @@
   .bd.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
   .bd.active .bd-k::after { content: ' ● active'; color: var(--accent); font-size: 10px; letter-spacing: 0; }
-  .bd-v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bd-v { flex: 1; text-align: center; font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .bd-v.pend { color: var(--accent); }
   .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
   .step { width: 36px; height: 36px; flex: 0 0 auto; border-radius: 9px;
     border: 1px solid var(--line); background: var(--panel); color: var(--ink);
-    font-size: 20px; font-weight: 700; line-height: 1; display: flex;
+    font-size: 20px; font-weight: 700; line-height: 1; display: none;
     align-items: center; justify-content: center; }
+  .bd.editing .step { display: flex; }
+  .bd.editing { border-color: var(--accent); }
   .step:active { background: var(--accent); color: #04263a; }
   /* Grouped speeds (pool slots vs spa) */
   .speedgrp + .speedgrp { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel2); }
@@ -124,9 +126,9 @@
   <div class="card">
     <h2>Heat</h2>
     <div class="duo">
-      <div class="bd" id="heat_pool"><div class="bd-k">Pool</div>
+      <div class="bd ctl" id="heat_pool" data-field="heat_pool"><div class="bd-k">Pool</div>
         <div class="setrow"><button class="step ctl" id="hp_dn">−</button><div class="bd-v" id="heat_pool_set">—</div><button class="step ctl" id="hp_up">+</button></div></div>
-      <div class="bd" id="heat_spa"><div class="bd-k">Spa</div>
+      <div class="bd ctl" id="heat_spa" data-field="heat_spa"><div class="bd-k">Spa</div>
         <div class="setrow"><button class="step ctl" id="hs_dn">−</button><div class="bd-v" id="heat_spa_set">—</div><button class="step ctl" id="hs_up">+</button></div></div>
     </div>
     <div class="row" style="margin-top:10px"><span class="label">Heater Mode</span><span class="pill ctl" id="heat_mode">—</span></div>
@@ -136,9 +138,9 @@
   <div class="card">
     <h2>Chlorinator</h2>
     <div class="duo">
-      <div class="bd" id="chlor_pool"><div class="bd-k">Pool</div>
+      <div class="bd ctl" id="chlor_pool" data-field="chlor_pool"><div class="bd-k">Pool</div>
         <div class="setrow"><button class="step ctl" id="cp_dn">−</button><div class="bd-v" id="chlor_pool_v">—</div><button class="step ctl" id="cp_up">+</button></div></div>
-      <div class="bd" id="chlor_spa"><div class="bd-k">Spa</div>
+      <div class="bd ctl" id="chlor_spa" data-field="chlor_spa"><div class="bd-k">Spa</div>
         <div class="setrow"><button class="step ctl" id="cs_dn">−</button><div class="bd-v" id="chlor_spa_v">—</div><button class="step ctl" id="cs_up">+</button></div></div>
     </div>
   </div>
@@ -292,16 +294,16 @@
     // Heat — both setpoints (skip a field with a pending edit), active flagged
     if (!pending.heat_pool) txt('heat_pool_set', deg(s.pool_setpoint_f));
     if (!pending.heat_spa)  txt('heat_spa_set', deg(s.spa_setpoint_f));
-    $('heat_pool').className = 'bd' + (s.valve_mode === 'pool' ? ' active' : '');
-    $('heat_spa').className = 'bd' + (s.valve_mode === 'spa' ? ' active' : '');
+    $('heat_pool').classList.toggle('active', s.valve_mode === 'pool');
+    $('heat_spa').classList.toggle('active', s.valve_mode === 'spa');
     setPill('heat_mode', !!(spa ? s.spa_heater_enabled : s.pool_heater_enabled), 'Auto', 'Off');
     setPill('heat_fire', !!s.heater_active, 'Yes', 'No');
 
     // Chlorinator
     if (!pending.chlor_pool) txt('chlor_pool_v', pctv(s.chlorinator_percent));
     if (!pending.chlor_spa)  txt('chlor_spa_v', pctv(s.spa_chlorinator_percent));
-    $('chlor_pool').className = 'bd' + (s.valve_mode === 'pool' ? ' active' : '');
-    $('chlor_spa').className = 'bd' + (s.valve_mode === 'spa' ? ' active' : '');
+    $('chlor_pool').classList.toggle('active', s.valve_mode === 'pool');
+    $('chlor_spa').classList.toggle('active', s.valve_mode === 'spa');
 
     // Water
     const filterOn = s.circuits && s.circuits.FILTER;
@@ -374,19 +376,34 @@
     } catch (e) { setTimeout(connectStream, 3000); }
   }
 
+  // Tap-to-edit: the ± steppers stay hidden until you tap a controllable card,
+  // and auto-hide after a few seconds idle (or when you tap another card).
+  let editTimer;
+  function setEditing(field) {
+    document.querySelectorAll('.bd').forEach(el =>
+      el.classList.toggle('editing', !!field && el.dataset.field === field));
+    clearTimeout(editTimer);
+    if (field) editTimer = setTimeout(() => setEditing(null), 6000);
+  }
+  function stepBtn(field, dir) {
+    return (e) => { e.stopPropagation(); step(field, dir); setEditing(field); };
+  }
+
   // Wire controls
-  $('seg-pool').onclick = () => setMode('pool');
-  $('seg-spa').onclick = () => setMode('spa');
-  $('heat_mode').onclick = toggleHeat;
-  $('filter_state').onclick = toggleFilter;
-  $('hp_dn').onclick = () => step('heat_pool', -1);
-  $('hp_up').onclick = () => step('heat_pool', 1);
-  $('hs_dn').onclick = () => step('heat_spa', -1);
-  $('hs_up').onclick = () => step('heat_spa', 1);
-  $('cp_dn').onclick = () => step('chlor_pool', -1);
-  $('cp_up').onclick = () => step('chlor_pool', 1);
-  $('cs_dn').onclick = () => step('chlor_spa', -1);
-  $('cs_up').onclick = () => step('chlor_spa', 1);
+  $('seg-pool').onclick = () => { setEditing(null); setMode('pool'); };
+  $('seg-spa').onclick = () => { setEditing(null); setMode('spa'); };
+  $('heat_mode').onclick = () => { setEditing(null); toggleHeat(); };
+  $('filter_state').onclick = () => { setEditing(null); toggleFilter(); };
+  document.querySelectorAll('.bd[data-field]').forEach(card =>
+    card.onclick = () => setEditing(card.dataset.field));
+  $('hp_dn').onclick = stepBtn('heat_pool', -1);
+  $('hp_up').onclick = stepBtn('heat_pool', 1);
+  $('hs_dn').onclick = stepBtn('heat_spa', -1);
+  $('hs_up').onclick = stepBtn('heat_spa', 1);
+  $('cp_dn').onclick = stepBtn('chlor_pool', -1);
+  $('cp_up').onclick = stepBtn('chlor_pool', 1);
+  $('cs_dn').onclick = stepBtn('chlor_spa', -1);
+  $('cs_up').onclick = stepBtn('chlor_spa', 1);
 
   // Freshness ticker
   setInterval(() => {
