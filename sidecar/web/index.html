@@ -58,6 +58,19 @@
     border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
     color: #7dd3fc; letter-spacing: .04em; min-height: 22px; white-space: pre-wrap; word-break: break-word; }
   .lcd .t { font-size: 11px; color: var(--dim); margin-top: 6px; letter-spacing: 0; }
+  /* Dual-body (pool/spa) panel with the active one flagged */
+  .duo { display: flex; gap: 10px; }
+  .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; }
+  .bd.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  .bd.active .bd-k::after { content: ' ● active'; color: var(--accent); font-size: 10px; letter-spacing: 0; }
+  .bd-v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .bd-s { font-size: 12px; margin-top: 2px; color: var(--off); }
+  .bd-s.on { color: var(--ok); }
+  /* Grouped speeds (pool slots vs spa) */
+  .speedgrp + .speedgrp { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel2); }
+  .grp-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 7px; }
   .banner { background: rgba(251,191,36,.12); border: 1px solid var(--warn); color: var(--warn);
     border-radius: 12px; padding: 12px 14px; font-weight: 600; display: none; }
   .banner.bad { background: rgba(248,113,113,.12); border-color: var(--bad); color: var(--bad); }
@@ -96,22 +109,31 @@
 
   <div class="card">
     <h2>Heat</h2>
-    <div class="row"><span class="label">State</span><span class="pill" id="heat_state">—</span></div>
-    <div class="row"><span class="label">Setpoint (active)</span><span class="val big" id="heat_set">—</span></div>
-    <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
+    <div class="duo">
+      <div class="bd" id="heat_pool"><div class="bd-k">Pool</div><div class="bd-v" id="heat_pool_set">—</div><div class="bd-s" id="heat_pool_st">—</div></div>
+      <div class="bd" id="heat_spa"><div class="bd-k">Spa</div><div class="bd-v" id="heat_spa_set">—</div><div class="bd-s" id="heat_spa_st">—</div></div>
+    </div>
+    <div class="row" style="margin-top:10px"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Chlorinator</h2>
+    <div class="duo">
+      <div class="bd" id="chlor_pool"><div class="bd-k">Pool</div><div class="bd-v" id="chlor_pool_v">—</div></div>
+      <div class="bd" id="chlor_spa"><div class="bd-k">Spa</div><div class="bd-v" id="chlor_spa_v">—</div></div>
+    </div>
   </div>
 
   <div class="card">
     <h2>Water</h2>
     <div class="row"><span class="label">Filter</span><span class="pill" id="filter_state">—</span></div>
     <div class="row"><span class="label">Running speed</span><span class="val" id="pump_speed">—</span></div>
-    <div class="row"><span class="label">Chlorinator (active)</span><span class="val" id="chlor">—</span></div>
-    <div class="row"><span class="label">Spa speed (set)</span><span class="val" id="spa_speed">—</span></div>
   </div>
 
   <div class="card">
-    <h2>VSP Slots</h2>
-    <div class="slots" id="slots"></div>
+    <h2>Speeds</h2>
+    <div class="speedgrp"><div class="grp-k">Pool</div><div class="slots" id="slots"></div></div>
+    <div class="speedgrp"><div class="grp-k">Spa</div><div class="slots" id="spa_slots"></div></div>
   </div>
 
   <div class="card">
@@ -150,31 +172,49 @@
     txt('spa_temp', num(s.spa_temp));
     txt('salt_level', num(s.salt_level));
 
-    // Heat — active body
     const spa = s.valve_mode === 'spa';
-    const heatOn = spa ? s.spa_heater_enabled : s.pool_heater_enabled;
-    const setp = spa ? s.spa_setpoint_f : s.pool_setpoint_f;
-    setPill('heat_state', !!heatOn, 'On (Auto)', 'Off');
-    txt('heat_set', setp == null ? '—' : setp + '°');
+    const deg = v => (v == null ? '—' : v + '°');
+    const pctv = v => (v == null ? '—' : v + '%');
+
+    // Heat — both setpoints, active body flagged
+    txt('heat_pool_set', deg(s.pool_setpoint_f));
+    txt('heat_spa_set', deg(s.spa_setpoint_f));
+    const hp = $('heat_pool_st'); hp.textContent = s.pool_heater_enabled ? 'Auto' : 'Off';
+    hp.className = 'bd-s ' + (s.pool_heater_enabled ? 'on' : 'off');
+    const hs = $('heat_spa_st'); hs.textContent = s.spa_heater_enabled ? 'Auto' : 'Off';
+    hs.className = 'bd-s ' + (s.spa_heater_enabled ? 'on' : 'off');
+    $('heat_pool').className = 'bd' + (s.valve_mode === 'pool' ? ' active' : '');
+    $('heat_spa').className = 'bd' + (s.valve_mode === 'spa' ? ' active' : '');
     setPill('heat_fire', !!s.heater_active, 'Yes', 'No');
+
+    // Chlorinator — both, active body flagged
+    txt('chlor_pool_v', pctv(s.chlorinator_percent));
+    txt('chlor_spa_v', pctv(s.spa_chlorinator_percent));
+    $('chlor_pool').className = 'bd' + (s.valve_mode === 'pool' ? ' active' : '');
+    $('chlor_spa').className = 'bd' + (s.valve_mode === 'spa' ? ' active' : '');
 
     // Water
     const filterOn = s.circuits && s.circuits.FILTER;
     setPill('filter_state', !!filterOn, 'On', 'Off');
-    txt('pump_speed', s.pump_speed == null ? '—' : s.pump_speed + '%');
-    const chlor = spa ? s.spa_chlorinator_percent : s.chlorinator_percent;
-    txt('chlor', (chlor == null ? '—' : chlor + '%') + (spa ? ' · spa' : ' · pool'));
-    txt('spa_speed', s.spa_speed == null ? '—' : s.spa_speed + '%');
+    txt('pump_speed', pctv(s.pump_speed));
 
-    // Slots
+    // Speeds — pool slots 1–4 (running slot highlighted) + spa speed
     const slots = $('slots'); slots.innerHTML = '';
     for (let i = 1; i <= 4; i++) {
       const pct = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
-      const running = filterOn && s.vsp_active_slot === i;
+      const running = filterOn && !spa && s.vsp_active_slot === i;
       const d = document.createElement('div');
       d.className = 'slot' + (running ? ' run' : '');
-      d.innerHTML = `<div class="s">Speed ${i}${running ? ' ●' : ''}</div><div class="p">${pct == null ? '—' : pct + '%'}</div>`;
+      d.innerHTML = `<div class="s">Speed ${i}${running ? ' ●' : ''}</div><div class="p">${pctv(pct)}</div>`;
       slots.appendChild(d);
+    }
+    const spaSlots = $('spa_slots'); spaSlots.innerHTML = '';
+    {
+      const running = filterOn && spa;
+      const d = document.createElement('div');
+      d.className = 'slot' + (running ? ' run' : '');
+      d.innerHTML = `<div class="s">Spa Speed${running ? ' ●' : ''}</div><div class="p">${pctv(s.spa_speed)}</div>`;
+      spaSlots.appendChild(d);
     }
 
     // Banner
