@@ -1871,6 +1871,11 @@ class MenuNavigator:
             val = parser(self._lcd.text())
         return val
 
+    # Reverse direction for ring navigation, used by the overshoot back-up
+    # recovery in _press_until. Only RIGHT/LEFT are reversible; PLUS/HEATER_1
+    # etc. are actions, not ring moves, so they have no opposite here.
+    _OPPOSITE = {'RIGHT': 'LEFT', 'LEFT': 'RIGHT'}
+
     def _press_until(self, key: str, ok, budget: int, what: str) -> str:
         """Press `key` until ok(normalized_text) is True, re-pressing on misses.
 
@@ -1882,6 +1887,12 @@ class MenuNavigator:
         presses, send an extra RIGHT — the panel may have the value cursor
         selected (flashing), requiring one RIGHT to dismiss before another to
         advance.
+
+        Overshoot back-up: a dropped-press flagged late can double-advance and
+        skip the target, leaving it just BEHIND us. On a RIGHT/LEFT walk, before
+        failing (guard abort or budget exhaustion) we press the opposite
+        direction a few times to catch a skipped target — far cheaper than the
+        old wrap-all-the-way-around behavior.
         """
         txt = self._lcd.text()
         if ok(txt):
@@ -1894,9 +1905,13 @@ class MenuNavigator:
                 return txt
             # Foreign-submenu guard: if we're pressing RIGHT inside what should
             # be the Settings Menu ring but land on an item that doesn't belong
-            # there (e.g. 'Wireless Channel:', 'Diagnostics'), abort immediately
-            # rather than pressing further and risk altering settings.
+            # there (e.g. 'Wireless Channel:', 'Diagnostics'), stop pressing
+            # further. But first try backing up — an overshoot may have skipped
+            # the target and walked us off the end of the expected items.
             if key == 'RIGHT' and txt and txt[0:1].isupper() and not self._in_settings(txt):
+                backed = self._press_back(key, ok, what)
+                if backed is not None:
+                    return backed
                 raise RuntimeError(
                     f'Navigation left Settings Menu; at {txt!r} (expected {what}); aborting')
             # Detect stuck: if we land on the same item twice in a row,
@@ -1909,7 +1924,31 @@ class MenuNavigator:
             else:
                 stuck_count = 0
             last_item = txt
+        # Budget exhausted walking one way — the target may have been skipped by
+        # an overshoot and be sitting just behind us; try the other direction.
+        backed = self._press_back(key, ok, what)
+        if backed is not None:
+            return backed
         raise RuntimeError(f'Could not reach {what}; stuck at {self._lcd.text()!r}')
+
+    def _press_back(self, key: str, ok, what: str, budget: int = 3) -> Optional[str]:
+        """Overshoot recovery: press the opposite ring direction up to `budget`
+        times to catch a target a dropped-press double-advance skipped past.
+
+        Only meaningful for RIGHT/LEFT walks (returns None otherwise, so the
+        caller falls through to its original error). Stops the instant `ok`
+        matches, so it can't itself overshoot. Worst case adds a few presses
+        before the caller gives up.
+        """
+        opp = self._OPPOSITE.get(key)
+        if opp is None:
+            return None
+        for _ in range(budget):
+            txt = self._send(opp)
+            if ok(txt):
+                log.info('Overshoot recovery: backed up %s to reach %s', opp, what)
+                return txt
+        return None
 
     def _step_to(self, parser, target: int, up_key: str, down_key: str,
                  budget: int, what: str) -> int:
