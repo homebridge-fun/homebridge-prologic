@@ -648,7 +648,36 @@ homebridge-prologic/
 
 ## 10. Known Limitations and Future Work
 
-### 10.0 Recent changes (week of 2026-06-28)
+### 10.0 Recent changes (week of 2026-06-29)
+
+- **Cockpit moves to interactive (stage-then-Apply).** The web cockpit is no longer read-only. Controls stage locally and **nothing is sent until Apply** (single busy-lock mirroring the panel's one-lane nav). Tap-to-edit ± steppers (the +/- only appear once you tap a controllable item), a lockable manual-nav D-pad, and a single Apply/Cancel bar. The in-flight progress now shows **in the top header** instead of a sticky banner.
+- **Cockpit layout.** Single "Water" temp tagged with the live mode (°F shown inline with the number); Heat card shows **both setpoints with the active body flagged**; Chlorinator likewise; Speeds merged into the Water card as **"Pump Speed"** with the running slot highlighted; Pool/Spa speed slots share one labeled row with the Spa tile sized like the Pool slots.
+- **Heater switch-only model.** Auto/Off is only ever changed via the heater switch (`_enable_heater` / `_restore_heater_off`); reads are pure (never scroll when "Manual Off"). A 45s **setpoint-backfill** thread fills a missing °F when a heater is enabled. Fixes "heater active but no target temp" and HomeKit changes not reflecting in the cockpit.
+- **Active VSP slot parsing.** `vsp_active_slot` is now read from **both** panel formats — the idle scroll `Filter Speed 50% Speed2` and the startup window `Filter On:Spd2 +/- to change`. The cockpit highlight is decoupled from the FILTER circuit flag (spa runs on its own pump line).
+- **AquaConnect LCD tag stripping.** The box wraps highlighted/flashing values in HTML (`<span class="WBON">..</span>`); the parser now strips tags so raw markup no longer leaks onto the panel display, and the scroll-pattern regexes match cleanly.
+- **Single-pass startup pre-fetch.** `read_all_settings()` sweeps the Settings ring in one menu session (RIGHT through the heaters/chlorinators, LEFT back to VSP) instead of re-entering the menu per value; triggers on every **sidecar** restart. Key timeout lowered 4s→3s with overshoot "two keys → back up" recovery (`_press_back`).
+- **Remote/LAN access architecture (decided).** See §10.0a. Chose **stock Caddy (apt) + HTTP Basic auth on the LAN**, sidecar kept localhost-bound; **Tailscale** retained for remote.
+
+### 10.0a Access architecture
+
+The sidecar (cockpit + control API) binds to `127.0.0.1:5757` and is **never**
+exposed to the network directly — the bespoke Flask app stays off the LAN to
+avoid turning the Pi into an attack/pivot surface. Two front-ends sit in front:
+
+| Path | Front-end | Auth | Notes |
+|---|---|---|---|
+| **Home / LAN** | **Caddy** (stock, official apt repo) reverse-proxying `127.0.0.1:5757` | HTTP Basic (bcrypt) | Hardened, apt-maintained binary is the only LAN listener. Config: `deploy/Caddyfile` + `deploy/CADDY.md`. Basic auth has no session, so an iOS pinned web app re-prompts on cold launches |
+| **Remote** | **Tailscale** (`tailscale serve`) | WireGuard device identity | No inbound port; reachable only from the tailnet |
+
+Rationale (evaluated 2026-06-29): opening the sidecar's own port was rejected as
+the only option that grows the Pi's inbound surface. Cloudflare Tunnel + Access
+(outbound-only, revocable service tokens, apt `cloudflared`) was the runner-up
+and remains the upgrade path if persistent no-login access or remote-without-VPN
+is wanted; caddy-security (self-hosted persistent sessions) was rejected for its
+out-of-apt binary lifecycle and single-maintainer plugin. Revocable per-key auth
+was deemed over-engineering for a single user; "rotate the one password" suffices.
+
+### 10.0b Recent changes (week of 2026-06-28)
 
 - **Critical deadlock fixes.** `/status` self-deadlocked on the non-reentrant `state_lock` (it called `_wedge_cooling_down()` while already holding the lock) — this took the **whole plugin offline** (all tiles unresponsive). Separately, `_ac_heater_enable` self-deadlocked on `_nav_lock` via a nested acquire on the heater enable/setpoint-read path. Both fixed and are the most important changes of the week.
 - **Spa support.** Added spa chlorinator % (`spa_chlorinator_percent`) and a **Spa Speed** VSP tile; the chlorinator fan is now **valve-mode aware** (shows pool % in pool mode, spa % in spa mode). Both bodies' chlorinator % and heater setpoints are pre-fetched on startup.
