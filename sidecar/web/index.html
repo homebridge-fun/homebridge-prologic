@@ -41,9 +41,9 @@
   .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .stat .n .u { font-size: 12px; font-weight: 600; color: var(--dim); margin-left: 2px; }
   .stat .k { font-size: 12px; color: var(--dim); }
-  .stat { align-items: flex-start; }
-  .statline2 { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--panel2); }
-  .statline2 .stat .pill { margin-bottom: 1px; }
+  .condlist { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--panel2); }
+  .condlist .label { font-size: 16px; }
+  .condlist .pill { font-size: 15px; padding: 6px 16px; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
@@ -164,10 +164,10 @@
       <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air</span></div>
       <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt</span></div>
     </div>
-    <div class="grid statline2">
-      <div class="stat"><span class="pill ctl" id="heat_mode">—</span><span class="k">Heater</span></div>
-      <div class="stat"><span class="pill" id="heat_fire">—</span><span class="k">Calling for heat</span></div>
-      <div class="stat"><span class="pill ctl" id="filter_state">—</span><span class="k">Filter</span></div>
+    <div class="condlist">
+      <div class="row"><span class="label">Heater</span><span class="pill ctl" id="heat_mode">—</span></div>
+      <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
+      <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
     </div>
   </div>
 
