@@ -158,7 +158,7 @@
     <div class="grid">
       <div class="stat"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water</span></div>
       <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air</span></div>
-      <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt ppm</span></div>
+      <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt</span></div>
     </div>
   </div>
 
@@ -223,6 +223,7 @@
   const num = v => (v === null || v === undefined) ? '—' : v;
   const deg = v => (v == null ? '—' : v + '°');
   const degF = v => (v === null || v === undefined) ? '—' : v + '°F';
+  const ppm = v => (v === null || v === undefined) ? '—' : v + ' ppm';
   const pctv = v => (v == null ? '—' : v + '%');
   let lastStatusTs = 0;
   let last = {};                 // most recent /status
@@ -428,7 +429,7 @@
     txt('water_temp', degF(spa ? s.spa_temp : s.pool_temp));
     txt('water_k', 'Water · ' + (spa ? 'Spa' : 'Pool'));
     txt('air_temp', degF(s.air_temp));
-    txt('salt_level', num(s.salt_level));
+    txt('salt_level', ppm(s.salt_level));
 
     // Heat — both setpoints (staged value overlaid + dashed), active body flagged
     const effSetPool = ('setPool' in staged) ? staged.setPool : s.pool_setpoint_f;
