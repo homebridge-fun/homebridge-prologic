@@ -473,10 +473,10 @@
     const slots = $('slots'); slots.innerHTML = '';
     for (let i = 1; i <= 4; i++) {
       const pct = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
-      slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, filterOn && !spa && s.vsp_active_slot === i));
+      slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, !spa && s.vsp_active_slot === i));
     }
     const spaSlots = $('spa_slots'); spaSlots.innerHTML = '';
-    spaSlots.appendChild(slotTile('Speed', 'spaSpeed', s.spa_speed, filterOn && spa));
+    spaSlots.appendChild(slotTile('Speed', 'spaSpeed', s.spa_speed, spa));
     // Inline slot editor
     const ed = $('slot_editor');
     if (selectedSlot) {
