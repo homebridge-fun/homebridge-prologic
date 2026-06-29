@@ -1061,6 +1061,11 @@ _AC_SCROLL_PATTERNS = (
     ('spa_chlorinator_percent', re.compile(r'Spa Chlorinator\s+(\d+)\s*%', re.I)),
     ('pump_speed',              re.compile(r'Filter Speed\s+(\d+)\s*%', re.I)),
     ('spa_speed',               re.compile(r'Spa Speed\s+(\d+)\s*%', re.I)),
+    # The active VSP slot shows up two ways: the steady idle scroll line
+    # 'Filter Speed 50% Speed2', and the brief slot-selection window that opens
+    # when the filter starts, 'Filter On:Spd2 +/- to change' (the WBON <span>
+    # around 'Spd2' is stripped before we get here). Parse both.
+    ('vsp_active_slot',         re.compile(r'Filter Speed\s+\d+\s*%\s+Speed(\d)', re.I)),
     ('vsp_active_slot',         re.compile(r'Filter On:Spd(\d)', re.I)),
 )
 
