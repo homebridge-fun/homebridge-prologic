@@ -52,7 +52,7 @@
   .mode { display: flex; gap: 6px; }
   .mode .seg { flex: 1; text-align: center; padding: 11px; border-radius: 9px;
     background: var(--panel2); color: var(--dim); font-weight: 600; }
-  .mode .seg.active { background: var(--accent); color: #04263a; }
+  .mode .seg.active { background: var(--ok); color: #04263a; }
   .slots { display: flex; gap: 8px; flex-wrap: wrap; }
   .slot { flex: 1; min-width: 60px; text-align: center; background: var(--panel2);
     border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; }
@@ -75,9 +75,9 @@
   .duo { display: flex; gap: 10px; }
   .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
     border-radius: 10px; padding: 10px 12px; }
-  .bd.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .bd.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
-  .bd.active .bd-k::after { content: ' ● active'; color: var(--accent); letter-spacing: 0; }
+  .bd.active .bd-k::after { content: ' ● active'; color: var(--ok); letter-spacing: 0; }
   .bd-v { flex: 1; text-align: center; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .bd-v.pend { color: var(--accent); }
   .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
