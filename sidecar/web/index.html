@@ -38,7 +38,8 @@
   .val { font-variant-numeric: tabular-nums; font-weight: 600; }
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 12px; }
   .stat { display: flex; flex-direction: column; gap: 2px; }
-  .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .stat .n .u { font-size: 12px; font-weight: 600; color: var(--dim); margin-left: 2px; }
   .stat .k { font-size: 12px; color: var(--dim); }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
@@ -222,8 +223,9 @@
   const txt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
   const num = v => (v === null || v === undefined) ? '—' : v;
   const deg = v => (v == null ? '—' : v + '°');
-  const degF = v => (v === null || v === undefined) ? '—' : v + '°F';
-  const ppm = v => (v === null || v === undefined) ? '—' : v + ' ppm';
+  const degF = v => (v === null || v === undefined) ? '—' : v + '<span class="u">°F</span>';
+  const ppm = v => (v === null || v === undefined) ? '—' : v + '<span class="u">ppm</span>';
+  const html = (id, v) => { const e = $(id); if (e) e.innerHTML = v; };
   const pctv = v => (v == null ? '—' : v + '%');
   let lastStatusTs = 0;
   let last = {};                 // most recent /status
@@ -426,10 +428,10 @@
     const spa = s.valve_mode === 'spa';   // real mode drives temps + active-body flags
 
     // Conditions — single water temp tagged with the live mode
-    txt('water_temp', degF(spa ? s.spa_temp : s.pool_temp));
+    html('water_temp', degF(spa ? s.spa_temp : s.pool_temp));
     txt('water_k', 'Water · ' + (spa ? 'Spa' : 'Pool'));
-    txt('air_temp', degF(s.air_temp));
-    txt('salt_level', ppm(s.salt_level));
+    html('air_temp', degF(s.air_temp));
+    html('salt_level', ppm(s.salt_level));
 
     // Heat — both setpoints (staged value overlaid + dashed), active body flagged
     const effSetPool = ('setPool' in staged) ? staged.setPool : s.pool_setpoint_f;
