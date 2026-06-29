@@ -940,7 +940,11 @@ class AquaConnectBackend:
             if not led and _AC_LED_RE.match(ln):
                 led = _decode_ac_led(ln)
             else:
-                lcd_lines.append(html.unescape(ln.replace('&#176', '°')))
+                # The AquaConnect box wraps highlighted/flashing values in HTML
+                # (e.g. <span class="WBON">97°F</span>); strip the tags so the
+                # raw markup doesn't leak into the displayed LCD text.
+                txt = re.sub(r'<[^>]+>', '', ln)
+                lcd_lines.append(html.unescape(txt.replace('&#176', '°')))
         lcd = ' '.join(lcd_lines[:2]).strip()
         return (lcd or None), led
 
