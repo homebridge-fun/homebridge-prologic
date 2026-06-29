@@ -3,7 +3,6 @@ import { SwitchAccessory } from './switchAccessory';
 import { ThermostatAccessory, type ThermostatState } from './thermostatAccessory';
 import { TemperatureAccessory } from './temperatureAccessory';
 import { FanAccessory } from './fanAccessory';
-import { SpaModeAccessory } from './spaModeAccessory';
 import { BridgeHealthAccessory } from './bridgeHealthAccessory';
 import { SaltSensorAccessory } from './saltSensorAccessory';
 import { VspSlotAccessory } from './vspSlotAccessory';
@@ -31,12 +30,12 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private thermostatSpa?: ThermostatAccessory;
   private poolTempSensor?: TemperatureAccessory;
   private airTempSensor?: TemperatureAccessory;
-  private spaModeSwitch?: SpaModeAccessory;
   private chlorinatorFan?: FanAccessory;
   private pumpFan?: FanAccessory;
   private bridgeHealth?: BridgeHealthAccessory;
   private saltSensor?: SaltSensorAccessory;
   private vspSlots: VspSlotAccessory[] = [];
+  private spaSpeedFan?: VspSlotAccessory;
   private heaterRunning?: HeaterRunningAccessory;
   private pollTimer?: ReturnType<typeof setInterval>;
 
@@ -55,7 +54,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       pollInterval: config['pollInterval'] ?? 5000,
       backend: config['backend'] ?? 'aquaconnect',
       aquaconnectHost: config['aquaconnectHost'] ?? '192.168.50.100',
-      rs485Host: config['rs485Host'] ?? '192.168.68.101',
+      rs485Host: config['rs485Host'] ?? '192.168.50.101',
       rs485Port: config['rs485Port'] ?? 8899,
       circuits: config['circuits'] ?? ['FILTER', 'LIGHTS', 'HEATER_1'],
       activeBodies: config['activeBodies'] ?? ['pool', 'spa'],
@@ -63,12 +62,13 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enablePoolHeaterThermostat: config['enablePoolHeaterThermostat'] ?? true,
       enableSpaHeaterThermostat: config['enableSpaHeaterThermostat'] ?? true,
       enableTemperatureSensors: config['enableTemperatureSensors'] ?? true,
-      enableSpaModeSwitch: config['enableSpaModeSwitch'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enablePumpSpeedFan: config['enablePumpSpeedFan'] ?? true,
       enableSaltSensor: config['enableSaltSensor'] ?? true,
       enableVspSlotTiles: config['enableVspSlotTiles'] ?? false,
-      vspSlotMinPct: config['vspSlotMinPct'] ?? { '1': 35 },
+      enableSpaSpeedTile: config['enableSpaSpeedTile'] ?? true,
+      spaSpeedMinPct: config['spaSpeedMinPct'] ?? 35,
+      vspSlotMinPct: config['vspSlotMinPct'] ?? { '1': 35, '2': 35, '3': 35, '4': 35 },
       circuitLabels: config['circuitLabels'] ?? {},
     };
 
@@ -103,13 +103,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       }
       return acc;
     };
-
-    // Spa mode switch (On=spa, Off=pool)
-    if (this.cfg.enableSpaModeSwitch) {
-      const acc = register('Spa',
-        this.api.hap.uuid.generate(`${PLUGIN_NAME}-mode-spa`));
-      this.spaModeSwitch = new SpaModeAccessory(this, acc);
-    }
 
     // Circuit switches. HEATER_1 is rendered as a tappable three-state Fanv2
     // HEATER_1 is split into two switches below ("Heater Auto" tappable +
@@ -182,7 +175,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     if (this.cfg.enablePumpSpeedFan) {
       const acc = register('Filter Speed',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-fan-pump`));
-      this.pumpFan = new FanAccessory(this, acc, 'pump');
+      // The Filter Speed fan drives VSP slot 4, so it inherits slot 4's floor.
+      const pumpMinPct = this.cfg.vspSlotMinPct['4'] ?? 35;
+      this.pumpFan = new FanAccessory(this, acc, 'pump', pumpMinPct);
     }
 
     // VSP slot tiles (Speed 1–4), hidden from home tab by default
@@ -191,18 +186,24 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       for (let slot = 1; slot <= 4; slot++) {
         const acc = register(`Speed ${slot}`,
           this.api.hap.uuid.generate(`${PLUGIN_NAME}-vsp-slot-${slot}`));
-        const minPct = this.cfg.vspSlotMinPct[String(slot)] ?? 0;
+        const minPct = this.cfg.vspSlotMinPct[String(slot)] ?? 35;
         this.vspSlots.push(new VspSlotAccessory(this, acc, slot, minPct));
       }
-      // Fetch real slot speeds on startup so tiles show current values.
-      this.sidecar.getAllVspSlots().then(result => {
-        for (const slotAcc of this.vspSlots) {
-          slotAcc.updateSpeed(result.slots[String(slotAcc.slot)]);
-        }
-      }).catch(err => {
-        this.log.warn('Could not pre-fetch VSP slot speeds:', (err as Error).message);
-      });
     }
+
+    // Spa Speed tile — the VSP's dedicated spa-mode pump speed setting
+    if (this.cfg.enableSpaSpeedTile) {
+      const acc = register('Spa Speed',
+        this.api.hap.uuid.generate(`${PLUGIN_NAME}-vsp-spa`));
+      this.spaSpeedFan = new VspSlotAccessory(this, acc, 0, this.cfg.spaSpeedMinPct);
+    }
+
+    // Note: the menu-navigable values (heater setpoints, chlorinator %, VSP
+    // slot speeds, spa speed) are pre-fetched by the SIDECAR itself on its
+    // startup (one menu pass via read_all_settings), so they populate on every
+    // sidecar restart — not just when this plugin restarts. We just poll
+    // /status and the cached values flow to the accessories; no plugin-side
+    // pre-fetch call is needed.
 
     // Salt level sensor
     if (this.cfg.enableSaltSensor) {
@@ -260,18 +261,19 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
         this.currentValveMode = status.valve_mode;
 
-        this.spaModeSwitch?.updateMode(status.valve_mode);
-
         for (const [circuit, sw] of this.switches) {
           if (circuit === 'HEATER_1') {
             // Show enabled (Auto mode) not active-heating so the switch
             // stays on whenever the heater is armed, regardless of whether
-            // it is currently calling for heat. Falls back to the LED bit
-            // until the scroll has confirmed the enabled state.
+            // it is currently calling for heat. Only update when the navigator
+            // has confirmed the armed state — null means not yet read, so we
+            // hold the last-known value rather than flickering to false.
             const heaterEnabled = status.valve_mode === 'spa'
-              ? (status.spa_heater_enabled ?? status.circuits['HEATER_1'] ?? false)
-              : (status.pool_heater_enabled ?? status.circuits['HEATER_1'] ?? false);
-            sw.updateState(heaterEnabled);
+              ? status.spa_heater_enabled
+              : status.pool_heater_enabled;
+            if (heaterEnabled !== null) {
+              sw.updateState(heaterEnabled);
+            }
           } else {
             sw.updateState(status.circuits[circuit] ?? false);
           }
@@ -298,11 +300,21 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.heaterRunning?.updateFiring(status.heater_active ?? false);
 
         const filterOn = status.circuits['FILTER'] ?? false;
-        this.chlorinatorFan?.updateSpeed(status.chlorinator_percent);
-        this.chlorinatorFan?.updateRunning(filterOn && (status.chlorinator_percent ?? 0) > 0);
+        // Chlorinator % is body-specific: show the spa value in spa mode,
+        // pool value otherwise. Both are updated by the idle LCD scroll.
+        const chlorPct = status.valve_mode === 'spa'
+          ? status.spa_chlorinator_percent
+          : status.chlorinator_percent;
+        this.chlorinatorFan?.updateSpeed(chlorPct);
+        this.chlorinatorFan?.updateRunning(filterOn && (chlorPct ?? 0) > 0);
         this.pumpFan?.updateSpeed(status.pump_speed);
         this.pumpFan?.updateRunning(filterOn && (status.pump_speed ?? 0) > 0);
         this.pumpFan?.updateActiveSlot(status.vsp_active_slot);
+        // Spa Speed tile: shows the VSP's dedicated spa-mode speed setting.
+        // Slot 0 is a sentinel meaning "spa speed" — updateRunning uses vsp_active_slot
+        // which is 1-4, so the spa speed tile never shows as spinning (correct:
+        // the panel has no "Filter On:Spa" in the slot-selection window).
+        this.spaSpeedFan?.updateSpeed(status.spa_speed ?? undefined);
         for (const slotAcc of this.vspSlots) {
           slotAcc.updateSpeed(status.vsp_slot_pct[String(slotAcc.slot)]);
           slotAcc.updateRunning(status.vsp_active_slot, filterOn);

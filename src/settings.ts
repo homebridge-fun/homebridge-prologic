@@ -21,8 +21,10 @@ export interface PoolStatus {
   air_temp: number | null;
   spa_temp: number | null;
   salt_level: number | null;
-  chlorinator_percent: number | null;
+  chlorinator_percent: number | null;      // pool chlorinator %
+  spa_chlorinator_percent: number | null;  // spa chlorinator %
   pump_speed: number | null;
+  spa_speed: number | null;                // VSP Spa Speed setting %
   // populated by menu navigator reads; null = not yet read
   pool_setpoint_f: number | null;
   spa_setpoint_f: number | null;
@@ -52,11 +54,12 @@ export interface PlatformConfig {
   enablePoolHeaterThermostat: boolean;
   enableSpaHeaterThermostat: boolean;
   enableTemperatureSensors: boolean;
-  enableSpaModeSwitch: boolean;
   enableChlorinatorFan: boolean;
   enablePumpSpeedFan: boolean;
   enableSaltSensor: boolean;
   enableVspSlotTiles: boolean;
+  enableSpaSpeedTile: boolean;
+  spaSpeedMinPct: number;
   vspSlotMinPct: Record<string, number>;  // keys "1"–"4" → panel floor %
   circuitLabels: Partial<Record<Circuit, string>>;
 }

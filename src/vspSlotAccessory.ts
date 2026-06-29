@@ -20,6 +20,7 @@ export class VspSlotAccessory {
   constructor(
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
+    /** VSP slot number 1–4, or 0 to indicate the dedicated Spa Speed setting. */
     public readonly slot: number,
     private readonly minPct: number = 0,
   ) {
@@ -46,11 +47,12 @@ export class VspSlotAccessory {
         : C.CurrentFanState.IDLE);
     this.service.updateCharacteristic(C.CurrentFanState, C.CurrentFanState.IDLE);
 
-    // minValue is the panel's hardware floor for this slot, so HomeKit's
-    // slider physically stops there instead of letting the user target a
-    // value the controller will silently clamp.
+    // minValue stays 0: a non-zero RotationSpeed minimum makes the Home app
+    // render the slider across the (max - min) span starting at 0 (a 35 floor
+    // shows as "0–65%"). Keep an honest 0–100 slider and enforce the panel's
+    // hardware floor by snapping up to minPct on commit instead.
     this.service.getCharacteristic(C.RotationSpeed)
-      .setProps({ minValue: this.minPct, maxValue: 100, minStep: 5 })
+      .setProps({ minValue: 0, maxValue: 100, minStep: 5 })
       .onGet(() => this.configuredPct)
       .onSet(this.handleSetSpeed.bind(this));
   }
@@ -76,14 +78,27 @@ export class VspSlotAccessory {
     }, 600);
   }
 
-  private async commitSpeed(pct: number): Promise<void> {
-    this.platform.log.info(`[VSP Slot ${this.slot}] speed → ${pct}%`);
+  private async commitSpeed(rawPct: number): Promise<void> {
+    const label = this.slot === 0 ? 'Spa Speed' : `Slot ${this.slot}`;
+    // The slider is 0–100 but the panel silently clamps below minPct, so snap
+    // up to the floor and push the corrected value back to the tile so the user
+    // sees the real value with no flicker.
+    const pct = Math.max(rawPct, this.minPct);
+    if (pct !== rawPct) {
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.RotationSpeed, pct);
+    }
+    this.platform.log.info(`[VSP ${label}] speed → ${pct}%`);
     try {
-      await this.platform.sidecar.setVspSlot(this.slot, pct);
-      await this.platform.sidecar.activateVspSlot(this.slot);
+      if (this.slot === 0) {
+        await this.platform.sidecar.setSpaSpeed(pct);
+      } else {
+        await this.platform.sidecar.setVspSlot(this.slot, pct);
+        await this.platform.sidecar.activateVspSlot(this.slot);
+      }
       this.configuredPct = pct;
     } catch (err) {
-      this.platform.log.error(`[VSP Slot ${this.slot}] set speed failed:`, err);
+      this.platform.log.error(`[VSP ${label}] set speed failed:`, err);
       this.service.updateCharacteristic(
         this.platform.Characteristic.RotationSpeed, this.configuredPct);
     }

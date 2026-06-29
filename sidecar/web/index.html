@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b1f33">
+<title>Pool Cockpit</title>
+<style>
+  :root {
+    --bg: #0b1f33; --panel: #13314d; --panel2: #0f2840; --line: #244a6e;
+    --ink: #eaf2fb; --dim: #9fb6cf; --accent: #38bdf8;
+    --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --off: #54708c;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; position: sticky; top: 0; background: var(--bg);
+    border-bottom: 1px solid var(--line); z-index: 5;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .conn { font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .dot.warn { background: var(--warn); }
+  main { padding: 14px; max-width: 640px; margin: 0 auto; display: grid; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .card h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; min-height: 34px; }
+  .row + .row { border-top: 1px solid var(--panel2); }
+  .label { color: var(--dim); }
+  .val { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
+  .stat { display: flex; flex-direction: column; gap: 2px; }
+  .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 12px; color: var(--dim); }
+  .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+    background: var(--panel2); color: var(--dim); }
+  .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
+  .pill.off { background: rgba(84,112,140,.2); color: var(--off); }
+  .pill.ctl { padding: 6px 14px; font-size: 13px; }
+  .mode { display: flex; gap: 6px; }
+  .mode .seg { flex: 1; text-align: center; padding: 11px; border-radius: 9px;
+    background: var(--panel2); color: var(--dim); font-weight: 600; }
+  .mode .seg.active { background: var(--accent); color: #04263a; }
+  .slots { display: flex; gap: 8px; flex-wrap: wrap; }
+  .slot { flex: 1; min-width: 60px; text-align: center; background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; }
+  .slot.run { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+  .slot.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .slot .s { font-size: 12px; color: var(--dim); } .slot .p { font-size: 18px; font-weight: 700; }
+  .slot .p.pend { color: var(--accent); }
+  .slot-editor { display: none; align-items: center; justify-content: space-between;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel2); }
+  .slot-editor.show { display: flex; }
+  .se-label { font-size: 13px; color: var(--dim); }
+  .setrow-inline { display: flex; align-items: center; gap: 10px; }
+  .setrow-inline .bd-v { min-width: 64px; }
+  .slot-editor .step { display: flex; }
+  .lcd { font-family: "SF Mono", ui-monospace, Menlo, monospace; background: #02101d;
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    color: #7dd3fc; letter-spacing: .04em; min-height: 22px; white-space: pre-wrap; word-break: break-word; }
+  .lcd .t { font-size: 12px; color: var(--dim); margin-top: 6px; letter-spacing: 0; }
+  /* Dual-body (pool/spa) panel with the active one flagged */
+  .duo { display: flex; gap: 10px; }
+  .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; }
+  .bd.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  .bd.active .bd-k::after { content: ' ● active'; color: var(--accent); letter-spacing: 0; }
+  .bd-v { flex: 1; text-align: center; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bd-v.pend { color: var(--accent); }
+  .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+  .step { width: 36px; height: 36px; flex: 0 0 auto; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    font-size: 20px; font-weight: 700; line-height: 1; display: none;
+    align-items: center; justify-content: center; }
+  .bd.editing .step { display: flex; }
+  .bd.editing { border-color: var(--accent); }
+  .step:active { background: var(--accent); color: #04263a; }
+  /* Grouped speeds (pool slots vs spa) */
+  .speedrow { display: flex; gap: 12px; align-items: flex-start; }
+  .speedcol { display: flex; flex-direction: column; }
+  .speedcol.pool { flex: 4; }
+  .speedcol.spa { flex: 1; padding-left: 12px; border-left: 1px solid var(--panel2); }
+  .grp-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 7px; }
+  .banner { background: rgba(251,191,36,.12); border: 1px solid var(--warn); color: var(--warn);
+    border-radius: 12px; padding: 12px 14px; font-weight: 600; display: none; }
+  .banner.bad { background: rgba(248,113,113,.12); border-color: var(--bad); color: var(--bad); }
+  .banner.show { display: block; }
+  footer { text-align: center; color: var(--off); font-size: 12px; padding: 8px 0 18px; }
+  /* Interactivity */
+  .ctl { cursor: pointer; user-select: none; }
+  body.busy .ctl { pointer-events: none; opacity: .45; }
+  #busy { display: none; flex: 1; min-width: 0; margin: 0 12px; color: var(--accent);
+    font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; text-align: right; }
+  #busy.show { display: block; }
+  header.busy .conn { display: none; }
+  #apply { position: sticky; top: 53px; z-index: 4; display: none; margin: 0 14px;
+    background: rgba(56,189,248,.14); border: 1px solid var(--accent); color: var(--accent);
+    border-radius: 10px; padding: 9px 13px; font-weight: 600;
+    align-items: center; justify-content: space-between; gap: 10px; }
+  #apply.show { display: flex; }
+  #apply .n { font-size: 13px; }
+  #apply .btns { display: flex; gap: 8px; flex: 0 0 auto; }
+  #apply button { border-radius: 8px; border: 1px solid var(--accent); padding: 7px 16px;
+    font-weight: 700; font-size: 13px; }
+  #apply_btn { background: var(--accent); color: #04263a; }
+  #cancel_btn { background: transparent; color: var(--accent); }
+  .staged { outline: 1px dashed var(--accent); outline-offset: 2px; }
+  .dpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-width: 260px; margin: 4px auto 0; }
+  .nav { height: 54px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel2);
+    color: var(--ink); font-size: 22px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .nav:active { background: var(--accent); color: #04263a; }
+  .nav.menu { font-size: 13px; letter-spacing: .06em; }
+  #nav_up { grid-area: 1 / 2; } #nav_left { grid-area: 2 / 1; }
+  #nav_menu { grid-area: 2 / 2; } #nav_right { grid-area: 2 / 3; } #nav_down { grid-area: 3 / 2; }
+  .card h2.hrow { display: flex; align-items: center; justify-content: space-between; }
+  .lockbtn { font-size: 13px; font-weight: 700; padding: 5px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel2); color: var(--dim);
+    letter-spacing: 0; text-transform: none; }
+  .lockbtn.unlocked { border-color: var(--accent); color: var(--accent); }
+  .dpad.locked { opacity: .35; pointer-events: none; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: var(--bad); color: #fff; padding: 11px 16px; border-radius: 10px;
+    font-weight: 600; z-index: 10; opacity: 0; transition: opacity .2s; pointer-events: none;
+    max-width: 92%; text-align: center; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pool Cockpit</h1>
+  <div id="busy"></div>
+  <div class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></div>
+</header>
+<div id="apply"><span class="n" id="apply_n"></span><span class="btns"><button id="cancel_btn">Cancel</button><button id="apply_btn">Apply</button></span></div>
+<main>
+  <div id="banner" class="banner"></div>
+
+  <div class="card">
+    <h2>Mode</h2>
+    <div class="mode">
+      <div class="seg ctl" id="seg-pool">Pool</div>
+      <div class="seg ctl" id="seg-spa">Spa</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Conditions</h2>
+    <div class="grid">
+      <div class="stat"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water</span></div>
+      <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air</span></div>
+      <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt ppm</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Heat</h2>
+    <div class="duo">
+      <div class="bd ctl" id="heat_pool" data-field="heat_pool"><div class="bd-k">Pool</div>
+        <div class="setrow"><button class="step ctl" id="hp_dn">−</button><div class="bd-v" id="heat_pool_set">—</div><button class="step ctl" id="hp_up">+</button></div></div>
+      <div class="bd ctl" id="heat_spa" data-field="heat_spa"><div class="bd-k">Spa</div>
+        <div class="setrow"><button class="step ctl" id="hs_dn">−</button><div class="bd-v" id="heat_spa_set">—</div><button class="step ctl" id="hs_up">+</button></div></div>
+    </div>
+    <div class="row" style="margin-top:10px"><span class="label">Heater Mode</span><span class="pill ctl" id="heat_mode">—</span></div>
+    <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Pump Speed</h2>
+    <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
+    <div class="speedrow" style="margin-top:10px">
+      <div class="speedcol pool"><div class="grp-k">Pool</div><div class="slots" id="slots"></div></div>
+      <div class="speedcol spa"><div class="grp-k">Spa</div><div class="slots" id="spa_slots"></div></div>
+    </div>
+    <div class="slot-editor" id="slot_editor">
+      <span class="se-label" id="se_label"></span>
+      <span class="setrow-inline"><button class="step ctl" id="se_dn">−</button><span class="bd-v" id="se_val">—</span><button class="step ctl" id="se_up">+</button></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Chlorinator</h2>
+    <div class="duo">
+      <div class="bd ctl" id="chlor_pool" data-field="chlor_pool"><div class="bd-k">Pool</div>
+        <div class="setrow"><button class="step ctl" id="cp_dn">−</button><div class="bd-v" id="chlor_pool_v">—</div><button class="step ctl" id="cp_up">+</button></div></div>
+      <div class="bd ctl" id="chlor_spa" data-field="chlor_spa"><div class="bd-k">Spa</div>
+        <div class="setrow"><button class="step ctl" id="cs_dn">−</button><div class="bd-v" id="chlor_spa_v">—</div><button class="step ctl" id="cs_up">+</button></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Panel Display</h2>
+    <div class="lcd" id="lcd">—<div class="t" id="lcd_t"></div></div>
+  </div>
+
+  <div class="card">
+    <h2 class="hrow">Manual Navigation <button class="lockbtn" id="nav_lock">🔒 Locked</button></h2>
+    <div class="dpad locked" id="dpad">
+      <button class="nav ctl" id="nav_up">▲</button>
+      <button class="nav ctl" id="nav_left">◀</button>
+      <button class="nav ctl menu" id="nav_menu">MENU</button>
+      <button class="nav ctl" id="nav_right">▶</button>
+      <button class="nav ctl" id="nav_down">▼</button>
+    </div>
+  </div>
+</main>
+<footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
+<div id="toast"></div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const txt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+  const num = v => (v === null || v === undefined) ? '—' : v;
+  const deg = v => (v == null ? '—' : v + '°');
+  const degF = v => (v === null || v === undefined) ? '—' : v + '°F';
+  const pctv = v => (v == null ? '—' : v + '%');
+  let lastStatusTs = 0;
+  let last = {};                 // most recent /status
+  let busy = false;              // a command is in flight (panel is single-lane)
+
+  function setPill(id, on, onLabel, offLabel) {
+    const e = $(id); if (!e) return;
+    e.textContent = on ? onLabel : offLabel;
+    e.className = 'pill' + (e.classList.contains('ctl') ? ' ctl' : '') + (on ? ' on' : ' off');
+  }
+
+  // ── Command plumbing ──────────────────────────────────────────────────────
+  function setBusy(on, label) {
+    busy = on;
+    document.body.classList.toggle('busy', on);
+    document.querySelector('header').classList.toggle('busy', on);
+    const e = $('busy');
+    e.classList.toggle('show', on);
+    if (on) e.textContent = '⟳ ' + label + '…';
+    updateApplyBar();
+  }
+  let toastTimer;
+  function toast(msg) {
+    const e = $('toast'); e.textContent = msg; e.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => e.classList.remove('show'), 4500);
+  }
+  async function fetchStatus() {
+    const r = await fetch('/status', { cache: 'no-store' });
+    if (r.ok) renderStatus(await r.json());
+  }
+
+  // ── Staged changes — NOTHING is sent until Apply ──────────────────────────
+  const staged = {};   // mode, filter, heat(+heatWhich), setPool, setSpa, chlorPool, chlorSpa, slot1-4, spaSpeed
+  let selectedSlot = null;   // which speed slot is open in the inline editor
+  const SRC  = { heat_pool:'pool_setpoint_f', heat_spa:'spa_setpoint_f',
+                 chlor_pool:'chlorinator_percent', chlor_spa:'spa_chlorinator_percent' };
+  const SKEY = { heat_pool:'setPool', heat_spa:'setSpa', chlor_pool:'chlorPool', chlor_spa:'chlorSpa' };
+  const hasStaged = () => Object.keys(staged).length > 0;
+  function reRender() { if (last.connected !== undefined) renderStatus(last); }
+  function updateApplyBar() {
+    const n = Object.keys(staged).length;
+    $('apply').classList.toggle('show', n > 0 && !busy);
+    if (n > 0) txt('apply_n', n + (n === 1 ? ' pending change' : ' pending changes'));
+  }
+  function chlorStep(cur, dir) {
+    cur = cur || 0;
+    if (dir > 0) return cur < 10 ? Math.min(10, cur + 1) : Math.min(100, cur + 5);
+    return cur <= 10 ? Math.max(0, cur - 1) : cur - 5;
+  }
+  // Stagers — flip/adjust the staged target; if it returns to the real value,
+  // drop it so Apply never sends a no-op.
+  function stageMode(mode) {
+    if (busy) return;
+    if (mode === last.valve_mode) delete staged.mode; else staged.mode = mode;
+    reRender();
+  }
+  function stageFilter() {
+    if (busy) return;
+    const real = !!(last.circuits && last.circuits.FILTER);
+    const eff = ('filter' in staged) ? staged.filter : real;
+    if (!eff === real) delete staged.filter; else staged.filter = !eff;
+    reRender();
+  }
+  function stageHeat() {
+    if (busy) return;
+    const which = last.valve_mode === 'spa' ? 'spa' : 'pool';   // current active body
+    const real = which === 'spa' ? !!last.spa_heater_enabled : !!last.pool_heater_enabled;
+    const eff = ('heat' in staged && staged.heatWhich === which) ? staged.heat : real;
+    if (!eff === real) { delete staged.heat; delete staged.heatWhich; }
+    else { staged.heat = !eff; staged.heatWhich = which; }
+    reRender();
+  }
+  function stageStep(field, dir) {
+    if (busy) return;
+    const heat = field.startsWith('heat');
+    const key = SKEY[field], realv = last[SRC[field]];
+    let v = (key in staged) ? staged[key] : realv;
+    if (v == null) v = heat ? 80 : 0;
+    v = heat ? Math.max(65, Math.min(104, v + dir)) : chlorStep(v, dir);
+    if (v === realv) delete staged[key]; else staged[key] = v;
+    reRender();
+  }
+  // Speed slots: tap a tile to open the inline editor; ± stages a 5% step.
+  function slotReal(key) {
+    if (key === 'spaSpeed') return last.spa_speed;
+    return last.vsp_slot_pct ? last.vsp_slot_pct[key.replace('slot', '')] : null;
+  }
+  function selectSlot(key) {
+    if (busy) return;
+    selectedSlot = (selectedSlot === key) ? null : key;   // tap again to close
+    setEditing(null);
+    reRender();
+  }
+  function stageSlotStep(dir) {
+    if (busy || !selectedSlot) return;
+    const key = selectedSlot, realv = slotReal(key);
+    let v = (key in staged) ? staged[key] : realv;
+    if (v == null) v = 35;
+    v = Math.max(35, Math.min(100, (Math.round(v / 5) * 5) + dir * 5));
+    if (v === realv) delete staged[key]; else staged[key] = v;
+    reRender();
+  }
+  function cancelStaged() {
+    for (const k in staged) delete staged[k];
+    selectedSlot = null;
+    setEditing(null);
+    reRender();
+  }
+  // Apply — send each staged change in sequence (the panel is single-lane).
+  async function applyStaged() {
+    if (busy || !hasStaged()) return;
+    const items = [];
+    if ('mode' in staged) items.push(['Switch to ' + staged.mode, '/mode', { mode: staged.mode }]);
+    if ('filter' in staged) items.push([(staged.filter ? 'Turn on' : 'Turn off') + ' filter', '/circuit/FILTER', { on: staged.filter }]);
+    if ('heat' in staged) items.push([(staged.heat ? 'Enable' : 'Turn off') + ' ' + staged.heatWhich + ' heater', `/heater/${staged.heatWhich}/enable`, { on: staged.heat }]);
+    if ('setPool' in staged) items.push([`Set pool heat ${staged.setPool}°`, '/heater/pool/setpoint', { temp_f: staged.setPool }]);
+    if ('setSpa' in staged) items.push([`Set spa heat ${staged.setSpa}°`, '/heater/spa/setpoint', { temp_f: staged.setSpa }]);
+    if ('chlorPool' in staged) items.push([`Set pool chlorinator ${staged.chlorPool}%`, '/chlorinator/pool', { percent: staged.chlorPool }]);
+    if ('chlorSpa' in staged) items.push([`Set spa chlorinator ${staged.chlorSpa}%`, '/chlorinator/spa', { percent: staged.chlorSpa }]);
+    for (let n = 1; n <= 4; n++)
+      if (('slot' + n) in staged) items.push([`Set Speed ${n} to ${staged['slot' + n]}%`, `/vsp/slot/${n}`, { speed_pct: staged['slot' + n] }]);
+    if ('spaSpeed' in staged) items.push([`Set Spa Speed to ${staged.spaSpeed}%`, '/vsp/spa', { speed_pct: staged.spaSpeed }]);
+    for (const k in staged) delete staged[k];
+    selectedSlot = null;
+    setEditing(null);
+    setBusy(true, items[0][0]);
+    try {
+      for (let i = 0; i < items.length; i++) {
+        const [label, path, body] = items[i];
+        $('busy').textContent = `⟳ (${i + 1}/${items.length}) ${label}…`;
+        if (!(await sendOne(path, body, label))) break;   // stop on first failure
+      }
+      await fetchStatus();
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function sendOne(path, body, label) {
+    try {
+      const r = await fetch(path, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+      let j = {}; try { j = await r.json(); } catch (e) {}
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      return true;
+    } catch (e) {
+      toast('⚠ ' + label + ' failed' + (e.message ? ': ' + e.message : ''));
+      return false;
+    }
+  }
+
+  // Manual navigation — locked by default so a stray tap can't drive the menu.
+  let navLocked = true;
+  let navLockTimer;
+  function setNavLock(locked) {
+    navLocked = locked;
+    $('dpad').classList.toggle('locked', locked);
+    const b = $('nav_lock');
+    b.textContent = locked ? '🔒 Locked' : '🔓 Unlocked';
+    b.classList.toggle('unlocked', !locked);
+    clearTimeout(navLockTimer);
+    if (!locked) navLockTimer = setTimeout(() => setNavLock(true), 60000);
+  }
+  function bumpNavLock() {     // keep it unlocked while actively in use
+    if (navLocked) return;
+    clearTimeout(navLockTimer);
+    navLockTimer = setTimeout(() => setNavLock(true), 60000);
+  }
+
+  // Send one raw nav key and reflect the resulting LCD. Direct (not staged):
+  // this is the power-user surface for driving the menu.
+  async function sendKey(key) {
+    if (busy || navLocked) return;
+    bumpNavLock();
+    setBusy(true, key);
+    try {
+      const r = await fetch('/key/' + key, { method: 'POST' });
+      let j = {}; try { j = await r.json(); } catch (e) {}
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      if (j.lcd) { lastFrameTs = Date.now(); $('lcd').firstChild.nodeValue = j.lcd; }
+      await fetchStatus();
+    } catch (e) {
+      toast('⚠ key ' + key + ' failed' + (e.message ? ': ' + e.message : ''));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+  function renderStatus(s) {
+    last = s;
+    lastStatusTs = Date.now();
+    const connected = s.connected;
+    $('dot').className = 'dot ' + (s.bridge_wedged ? 'bad' : (connected ? 'ok' : 'warn'));
+    txt('conn', connected ? 'connected' : 'no panel');
+
+    const effMode = staged.mode || s.valve_mode;
+    $('seg-pool').className = 'seg ctl' + (effMode === 'pool' ? ' active' : '') + (('mode' in staged) && effMode === 'pool' ? ' staged' : '');
+    $('seg-spa').className = 'seg ctl' + (effMode === 'spa' ? ' active' : '') + (('mode' in staged) && effMode === 'spa' ? ' staged' : '');
+
+    const spa = s.valve_mode === 'spa';   // real mode drives temps + active-body flags
+
+    // Conditions — single water temp tagged with the live mode
+    txt('water_temp', degF(spa ? s.spa_temp : s.pool_temp));
+    txt('water_k', 'Water · ' + (spa ? 'Spa' : 'Pool'));
+    txt('air_temp', degF(s.air_temp));
+    txt('salt_level', num(s.salt_level));
+
+    // Heat — both setpoints (staged value overlaid + dashed), active body flagged
+    const effSetPool = ('setPool' in staged) ? staged.setPool : s.pool_setpoint_f;
+    const effSetSpa  = ('setSpa'  in staged) ? staged.setSpa  : s.spa_setpoint_f;
+    $('heat_pool_set').textContent = deg(effSetPool);
+    $('heat_pool_set').classList.toggle('pend', 'setPool' in staged);
+    $('heat_spa_set').textContent = deg(effSetSpa);
+    $('heat_spa_set').classList.toggle('pend', 'setSpa' in staged);
+    $('heat_pool').classList.toggle('active', s.valve_mode === 'pool');
+    $('heat_spa').classList.toggle('active', s.valve_mode === 'spa');
+    const aw = spa ? 'spa' : 'pool';
+    const realHeat = spa ? !!s.spa_heater_enabled : !!s.pool_heater_enabled;
+    const effHeat = ('heat' in staged && staged.heatWhich === aw) ? staged.heat : realHeat;
+    setPill('heat_mode', effHeat, 'Auto', 'Off');
+    $('heat_mode').classList.toggle('staged', 'heat' in staged);
+    setPill('heat_fire', !!s.heater_active, 'Yes', 'No');
+
+    // Chlorinator — staged value overlaid + dashed
+    const effCP = ('chlorPool' in staged) ? staged.chlorPool : s.chlorinator_percent;
+    const effCS = ('chlorSpa'  in staged) ? staged.chlorSpa  : s.spa_chlorinator_percent;
+    $('chlor_pool_v').textContent = pctv(effCP);
+    $('chlor_pool_v').classList.toggle('pend', 'chlorPool' in staged);
+    $('chlor_spa_v').textContent = pctv(effCS);
+    $('chlor_spa_v').classList.toggle('pend', 'chlorSpa' in staged);
+    $('chlor_pool').classList.toggle('active', s.valve_mode === 'pool');
+    $('chlor_spa').classList.toggle('active', s.valve_mode === 'spa');
+
+    // Water — running speed calls out the active speed slot
+    const filterOn = s.circuits && s.circuits.FILTER;   // real, drives the speed running flag
+    const effFilter = ('filter' in staged) ? staged.filter : !!filterOn;
+    setPill('filter_state', effFilter, 'On', 'Off');
+    $('filter_state').classList.toggle('staged', 'filter' in staged);
+
+    // Speeds — tap a tile to edit (staged); running slot highlighted
+    function slotTile(label, key, real, running) {
+      const eff = (key in staged) ? staged[key] : real;
+      const sel = selectedSlot === key;
+      const d = document.createElement('div');
+      d.className = 'slot ctl' + (running ? ' run' : '') + (sel ? ' sel' : '');
+      d.innerHTML = `<div class="s">${label}${running ? ' ●' : ''}</div>` +
+                    `<div class="p${key in staged ? ' pend' : ''}">${pctv(eff)}</div>`;
+      d.onclick = () => selectSlot(key);
+      return d;
+    }
+    const slots = $('slots'); slots.innerHTML = '';
+    for (let i = 1; i <= 4; i++) {
+      const pct = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
+      slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, !spa && s.vsp_active_slot === i));
+    }
+    const spaSlots = $('spa_slots'); spaSlots.innerHTML = '';
+    spaSlots.appendChild(slotTile('Speed', 'spaSpeed', s.spa_speed, spa));
+    // Inline slot editor
+    const ed = $('slot_editor');
+    if (selectedSlot) {
+      ed.classList.add('show');
+      txt('se_label', selectedSlot === 'spaSpeed' ? 'Spa Speed' : 'Speed ' + selectedSlot.replace('slot', ''));
+      const v = (selectedSlot in staged) ? staged[selectedSlot] : slotReal(selectedSlot);
+      $('se_val').textContent = pctv(v);
+      $('se_val').classList.toggle('pend', selectedSlot in staged);
+    } else {
+      ed.classList.remove('show');
+    }
+
+    // Wedge banner
+    const b = $('banner');
+    if (s.bridge_wedged) {
+      const cd = s.wedge_cooldown_remaining_s;
+      b.className = 'banner bad show';
+      b.textContent = cd > 0
+        ? `⚠ Panel wedged — power-cycle cooldown, ${cd}s remaining`
+        : '⚠ Panel command path wedged — power-cycle the AquaConnect box';
+    } else { b.className = 'banner'; }
+
+    txt('backend', s.backend || '—');
+    updateApplyBar();
+  }
+
+  async function pollStatus() {
+    if (busy) return;                 // don't fight a command in flight
+    try { await fetchStatus(); } catch (e) {}
+  }
+
+  // LCD fallback poll (SSE preferred)
+  let lastFrameTs = 0;
+  async function pollDisplay() {
+    if (Date.now() - lastFrameTs < 4000) return;
+    try {
+      const r = await fetch('/display', { cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      const t = [d.line1, d.line2].filter(Boolean).join('  ').trim();
+      if (t) $('lcd').firstChild.nodeValue = t;
+    } catch (e) {}
+  }
+  function connectStream() {
+    try {
+      const es = new EventSource('/stream');
+      es.onmessage = ev => {
+        try {
+          const f = JSON.parse(ev.data);
+          if (f && f.text) {
+            lastFrameTs = Date.now();
+            $('lcd').firstChild.nodeValue = f.text;
+            txt('lcd_t', new Date((f.ts || 0) * 1000).toLocaleTimeString());
+          }
+        } catch (e) {}
+      };
+      es.onerror = () => { es.close(); setTimeout(connectStream, 3000); };
+    } catch (e) { setTimeout(connectStream, 3000); }
+  }
+
+  // Tap-to-edit: the ± steppers stay hidden until you tap a controllable card,
+  // and auto-hide after a few seconds idle (or when you tap another card).
+  let editTimer;
+  function setEditing(field) {
+    document.querySelectorAll('.bd').forEach(el =>
+      el.classList.toggle('editing', !!field && el.dataset.field === field));
+    clearTimeout(editTimer);
+    if (field) editTimer = setTimeout(() => setEditing(null), 6000);
+  }
+  function stepBtn(field, dir) {
+    return (e) => { e.stopPropagation(); stageStep(field, dir); setEditing(field); };
+  }
+
+  // Wire controls — every interaction STAGES; nothing is sent until Apply.
+  $('seg-pool').onclick = () => { setEditing(null); stageMode('pool'); };
+  $('seg-spa').onclick = () => { setEditing(null); stageMode('spa'); };
+  $('heat_mode').onclick = () => { setEditing(null); stageHeat(); };
+  $('filter_state').onclick = () => { setEditing(null); stageFilter(); };
+  document.querySelectorAll('.bd[data-field]').forEach(card =>
+    card.onclick = () => setEditing(card.dataset.field));
+  $('hp_dn').onclick = stepBtn('heat_pool', -1);
+  $('hp_up').onclick = stepBtn('heat_pool', 1);
+  $('hs_dn').onclick = stepBtn('heat_spa', -1);
+  $('hs_up').onclick = stepBtn('heat_spa', 1);
+  $('cp_dn').onclick = stepBtn('chlor_pool', -1);
+  $('cp_up').onclick = stepBtn('chlor_pool', 1);
+  $('cs_dn').onclick = stepBtn('chlor_spa', -1);
+  $('cs_up').onclick = stepBtn('chlor_spa', 1);
+  $('apply_btn').onclick = applyStaged;
+  $('cancel_btn').onclick = cancelStaged;
+  $('se_dn').onclick = () => stageSlotStep(-1);
+  $('se_up').onclick = () => stageSlotStep(1);
+  // Manual nav D-pad (direct, not staged): ▲=PLUS ▼=MINUS ◀=LEFT ▶=RIGHT
+  $('nav_up').onclick = () => sendKey('PLUS');
+  $('nav_down').onclick = () => sendKey('MINUS');
+  $('nav_left').onclick = () => sendKey('LEFT');
+  $('nav_right').onclick = () => sendKey('RIGHT');
+  $('nav_menu').onclick = () => sendKey('MENU');
+  $('nav_lock').onclick = () => setNavLock(!navLocked);
+
+  // Freshness ticker
+  setInterval(() => {
+    if (!lastStatusTs) return;
+    const age = Math.round((Date.now() - lastStatusTs) / 1000);
+    txt('age', age <= 1 ? 'just now' : age + 's ago');
+    if (!busy && age > 12) { $('dot').className = 'dot warn'; txt('conn', 'stale'); }
+  }, 1000);
+
+  pollStatus();
+  setInterval(pollStatus, 3000);
+  pollDisplay();
+  setInterval(pollDisplay, 3000);
+  connectStream();
+})();
+</script>
+</body>
+</html>

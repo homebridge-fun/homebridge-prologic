@@ -2,7 +2,7 @@
   "pluginAlias": "ProLogic",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaPlus pool controllers via RS-485 WiFi serial bridge. Requires the Python sidecar service — see sidecar/install.sh.",
+  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaPlus pool controllers. Talks to the panel through the Python sidecar service (AquaConnect HTTP box by default, or an RS-485 serial bridge). See sidecar/install.sh.",
   "footerDisplay": "See the [README](https://github.com/homebridge-fun/homebridge-prologic) for wiring and setup instructions.",
   "schema": {
     "type": "object",
@@ -38,9 +38,9 @@
         "default": "aquaconnect",
         "oneOf": [
           { "title": "AquaConnect (HTTP web box)", "enum": ["aquaconnect"] },
-          { "title": "RS-485 (USR-W610 serial bridge)", "enum": ["rs485"] }
+          { "title": "RS-485 (serial bridge)", "enum": ["rs485"] }
         ],
-        "description": "Which navigation backend the sidecar should use. Changing this restarts the sidecar to apply."
+        "description": "Which navigation backend the sidecar should use. Changing this restarts the sidecar to apply. NOTE: over a TCP serial bridge the RS-485 backend reads reliably but writes (keypresses) are not reliable — the bridge's network latency misses the panel's keypress-response window. Reliable RS-485 writes require a direct serial connection (USB-RS485 on the Pi)."
       },
       "aquaconnectHost": {
         "title": "AquaConnect Host",
@@ -51,14 +51,14 @@
       "rs485Host": {
         "title": "RS-485 Bridge Host",
         "type": "string",
-        "default": "192.168.68.101",
-        "description": "IP of the USR-W610 WiFi serial bridge (used when backend = rs485)."
+        "default": "192.168.50.101",
+        "description": "IP of the RS-485 serial bridge (used when backend = rs485)."
       },
       "rs485Port": {
         "title": "RS-485 Bridge Port",
         "type": "integer",
         "default": 8899,
-        "description": "TCP port of the USR-W610 serial bridge (used when backend = rs485)."
+        "description": "TCP port of the RS-485 serial bridge (used when backend = rs485)."
       },
       "circuits": {
         "title": "Circuit switches to expose",
@@ -106,12 +106,6 @@
         "default": true,
         "description": "Expose read-only air and pool temperature sensors."
       },
-      "enableSpaModeSwitch": {
-        "title": "Spa Mode Switch",
-        "type": "boolean",
-        "default": true,
-        "description": "Expose a single 'Spa' switch: On = spa mode, Off = pool mode. Replaces the separate Pool and Spa circuit switches."
-      },
       "enableChlorinatorFan": {
         "title": "Chlorinator Fan",
         "type": "boolean",
@@ -130,6 +124,20 @@
         "default": true,
         "description": "Expose salt level (PPM) as an Air Quality sensor tile."
       },
+      "enableSpaSpeedTile": {
+        "title": "Spa Speed Tile",
+        "type": "boolean",
+        "default": true,
+        "description": "Expose a Fan tile showing the VSP's dedicated Spa Speed setting %. Setting the speed writes that value to the panel's Spa Speed slot."
+      },
+      "spaSpeedMinPct": {
+        "title": "Spa Speed Minimum %",
+        "type": "integer",
+        "default": 35,
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Hardware floor for the Spa Speed slider. The slider runs 0–100%, but a value set below this floor snaps up to it (the panel silently clamps lower speeds)."
+      },
       "enableVspSlotTiles": {
         "title": "VSP Speed Slot Tiles",
         "type": "boolean",
@@ -139,12 +147,12 @@
       "vspSlotMinPct": {
         "title": "VSP Slot Minimum Speed %",
         "type": "object",
-        "description": "Per-slot hardware floor for the VSP speed tiles. The HomeKit slider stops at this value so you cannot target a speed the panel will silently clamp. Slot 1 defaults to 35%.",
+        "description": "Per-slot hardware floor for the VSP speed tiles and the Filter Speed fan. The slider runs 0–100%, but a value set below this floor snaps up to it (the panel silently clamps lower speeds). All slots default to 35%.",
         "properties": {
           "1": { "title": "Slot 1 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
-          "2": { "title": "Slot 2 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
-          "3": { "title": "Slot 3 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 },
-          "4": { "title": "Slot 4 minimum %", "type": "integer", "default": 0, "minimum": 0, "maximum": 100 }
+          "2": { "title": "Slot 2 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
+          "3": { "title": "Slot 3 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
+          "4": { "title": "Slot 4 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 }
         }
       },
       "circuitLabels": {

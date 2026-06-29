@@ -18,6 +18,7 @@ export class FanAccessory {
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
     private readonly role: FanRole,
+    private readonly minPct: number = 0,
   ) {
     const serials: Record<FanRole, string> = {
       chlorinator: 'fan-chlorinator',
@@ -48,6 +49,10 @@ export class FanAccessory {
         : C.CurrentFanState.IDLE);
     this.service.updateCharacteristic(C.CurrentFanState, C.CurrentFanState.IDLE);
 
+    // minValue stays 0: a non-zero RotationSpeed minimum makes the Home app
+    // render the slider across the (max - min) span starting at 0 (e.g. a 35
+    // floor shows as "0–65%"). We keep an honest 0–100 slider and enforce the
+    // hardware floor by snapping up to minPct on commit instead.
     this.service.getCharacteristic(C.RotationSpeed)
       .setProps({ minValue: 0, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })
       .onGet(() => this.currentPct)
@@ -67,7 +72,33 @@ export class FanAccessory {
     }, 600);
   }
 
-  private async commitSpeed(pct: number): Promise<void> {
+  /**
+   * Snap an arbitrary % to the nearest valid chlorinator position, matching the
+   * sidecar's _chlor_snap: 0–9 in 1% steps, then 10/15/…/100 in 5% steps.
+   */
+  private static snapChlorinator(pct: number): number {
+    const p = Math.max(0, Math.min(100, Math.round(pct)));
+    if (p <= 9) return p;
+    return Math.round(p / 5) * 5;
+  }
+
+  private async commitSpeed(rawPct: number): Promise<void> {
+    // Resolve the raw slider value to a position the panel actually accepts,
+    // then push it back to the tile immediately so the user sees the real
+    // value with no flicker (rather than waiting for the next status poll to
+    // correct it).
+    //  - pump: VSP slot 4 silently clamps below its hardware floor.
+    //  - chlorinator: valid positions are 0–9 (1% steps) then 10,15,…100 (5%).
+    let pct: number;
+    if (this.role === 'pump') {
+      pct = Math.max(rawPct, this.minPct);
+    } else {
+      pct = FanAccessory.snapChlorinator(rawPct);
+    }
+    if (pct !== rawPct) {
+      this.service.updateCharacteristic(
+        this.platform.Characteristic.RotationSpeed, pct);
+    }
     this.platform.log.info(`[Fan ${this.role}] speed → ${pct}%`);
     try {
       if (this.role === 'chlorinator') {
@@ -103,6 +134,7 @@ export class FanAccessory {
 
   updateSpeed(pct: number | null): void {
     if (pct === null) return;
+    // Slider is 0–100, so a reported 0 (filter off) is valid and shown as-is.
     const rounded = Math.round(pct);
     if (this.currentPct !== rounded) {
       this.currentPct = rounded;

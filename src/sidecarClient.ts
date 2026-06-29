@@ -29,12 +29,22 @@ export class SidecarClient {
     return res.data;
   }
 
-  async setCircuit(name: string, on: boolean): Promise<void> {
-    await this.http.post(`/circuit/${encodeURIComponent(name)}`, { on });
+  /**
+   * Read every menu-navigable value (heater setpoints, chlorinator %, VSP slot
+   * speeds, spa speed) in a single menu session. Used once at startup instead
+   * of several separate read calls. The sidecar caches the results into its
+   * state, which the regular poll then flows to the accessories.
+   */
+  async prefetchAll(): Promise<void> {
+    // The single-pass menu sweep is ~25-30 keypresses at ~1.3s each on the
+    // AquaConnect backend (~40s total), well over the client's default 30s
+    // timeout. Give it a generous window so the call doesn't spuriously time
+    // out while the sidecar is still (successfully) navigating.
+    await this.http.post('/prefetch', undefined, { timeout: 120000 });
   }
 
-  async setMode(mode: 'pool' | 'spa'): Promise<void> {
-    await this.http.post('/mode', { mode });
+  async setCircuit(name: string, on: boolean): Promise<void> {
+    await this.http.post(`/circuit/${encodeURIComponent(name)}`, { on });
   }
 
   // ── Bridge health ─────────────────────────────────────────────────────────
@@ -127,7 +137,23 @@ export class SidecarClient {
     await this.http.post('/vsp/slot4/activate');
   }
 
+  // ── VSP Spa Speed ─────────────────────────────────────────────────────────
+
+  async getSpaSpeed(): Promise<{ spa_speed: number }> {
+    const res = await this.http.get('/vsp/spa');
+    return res.data;
+  }
+
+  async setSpaSpeed(speedPct: number): Promise<void> {
+    await this.http.post('/vsp/spa', { speed_pct: Math.round(speedPct) });
+  }
+
   // ── Chlorinator (menu navigation) ────────────────────────────────────────
+
+  async getChlorinatorPercent(which: 'pool' | 'spa'): Promise<{ which: string; percent: number }> {
+    const res = await this.http.get(`/chlorinator/${which}`);
+    return res.data;
+  }
 
   async setChlorinatorPercent(which: 'pool' | 'spa', percent: number): Promise<void> {
     await this.http.post(`/chlorinator/${which}`, { percent: Math.round(percent) });

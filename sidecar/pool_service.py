@@ -42,8 +42,9 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
+from types import SimpleNamespace
 
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, send_from_directory
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,21 +63,43 @@ log.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 # Rotating debug log — /tmp/pool_sidecar_debug.log, replaced every hour.
 # Keeps 1 backup so the previous hour is still readable while the new one grows.
+#
+# The file log is best-effort: a failure to open it (e.g. a stale
+# /tmp/pool_sidecar_debug.log owned by a different user from an earlier run)
+# must NEVER crash the sidecar — losing debug logging is acceptable, taking
+# down pool control because a log file isn't writable is not. We try the
+# default path, then a per-uid fallback the current user can always create,
+# then give up on file logging entirely. Override the path with
+# POOL_SIDECAR_DEBUG_LOG if you want it somewhere specific.
 # ---------------------------------------------------------------------------
-_DEBUG_LOG_PATH = '/tmp/pool_sidecar_debug.log'
-_debug_file_handler = logging.handlers.TimedRotatingFileHandler(
-    _DEBUG_LOG_PATH,
-    when='h',         # rotate every hour
-    interval=1,
-    backupCount=1,    # keep one previous hour
-    encoding='utf-8',
-)
-_debug_file_handler.setLevel(logging.DEBUG)
-_debug_file_handler.setFormatter(
-    logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-)
-log.addHandler(_debug_file_handler)
+_DEBUG_LOG_PATH = os.environ.get('POOL_SIDECAR_DEBUG_LOG', '/tmp/pool_sidecar_debug.log')
+
+
+def _make_debug_handler(path: str) -> logging.Handler:
+    h = logging.handlers.TimedRotatingFileHandler(
+        path, when='h', interval=1, backupCount=1, encoding='utf-8')
+    h.setLevel(logging.DEBUG)
+    h.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    return h
+
+
 log.setLevel(logging.DEBUG)   # file gets DEBUG; console handler keeps INFO via basicConfig root level
+_debug_file_handler = None
+for _candidate in (_DEBUG_LOG_PATH, f'/tmp/pool_sidecar_debug_{os.getuid()}.log'):
+    try:
+        _debug_file_handler = _make_debug_handler(_candidate)
+        log.addHandler(_debug_file_handler)
+        if _candidate != _DEBUG_LOG_PATH:
+            log.warning('Debug log %r not writable; using fallback %r',
+                        _DEBUG_LOG_PATH, _candidate)
+        break
+    except OSError as _e:
+        continue
+else:
+    # No file handler could be opened — continue with console logging only.
+    logging.getLogger('pool_sidecar').warning(
+        'Could not open any debug log file (%s); continuing without file logging',
+        _DEBUG_LOG_PATH)
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +113,10 @@ class PoolState:
     air_temp: Optional[float] = None
     spa_temp: Optional[float] = None
     salt_level: Optional[float] = None
-    chlorinator_percent: Optional[float] = None
+    chlorinator_percent: Optional[float] = None      # pool chlorinator %
+    spa_chlorinator_percent: Optional[float] = None  # spa chlorinator %
     pump_speed: Optional[int] = None
+    spa_speed: Optional[int] = None                  # VSP Spa Speed setting %
     # populated by menu navigator reads; None = not yet read
     pool_setpoint_f: Optional[int] = None
     spa_setpoint_f: Optional[int] = None
@@ -106,6 +131,9 @@ class PoolState:
     # True when the AquaConnect box has entered read-only mode (commands ACKed
     # but silently dropped at the RS-485 relay). Cleared by any confirmed write.
     bridge_wedged: bool = False
+    # Epoch time when wedge was first detected; used to enforce the power-cycle
+    # cooldown window before commands are retried. None = not currently wedged.
+    wedge_detected_at: Optional[float] = None
 
 state = PoolState()
 state_lock = threading.Lock()
@@ -132,6 +160,10 @@ _WEDGE_PROBE_INTERVAL_S = 300.0
 # Faster probe cadence while wedged, so recovery after a power-cycle shows up
 # quickly (the box stays wedged until power-cycled, so frequent probing is safe).
 _WEDGE_RECOVERY_INTERVAL_S = 30.0
+# After wedge detection the HomeKit automation power-cycles the AquaConnect box.
+# Block all write commands for this window so we don't hammer the box while it
+# is booting, then immediately probe to confirm recovery.
+_WEDGE_POWERCYCLE_COOLDOWN_S = 120.0
 
 
 def _record_command_success() -> None:
@@ -143,6 +175,7 @@ def _record_command_success() -> None:
     if changed:
         with state_lock:
             state.bridge_wedged = False
+            state.wedge_detected_at = None
         log.info('Bridge command path recovered — clearing wedge flag')
 
 
@@ -154,12 +187,53 @@ def _record_command_failure() -> None:
         streak = _wedge_fail_streak
         already = state.bridge_wedged
     if streak >= _WEDGE_FAIL_THRESHOLD and not already:
+        now = time.time()
         with state_lock:
             state.bridge_wedged = True
+            state.wedge_detected_at = now
         log.warning(
             'Bridge command path appears wedged (%d consecutive unconfirmed writes). '
-            'Power-cycle the AquaConnect box to recover.',
-            streak)
+            'HomeKit automation will power-cycle the AquaConnect box; '
+            'commands blocked for %.0fs cooldown.',
+            streak, _WEDGE_POWERCYCLE_COOLDOWN_S)
+
+
+def _wedge_cooling_down() -> Optional[float]:
+    """Return seconds remaining in the power-cycle cooldown, or None if clear."""
+    with state_lock:
+        if not state.bridge_wedged or state.wedge_detected_at is None:
+            return None
+        remaining = _WEDGE_POWERCYCLE_COOLDOWN_S - (time.time() - state.wedge_detected_at)
+        return remaining if remaining > 0 else None
+
+
+def _wedge_block_response() -> Optional[tuple]:
+    """Return a (Response, status) 503 tuple if commands should be blocked, else None.
+
+    Two cases:
+    - Still in power-cycle cooldown: box is rebooting, don't send anything yet.
+    - Wedged but cooldown elapsed: still blocked until the probe confirms recovery.
+    """
+    with state_lock:
+        wedged = state.bridge_wedged
+        detected_at = state.wedge_detected_at
+    if not wedged:
+        return None
+    remaining = None
+    if detected_at is not None:
+        remaining = _WEDGE_POWERCYCLE_COOLDOWN_S - (time.time() - detected_at)
+    if remaining is not None and remaining > 0:
+        return jsonify({
+            'error': f'AquaConnect power-cycling — commands blocked for {remaining:.0f}s cooldown',
+            'bridge_wedged': True,
+            'cooling_down': True,
+            'cooldown_remaining_s': round(remaining),
+        }), 503
+    return jsonify({
+        'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
+        'bridge_wedged': True,
+        'cooling_down': False,
+    }), 503
 
 def _immediate_wedge_probe() -> None:
     """Spawn a background daemon thread to probe wedge state right now.
@@ -399,18 +473,23 @@ def _norm(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 class LcdCapture:
-    def __init__(self, maxhist: int = 60):
+    def __init__(self, maxhist: int = 60, hub: 'Optional[FrameHub]' = None):
         self._lock = threading.Lock()
         self._latest: Optional[str] = None
         self._ts: float = 0.0
         self._event = threading.Event()
         self.history: deque = deque(maxlen=maxhist)
+        # Optional per-backend FrameHub: every captured frame is republished here
+        # for the live /stream feed. None = not streamed (e.g. simulation).
+        self._hub = hub
 
     def text_updated(self, text: str) -> None:
         with self._lock:
             self._latest = text
             self._ts = time.time()
             self.history.append((self._ts, text))
+        if self._hub is not None:
+            self._hub.publish(_norm(text), raw=text)
         self._event.set()
 
     # aqualogic may call other no-op methods on its _web object; absorb them.
@@ -443,6 +522,75 @@ class LcdCapture:
     def snapshot(self):
         with self._lock:
             return [(ts, t) for ts, t in self.history]
+
+
+# ---------------------------------------------------------------------------
+# FrameHub — backend-agnostic live frame feed (§ parallel-backend work)
+#
+# Each backend (aquaconnect, rs485) owns one hub. As LCD frames arrive they are
+# published here; the /stream SSE endpoints subscribe to get a continuous tail
+# without polling — the same "watch the bus" model the AquaConnect frame-reader
+# uses internally, now exposed as a first-class read surface. The hub name is
+# the only backend-specific detail upstream ever sees; /stream (active backend)
+# and /stream/<name> (a specific one) both resolve to a hub here.
+# ---------------------------------------------------------------------------
+class FrameHub:
+    def __init__(self, name: str, maxlen: int = 200):
+        self.name = name
+        self._cond = threading.Condition()
+        self._ring: deque = deque(maxlen=maxlen)
+        self._seq = 0
+        self.last_publish = 0.0
+
+    def publish(self, text: str, raw: Optional[str] = None,
+                extra: Optional[dict] = None) -> None:
+        with self._cond:
+            self._seq += 1
+            frame = {'seq': self._seq, 'ts': round(time.time(), 3), 'text': text}
+            if raw is not None:
+                frame['raw'] = raw
+            if extra:
+                frame.update(extra)
+            self._ring.append(frame)
+            self.last_publish = frame['ts']
+            self._cond.notify_all()
+
+    def recent(self, limit: int = 50) -> list:
+        with self._cond:
+            return list(self._ring)[-limit:]
+
+    def follow(self, timeout: float = 20.0):
+        """Generator yielding each newly-published frame (live tail).
+
+        Starts from the next frame after subscription. Yields None on idle
+        timeout so the caller can emit an SSE heartbeat and detect disconnects.
+        """
+        with self._cond:
+            last = self._seq
+        while True:
+            with self._cond:
+                if self._seq <= last:
+                    self._cond.wait(timeout=timeout)
+                pending = [f for f in self._ring if f['seq'] > last]
+                if pending:
+                    last = pending[-1]['seq']
+            if pending:
+                yield from pending
+            else:
+                yield None
+
+
+_frame_hubs: "dict[str, FrameHub]" = {}
+_frame_hubs_lock = threading.Lock()
+
+
+def _get_hub(name: str) -> FrameHub:
+    with _frame_hubs_lock:
+        h = _frame_hubs.get(name)
+        if h is None:
+            h = FrameHub(name)
+            _frame_hubs[name] = h
+        return h
 
 
 lcd = LcdCapture()
@@ -615,9 +763,13 @@ class AquaConnectBackend:
 
     def __init__(self, host: str = '192.168.50.100', poll_s: float = 3.0):
         self._host = host
-        self.lcd = LcdCapture()
+        self.lcd = LcdCapture(hub=_get_hub('aquaconnect'))
         self._http_lock = threading.Lock()   # serializes all socket access
         self._last_req = 0.0                  # ts of last request (gap enforcement)
+        # Monotonic count of every HTTP request (press + read), for timing tests:
+        # lets a benchmark measure total request volume per operation, validating
+        # the frame-reader's N+1-requests-per-N-keys behavior.
+        self._req_count = 0
         self._last_raw: Optional[str] = None  # last full body, for /debug calibration
         self._last_led: dict = {}
         self._poll_s = poll_s
@@ -672,6 +824,7 @@ class AquaConnectBackend:
 
     def _request(self, body: str) -> Optional[str]:
         """Send a POST /WNewSt.htm with the given body and return the response."""
+        self._req_count += 1
         now = time.time()
         wait = _AC_MIN_GAP_S - (now - self._last_req)
         if wait > 0:
@@ -787,7 +940,11 @@ class AquaConnectBackend:
             if not led and _AC_LED_RE.match(ln):
                 led = _decode_ac_led(ln)
             else:
-                lcd_lines.append(html.unescape(ln.replace('&#176', '°')))
+                # The AquaConnect box wraps highlighted/flashing values in HTML
+                # (e.g. <span class="WBON">97°F</span>); strip the tags so the
+                # raw markup doesn't leak into the displayed LCD text.
+                txt = re.sub(r'<[^>]+>', '', ln)
+                lcd_lines.append(html.unescape(txt.replace('&#176', '°')))
         lcd = ' '.join(lcd_lines[:2]).strip()
         return (lcd or None), led
 
@@ -851,14 +1008,14 @@ class AquaConnectBackend:
             return _decode_ac_led(line).get('aux2') if line else None
 
         with self._http_lock:
-            before = canary_bit(self._led_line(self._post('00')))
+            before = canary_bit(self._led_line(self._read()))
             self._apply(self._post(code))   # press canary
             after = before
             attempts = 0
             for _ in range(retries):
                 attempts += 1
                 time.sleep(gap_s)
-                body = self._post('00')
+                body = self._read()
                 self._apply(body)
                 after = canary_bit(self._led_line(body))
                 if after is not None and before is not None and after != before:
@@ -900,9 +1057,16 @@ _AC_SCROLL_PATTERNS = (
     ('air_temp',            re.compile(r'Air Temp\s+(-?\d+)', re.I)),
     ('spa_temp',            re.compile(r'Spa Temp\s+(-?\d+)', re.I)),
     ('salt_level',          re.compile(r'Salt Level\s+(\d+)', re.I)),
-    ('chlorinator_percent', re.compile(r'Pool Chlorinator\s+(\d+)\s*%', re.I)),
-    ('pump_speed',          re.compile(r'Filter Speed\s+(\d+)\s*%', re.I)),
-    ('vsp_active_slot',     re.compile(r'Filter On:Spd(\d)', re.I)),
+    ('chlorinator_percent',     re.compile(r'Pool Chlorinator\s+(\d+)\s*%', re.I)),
+    ('spa_chlorinator_percent', re.compile(r'Spa Chlorinator\s+(\d+)\s*%', re.I)),
+    ('pump_speed',              re.compile(r'Filter Speed\s+(\d+)\s*%', re.I)),
+    ('spa_speed',               re.compile(r'Spa Speed\s+(\d+)\s*%', re.I)),
+    # The active VSP slot shows up two ways: the steady idle scroll line
+    # 'Filter Speed 50% Speed2', and the brief slot-selection window that opens
+    # when the filter starts, 'Filter On:Spd2 +/- to change' (the WBON <span>
+    # around 'Spd2' is stripped before we get here). Parse both.
+    ('vsp_active_slot',         re.compile(r'Filter Speed\s+\d+\s*%\s+Speed(\d)', re.I)),
+    ('vsp_active_slot',         re.compile(r'Filter On:Spd(\d)', re.I)),
 )
 
 
@@ -938,11 +1102,17 @@ def _apply_ac_scroll_to_state(lcd: str) -> None:
 def _apply_ac_led_to_state(led: dict) -> None:
     """Fold decoded AquaConnect LED state into the shared PoolState (§13.2)."""
     with state_lock:
-        # Active body/valve mode
+        # Active body/valve mode — also mirror into circuits so the plugin's
+        # status poll sees circuits['POOL']/circuits['SPA'] without needing
+        # to know about valve_mode separately.
         if led.get('pool_mode') in ('on', 'blink'):
             state.valve_mode = 'pool'
+            state.circuits['POOL'] = True
+            state.circuits['SPA'] = False
         elif led.get('spa_mode') in ('on', 'blink'):
             state.valve_mode = 'spa'
+            state.circuits['POOL'] = False
+            state.circuits['SPA'] = True
         # Equipment on/off → circuits dict (absent stays out of the map)
         for name, key in (('filter', 'FILTER'), ('lights', 'LIGHTS'),
                           ('aux1', 'AUX_1'), ('aux2', 'AUX_2')):
@@ -1086,6 +1256,79 @@ class RealPanel:
         self._aq.send_key(k)
 
 
+# RS-485 observe-only listener (parallel-backend work). When the active backend
+# is AquaConnect, this runs alongside it: it streams frames into the 'rs485'
+# FrameHub and parses an ISOLATED state snapshot (never the global `state`), so
+# the two backends never stomp each other. It sends no keys except when a
+# benchmark explicitly drives _rs485_observer.nav. Promoting this observer to a
+# co-equal active backend later (option 2) only needs its snapshot to also
+# answer /status/rs485 — the streaming/nav plumbing is already here.
+_rs485_observer: Optional[SimpleNamespace] = None  # (aq, panel, nav, lcd) when up
+_rs485_obs_state: dict = {}
+_rs485_obs_lock = threading.Lock()
+
+
+def rs485_observer_thread(host: str, port: int) -> None:
+    global _rs485_observer
+
+    from aqualogic.core import AquaLogic
+    from aqualogic.states import States
+    from aqualogic.keys import Keys
+
+    _install_key_burst(AquaLogic)
+    obs_lcd = LcdCapture(hub=_get_hub('rs485'))
+    smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
+
+    def on_change(aq) -> None:
+        snap: dict = {}
+        try:
+            snap['pool_temp'] = _read_property(aq, 'pool_temp')
+            snap['air_temp'] = _read_property(aq, 'air_temp')
+            snap['spa_temp'] = _read_property(aq, 'spa_temp')
+            snap['salt_level'] = _read_property(aq, 'salt_level')
+            snap['chlorinator_percent'] = _read_property(aq, 'pool_chlorinator')
+            snap['pump_speed'] = _read_property(aq, 'pump_speed')
+            circ: dict = {}
+            for name, s in smap.items():
+                try:
+                    circ[name] = bool(aq.get_state(s))
+                except Exception:
+                    pass
+            snap['circuits'] = circ
+        except Exception:
+            pass
+        with _rs485_obs_lock:
+            _rs485_obs_state.clear()
+            _rs485_obs_state.update(snap)
+            _rs485_obs_state['connected'] = True
+            _rs485_obs_state['last_update'] = time.time()
+
+    while True:
+        try:
+            log.info('RS-485 OBSERVER (observe-only) connecting to %s:%s', host, port)
+            aq = AquaLogic(web_port=0)
+            aq._web = obs_lcd
+            aq.connect(host, port)
+            try:
+                import socket as _socket
+                aq._socket.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+            except Exception as e:
+                log.warning('Observer: could not set TCP_NODELAY: %s', e)
+            obs_panel = RealPanel(aq, States, Keys)
+            obs_nav = MenuNavigator(obs_panel, obs_lcd)
+            _rs485_observer = SimpleNamespace(
+                aq=aq, panel=obs_panel, nav=obs_nav, lcd=obs_lcd)
+            aq.process(on_change)        # blocks until the connection drops
+        except Exception as e:
+            log.error('RS-485 observer lost: %s', e)
+        finally:
+            _rs485_observer = None
+            with _rs485_obs_lock:
+                _rs485_obs_state['connected'] = False
+        log.info('RS-485 observer reconnecting in 5 seconds...')
+        time.sleep(5)
+
+
 def panel_thread(host: str, port: int) -> None:
     global panel
 
@@ -1096,6 +1339,10 @@ def panel_thread(host: str, port: int) -> None:
     # Always install: even at burst=1 we need the keep-alive window targeting
     # (predelay) and the get_state patch that tolerates raw send_key frames.
     _install_key_burst(AquaLogic)
+
+    # In RS-485-active mode the global lcd carries the panel's frames; route them
+    # into the 'rs485' hub so /stream works the same as it does for AquaConnect.
+    lcd._hub = _get_hub('rs485')
 
     smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
 
@@ -1476,7 +1723,12 @@ def _trace_key(key: str, before: str, after: str, wait_s: float,
 class MenuNavigator:
     _SETTINGS_HDR = 'Settings Menu'
     _DEFAULT_MENU_HDR = 'Default Menu'
-    _KEY_TIMEOUT = 4.0   # seconds to wait for the frame to change after a press
+    # Seconds to wait for the frame to change after a press before treating it
+    # as dropped and re-pressing. AquaConnect confirms in ~1.3s, so 3.0 gives a
+    # >2x margin while recovering dropped presses ~1s faster than the old 4.0.
+    # Benchmarks/taptests still override this explicitly when probing the lossy
+    # RS-485 path.
+    _KEY_TIMEOUT = 3.0   # seconds to wait for the frame to change after a press
     _MENU_MAX = 10       # MENU presses to find Settings Menu header
     _NAV_MAX = 30        # RIGHT presses to walk the Settings ring (11 items + margin)
     _STEP_MAX = 90       # +/- presses before aborting a value adjust
@@ -1628,6 +1880,11 @@ class MenuNavigator:
             val = parser(self._lcd.text())
         return val
 
+    # Reverse direction for ring navigation, used by the overshoot back-up
+    # recovery in _press_until. Only RIGHT/LEFT are reversible; PLUS/HEATER_1
+    # etc. are actions, not ring moves, so they have no opposite here.
+    _OPPOSITE = {'RIGHT': 'LEFT', 'LEFT': 'RIGHT'}
+
     def _press_until(self, key: str, ok, budget: int, what: str) -> str:
         """Press `key` until ok(normalized_text) is True, re-pressing on misses.
 
@@ -1639,6 +1896,12 @@ class MenuNavigator:
         presses, send an extra RIGHT — the panel may have the value cursor
         selected (flashing), requiring one RIGHT to dismiss before another to
         advance.
+
+        Overshoot back-up: a dropped-press flagged late can double-advance and
+        skip the target, leaving it just BEHIND us. On a RIGHT/LEFT walk, before
+        failing (guard abort or budget exhaustion) we press the opposite
+        direction a few times to catch a skipped target — far cheaper than the
+        old wrap-all-the-way-around behavior.
         """
         txt = self._lcd.text()
         if ok(txt):
@@ -1649,6 +1912,17 @@ class MenuNavigator:
             txt = self._send(key)
             if ok(txt):
                 return txt
+            # Foreign-submenu guard: if we're pressing RIGHT inside what should
+            # be the Settings Menu ring but land on an item that doesn't belong
+            # there (e.g. 'Wireless Channel:', 'Diagnostics'), stop pressing
+            # further. But first try backing up — an overshoot may have skipped
+            # the target and walked us off the end of the expected items.
+            if key == 'RIGHT' and txt and txt[0:1].isupper() and not self._in_settings(txt):
+                backed = self._press_back(key, ok, what)
+                if backed is not None:
+                    return backed
+                raise RuntimeError(
+                    f'Navigation left Settings Menu; at {txt!r} (expected {what}); aborting')
             # Detect stuck: if we land on the same item twice in a row,
             # send one extra press to dismiss any value-cursor selection.
             if key == 'RIGHT' and self._same_item(txt, last_item):
@@ -1659,7 +1933,31 @@ class MenuNavigator:
             else:
                 stuck_count = 0
             last_item = txt
+        # Budget exhausted walking one way — the target may have been skipped by
+        # an overshoot and be sitting just behind us; try the other direction.
+        backed = self._press_back(key, ok, what)
+        if backed is not None:
+            return backed
         raise RuntimeError(f'Could not reach {what}; stuck at {self._lcd.text()!r}')
+
+    def _press_back(self, key: str, ok, what: str, budget: int = 3) -> Optional[str]:
+        """Overshoot recovery: press the opposite ring direction up to `budget`
+        times to catch a target a dropped-press double-advance skipped past.
+
+        Only meaningful for RIGHT/LEFT walks (returns None otherwise, so the
+        caller falls through to its original error). Stops the instant `ok`
+        matches, so it can't itself overshoot. Worst case adds a few presses
+        before the caller gives up.
+        """
+        opp = self._OPPOSITE.get(key)
+        if opp is None:
+            return None
+        for _ in range(budget):
+            txt = self._send(opp)
+            if ok(txt):
+                log.info('Overshoot recovery: backed up %s to reach %s', opp, what)
+                return txt
+        return None
 
     def _step_to(self, parser, target: int, up_key: str, down_key: str,
                  budget: int, what: str) -> int:
@@ -1697,14 +1995,69 @@ class MenuNavigator:
             raise RuntimeError(f'Could not set {what} to {target}; at {cur} ({self._lcd.text()!r})')
         return cur
 
+    # Known Settings Menu item prefixes — any RIGHT-landed frame that does NOT
+    # start with one of these is a foreign submenu (Diagnostics, Network, etc.)
+    # and we abort immediately rather than pressing further into it.
+    _SETTINGS_ITEM_PREFIXES = (
+        'Settings Menu', 'Default Menu', 'Pool Heater', 'Spa Heater',
+        'Pool Chlorinator', 'Spa Chlorinator', 'Super Chlorinate',
+        'Pool Setpoint', 'Spa Setpoint',
+        'VSP Speed', 'Filter Speed', 'Spa Speed', 'Filter Pump', 'Cleaner Pump',
+        'Light Show', 'Color Swim', 'Water Feature',
+        'Delay Cancel', 'Freeze Protect', 'Valve Delay',
+        'Clock', 'Date', 'Time',
+    )
+
+    def _in_settings(self, txt: str) -> bool:
+        """True if the current frame looks like a normal Settings Menu item."""
+        return any(txt.startswith(p) for p in self._SETTINGS_ITEM_PREFIXES)
+
+    # MENU cycles through the top-level menus in a ring:
+    #   Default → Settings → Timers → Diagnostic → Configuration(locked) → …
+    # So 'Settings Menu' is always reachable by pressing MENU until it appears.
+    # With ~70% keypress drop on the WiFi bridge, a landed press may overshoot
+    # Settings (e.g. land on Timers); the budget must cover several full ring
+    # traversals so we cycle back around to Settings rather than stranding.
+    _ANCHOR_MENU_MAX = 30
+
     def _anchor(self) -> None:
         """Drive MENU until the normalized frame is exactly 'Settings Menu'.
 
-        After landing on the header, wait _POST_MENU_SETTLE_S before returning:
-        the panel needs ~300ms to be ready to accept RIGHT after a MENU press.
+        MENU walks the top-level menu ring (see _ANCHOR_MENU_MAX); we stop the
+        instant 'Settings Menu' appears. A generous budget tolerates dropped
+        presses and overshoot without straying into any submenu's live settings.
+
+        If the panel is in the status cycle the display changes on its own every
+        few seconds — a MENU press that lands looks identical to a spontaneous
+        cycle advance. We first wait for two consecutive identical frames
+        (≤1.5s apart) to confirm the display is static (i.e. we are inside a
+        menu, not the status cycle) before starting to press MENU. If we are
+        already at 'Settings Menu', skip immediately.
+
+        After landing on the header, wait _POST_MENU_SETTLE_S: the panel needs
+        ~300ms before it will accept RIGHT.
         """
+        # Fast path: already there.
+        if self._lcd.text() == self._SETTINGS_HDR:
+            time.sleep(self._POST_MENU_SETTLE_S)
+            return
+
+        # Wait up to 6s for the display to stop cycling (two identical reads).
+        # If the panel is in a menu the display is already static so this
+        # returns immediately. If it's in the status cycle it settles once the
+        # current item holds for one read interval (~1.5s max).
+        deadline = time.time() + 6.0
+        prev = self._lcd.text()
+        while time.time() < deadline:
+            self._lcd._event.clear()
+            self._lcd._event.wait(min(1.5, max(0.0, deadline - time.time())))
+            cur = self._lcd.text()
+            if cur == prev and cur:
+                break  # display is static — we're in a menu
+            prev = cur
+
         self._press_until('MENU', lambda t: t == self._SETTINGS_HDR,
-                          self._MENU_MAX, self._SETTINGS_HDR)
+                          self._ANCHOR_MENU_MAX, self._SETTINGS_HDR)
         time.sleep(self._POST_MENU_SETTLE_S)
 
     # Status-cycle prefixes — any of these means we're back in the default display.
@@ -1754,12 +2107,53 @@ class MenuNavigator:
 
     # ── Heater setpoints ─────────────────────────────────────────────────────
 
-    def read_heater(self, which: str) -> dict:
-        """Navigate to a heater item and read its state without changing it.
+    def _restore_heater_off(self, label: str) -> str:
+        """Toggle the currently-selected heater item back to Manual Off.
 
-        When the heater is 'Manual Off' the panel shows no temperature, so we
-        press PLUS to reveal the stored setpoint, record it, then re-disable via
-        the HEATER_1 toggle so the state is unchanged on exit.
+        Called after a read pressed PLUS (which enabled the heater). Presses
+        HEATER_1 only while the frame is NOT yet Manual Off, re-reading after
+        each press so a dropped toggle simply re-presses and a landed toggle
+        stops immediately (never double-toggles back on). Returns the final
+        frame. Logs an error — but does not raise — if it cannot confirm Manual
+        Off, so a read never leaves the heater silently enabled.
+        """
+        _RESTORE_MAX = 10
+        txt = self._lcd.text()
+        for _ in range(_RESTORE_MAX):
+            if 'Manual Off' in txt:
+                return txt
+            txt = self._send('HEATER_1')
+        if 'Manual Off' not in txt:
+            log.error('Heater restore FAILED for %s — heater left ENABLED after '
+                      'read; manual intervention may be needed (frame=%r)',
+                      label, txt)
+        return txt
+
+    def _enable_heater(self, label: str) -> str:
+        """Toggle the selected heater item ON (out of Manual Off) via the
+        HEATER_1 switch ONLY — never +/-. Presses HEATER_1 while still Manual
+        Off, re-reading after each press so a dropped toggle re-presses. Enabling
+        reveals the stored °F. Mirror of _restore_heater_off."""
+        _MAX = 10
+        txt = self._lcd.text()
+        for _ in range(_MAX):
+            if 'Manual Off' not in txt:
+                return txt
+            txt = self._send('HEATER_1')
+        if 'Manual Off' in txt:
+            log.error('Heater enable FAILED for %s (still Manual Off, frame=%r)',
+                      label, txt)
+        return txt
+
+    def read_heater(self, which: str) -> dict:
+        """Read a heater item's state WITHOUT changing it — purely passive,
+        never presses +/- or the HEATER_1 switch.
+
+        The stored setpoint is only visible when the heater is enabled (Auto).
+        When the item shows 'Manual Off' the panel displays no temperature, and
+        the rule is to never scroll/toggle while Off — so we report enabled=False
+        and KEEP the last-known setpoint rather than toggling the heater on just
+        to peek at it. The setpoint refreshes whenever the heater is on.
         """
         if which not in ('pool', 'spa'):
             raise ValueError('which must be "pool" or "spa"')
@@ -1769,41 +2163,28 @@ class MenuNavigator:
                 self._anchor()
                 txt = self._press_until('RIGHT', lambda t: label in t,
                                         self._NAV_MAX, label)
-                was_off = 'Manual Off' in txt
-                enabled = not was_off
-                if was_off:
-                    # PLUS from Manual Off reveals (and enables at) the stored °F.
-                    txt = self._send('PLUS')
-                setpoint_f = self._degf(txt)
-                if was_off:
-                    # Restore Manual Off: toggle HEATER_1 on the item until it shows.
-                    self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
-                                      4, 'Manual Off (restore)')
+                enabled = 'Manual Off' not in txt
+                setpoint_f = self._degf(txt) if enabled else None
                 with state_lock:
                     if which == 'pool':
                         state.pool_heater_enabled = enabled
-                        state.pool_setpoint_f = setpoint_f
+                        if setpoint_f is not None:
+                            state.pool_setpoint_f = setpoint_f
                     else:
                         state.spa_heater_enabled = enabled
-                        state.spa_setpoint_f = setpoint_f
+                        if setpoint_f is not None:
+                            state.spa_setpoint_f = setpoint_f
                 return {'which': which, 'enabled': enabled,
                         'setpoint_f': setpoint_f, 'raw': txt}
         finally:
             self.fast_exit()
 
     def set_heater_enabled(self, which: str, on: bool) -> dict:
-        """
-        Enable or disable a heater (Auto vs Manual Off) via menu navigation.
+        """Enable/disable a heater using the HEATER_1 switch ONLY — never +/-.
 
-        This is the authoritative way to change heater enable state — the
-        HEATER_1 keypad key from the default display does not reliably toggle
-        the Manual Off menu state, and the HEATER_1 broadcast circuit reflects
-        'actively calling for heat', not 'enabled'.
-
-        - Enable from Manual Off: PLUS reveals the stored °F (heater now Auto),
-          then RIGHT to lock in.
-        - Disable from enabled: press HEATER_1 on the item until 'Manual Off'.
-        Idempotent: if already in the requested state, does nothing.
+        Auto <-> Manual Off is always toggled with the HEATER_1 key on the menu
+        item (the switch). Enabling reveals the stored °F, which we capture into
+        state. Idempotent: if already in the requested state, nothing happens.
         """
         if which not in ('pool', 'spa'):
             raise ValueError('which must be "pool" or "spa"')
@@ -1814,29 +2195,37 @@ class MenuNavigator:
                 txt = self._press_until('RIGHT', lambda t: label in t,
                                         self._NAV_MAX, label)
                 was_off = 'Manual Off' in txt
+                setpoint_f = None
                 if on and was_off:
-                    # PLUS from Manual Off enables at the stored setpoint.
-                    self._send('PLUS')
+                    txt = self._enable_heater(label)          # switch ON
+                    setpoint_f = self._degf(txt)
+                elif on and not was_off:
+                    setpoint_f = self._degf(txt)              # already on; read °F
                 elif not on and not was_off:
-                    # Toggle HEATER_1 on the item until 'Manual Off' appears.
-                    self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
-                                      4, 'Manual Off')
+                    txt = self._restore_heater_off(label)     # switch OFF
+                # else: not on and was_off — already off, nothing to do.
+                end_enabled = 'Manual Off' not in txt
                 with state_lock:
                     if which == 'pool':
-                        state.pool_heater_enabled = on
+                        state.pool_heater_enabled = end_enabled
+                        if setpoint_f is not None:
+                            state.pool_setpoint_f = setpoint_f
                     else:
-                        state.spa_heater_enabled = on
-                return {'which': which, 'enabled': on, 'was_off': was_off}
+                        state.spa_heater_enabled = end_enabled
+                        if setpoint_f is not None:
+                            state.spa_setpoint_f = setpoint_f
+                return {'which': which, 'enabled': end_enabled, 'was_off': was_off,
+                        'setpoint_f': setpoint_f}
         finally:
             self.fast_exit()
 
     def set_heater(self, which: str, target_f: int) -> dict:
-        """
-        Write a heater setpoint with restore-to-prior-state discipline (§13.3):
-        - If heater is 'Manual Off': enable it (PLUS reveals stored °F), set temp,
-          then re-disable via HEATER_1 toggle.
-        - If already enabled: adjust temp only; leave enable state unchanged.
-        Adjusts in 1°F steps.  target_f is clamped to [65, 104].
+        """Write a heater setpoint with +/- — but NEVER while the heater is Off.
+
+        The setpoint is only adjustable when the heater is on (Auto). If it's
+        'Manual Off', turn it on with the HEATER_1 switch first (setting a temp
+        implies wanting heat), then step to the target, and LEAVE it on. If
+        already on, just adjust. 1°F steps, clamped [65, 104].
         """
         if which not in ('pool', 'spa'):
             raise ValueError('which must be "pool" or "spa"')
@@ -1847,33 +2236,45 @@ class MenuNavigator:
                 self._anchor()
                 txt = self._press_until('RIGHT', lambda t: label in t,
                                         self._NAV_MAX, label)
-                was_off = 'Manual Off' in txt
-                if was_off:
-                    # PLUS from 'Manual Off' enables the heater and reveals the
-                    # stored °F (§12.2: non-symmetric — MINUS would not undo it).
-                    self._send('PLUS')
-
+                if 'Manual Off' in txt:
+                    # Never +/- while Off — switch it on first, then adjust.
+                    self._enable_heater(label)
                 self._step_to(self._degf, target_f,
                               'PLUS', 'MINUS', self._STEP_MAX, label)
-
-                if was_off:
-                    # Restore Manual Off: toggle HEATER_1 on the item until shown.
-                    self._press_until('HEATER_1', lambda t: 'Manual Off' in t,
-                                      4, 'Manual Off (restore)')
-
                 with state_lock:
                     if which == 'pool':
                         state.pool_setpoint_f = target_f
-                        state.pool_heater_enabled = not was_off
+                        state.pool_heater_enabled = True
                     else:
                         state.spa_setpoint_f = target_f
-                        state.spa_heater_enabled = not was_off
-
-                return {'which': which, 'target_f': target_f, 'was_off': was_off}
+                        state.spa_heater_enabled = True
+                return {'which': which, 'target_f': target_f}
         finally:
             self.fast_exit()
 
     # ── Chlorinator output % ─────────────────────────────────────────────────
+
+    def read_chlorinator(self, which: str) -> dict:
+        """Navigate to a chlorinator item and read its current % (non-mutating)."""
+        if which not in ('pool', 'spa'):
+            raise ValueError('which must be "pool" or "spa"')
+        label = self._CHLOR_LABEL[which]
+        try:
+            with _nav_lock:
+                self._anchor()
+                txt = self._press_until('RIGHT', lambda t: label in t,
+                                        self._NAV_MAX, label)
+                pct = self._pct(txt)
+                if pct is None:
+                    raise RuntimeError(f'Cannot parse {label}: {txt!r}')
+                with state_lock:
+                    if which == 'pool':
+                        state.chlorinator_percent = float(pct)
+                    else:
+                        state.spa_chlorinator_percent = float(pct)
+                return {'which': which, 'percent': pct}
+        finally:
+            self.fast_exit()
 
     def set_chlorinator(self, which: str, target_pct: int) -> dict:
         """
@@ -2062,6 +2463,143 @@ class MenuNavigator:
     def activate_vsp_slot4(self) -> dict:
         return self.activate_vsp_slot(4)
 
+    def _goto_spa_speed(self) -> str:
+        """Anchor, enter the VSP submenu, and land on 'Spa Speed'. Returns frame."""
+        self._anchor()
+        self._press_until('RIGHT', lambda t: 'VSP Speed Settings' in t,
+                          self._NAV_MAX, 'VSP Speed Settings')
+        self._press_until('PLUS', lambda t: 'Filter Speed' in t, 6, 'VSP submenu')
+        # Walk RIGHT past Filter Speed1–4 to reach Spa Speed.
+        return self._press_until('RIGHT', lambda t: 'Spa Speed' in t, 8, 'Spa Speed')
+
+    def read_spa_speed(self) -> dict:
+        """Read the Spa Speed setting from the VSP submenu (non-mutating)."""
+        try:
+            with _nav_lock:
+                txt = self._goto_spa_speed()
+                pct = self._pct(txt)
+                if pct is None:
+                    raise RuntimeError(f'Cannot parse Spa Speed: {txt!r}')
+                with state_lock:
+                    state.spa_speed = pct
+                return {'spa_speed': pct}
+        finally:
+            self.fast_exit()
+
+    def set_spa_speed(self, target_pct: int) -> dict:
+        """Write the Spa Speed setting. Snaps to 5% grid (same step size as slots)."""
+        target_pct = int(_clamp(round(target_pct / 5) * 5, 0, 100))
+        try:
+            with _nav_lock:
+                self._goto_spa_speed()
+                self._step_to(self._pct, target_pct,
+                              'PLUS', 'MINUS', self._STEP_MAX, 'Spa Speed')
+                with state_lock:
+                    state.spa_speed = target_pct
+                return {'spa_speed': target_pct}
+        finally:
+            self.fast_exit()
+
+    # ── Consolidated startup pre-fetch ───────────────────────────────────────
+
+    def read_all_settings(self) -> dict:
+        """Read every menu-navigable value in ONE menu session.
+
+        Replaces the 5–6 separate anchor/read/exit trips the plugin made at
+        startup (heater ×2, chlorinator ×2, VSP slots, spa speed). ONE anchor,
+        a single pass around the ring, one exit. The Settings ring navigates
+        both directions, so:
+
+          1. Walk RIGHT reading Spa Heater1, Pool Heater1, then Spa Chlorinator,
+             Pool Chlorinator. `_press_until` walks straight past VSP Speed
+             Settings + Super Chlorinate (both allow-listed) to the next target.
+          2. VSP submenu LAST: walk **LEFT** from Pool Chlorinator back to VSP
+             Speed Settings (rather than re-anchoring), descend, read Filter
+             Speed1–4 then Spa Speed. Leaving VSP for last means we exit the
+             submenu straight to fast_exit — no fragile submenu→ring return.
+
+        Best-effort: a failure on one item is logged and the pass continues, so
+        a single bad read doesn't cost every value. Heater reads reveal the
+        stored °F via PLUS and restore Manual Off (hardened, never left on).
+        Always fast_exits.
+        """
+        out = {'heaters': {}, 'chlorinators': {}, 'vsp_slots': {}, 'spa_speed': None}
+        try:
+            with _nav_lock:
+                # ── Single pass: heaters + chlorinators going RIGHT ─────────
+                self._anchor()
+                for which in ('spa', 'pool'):
+                    label = self._HEATER_LABEL[which]
+                    try:
+                        txt = self._press_until('RIGHT', lambda t, l=label: l in t,
+                                                self._NAV_MAX, label)
+                        # Pure read: never +/- or toggle. Setpoint only visible
+                        # when on; keep the last-known value when Manual Off.
+                        enabled = 'Manual Off' not in txt
+                        setpoint_f = self._degf(txt) if enabled else None
+                        with state_lock:
+                            if which == 'pool':
+                                state.pool_heater_enabled = enabled
+                                if setpoint_f is not None:
+                                    state.pool_setpoint_f = setpoint_f
+                            else:
+                                state.spa_heater_enabled = enabled
+                                if setpoint_f is not None:
+                                    state.spa_setpoint_f = setpoint_f
+                        out['heaters'][which] = {'enabled': enabled,
+                                                 'setpoint_f': setpoint_f}
+                    except Exception as e:
+                        log.warning('read_all_settings heater %s: %s', which, e)
+                for which in ('spa', 'pool'):
+                    label = self._CHLOR_LABEL[which]
+                    try:
+                        txt = self._press_until('RIGHT', lambda t, l=label: l in t,
+                                                self._NAV_MAX, label)
+                        pct = self._pct(txt)
+                        if pct is not None:
+                            with state_lock:
+                                if which == 'pool':
+                                    state.chlorinator_percent = float(pct)
+                                else:
+                                    state.spa_chlorinator_percent = float(pct)
+                            out['chlorinators'][which] = pct
+                    except Exception as e:
+                        log.warning('read_all_settings chlorinator %s: %s', which, e)
+
+                # ── VSP submenu LAST: walk LEFT back to it, no re-anchor ────
+                try:
+                    self._press_until('LEFT', lambda t: 'VSP Speed Settings' in t,
+                                      self._NAV_MAX, 'VSP Speed Settings')
+                    self._press_until('PLUS', lambda t: 'Filter Speed' in t,
+                                      6, 'VSP submenu')
+                    txt = self._press_until('RIGHT', lambda t: 'Filter Speed1' in t,
+                                            2, 'Filter Speed1')
+                    slots = {}
+                    for slot in (1, 2, 3, 4):
+                        if slot > 1:
+                            txt = self._press_until(
+                                'RIGHT', lambda t, s=slot: f'Filter Speed{s}' in t,
+                                4, f'Filter Speed{slot}')
+                        pct = self._pct(txt)
+                        if pct is not None:
+                            slots[slot] = pct
+                    with state_lock:
+                        state.vsp_slot_pct.update(slots)
+                    out['vsp_slots'] = slots
+                    # Spa Speed is the sub-item after Filter Speed4.
+                    txt = self._press_until('RIGHT', lambda t: 'Spa Speed' in t,
+                                            4, 'Spa Speed')
+                    spa_pct = self._pct(txt)
+                    if spa_pct is not None:
+                        with state_lock:
+                            state.spa_speed = spa_pct
+                        out['spa_speed'] = spa_pct
+                except Exception as e:
+                    log.warning('read_all_settings vsp/spa-speed: %s', e)
+        finally:
+            self.fast_exit()
+        return out
+
 
 def _get_panel():
     with panel_lock:
@@ -2086,6 +2624,11 @@ app.logger.setLevel(logging.WARNING)
 
 @app.route('/status')
 def get_status() -> Response:
+    # Compute the cooldown remainder BEFORE taking state_lock: _wedge_cooling_down()
+    # acquires state_lock itself, and state_lock is non-reentrant, so calling it
+    # inside the `with state_lock:` block below self-deadlocks — pinning state_lock
+    # forever and taking every status poll (and the whole accessory set) offline.
+    cooldown = _wedge_cooling_down()
     with state_lock:
         return jsonify({
             'circuits':            dict(state.circuits),
@@ -2093,8 +2636,10 @@ def get_status() -> Response:
             'air_temp':            state.air_temp,
             'spa_temp':            state.spa_temp,
             'salt_level':          state.salt_level,
-            'chlorinator_percent': state.chlorinator_percent,
-            'pump_speed':          state.pump_speed,
+            'chlorinator_percent':     state.chlorinator_percent,
+            'spa_chlorinator_percent': state.spa_chlorinator_percent,
+            'pump_speed':              state.pump_speed,
+            'spa_speed':               state.spa_speed,
             # heater setpoints are read via menu navigation, cached here after reads
             'pool_setpoint_f':     state.pool_setpoint_f,
             'spa_setpoint_f':      state.spa_setpoint_f,
@@ -2107,6 +2652,7 @@ def get_status() -> Response:
             'connected':           state.connected,
             'last_update':         state.last_update,
             'bridge_wedged':       state.bridge_wedged,
+            'wedge_cooldown_remaining_s': round(cooldown) if cooldown else 0,
             'backend':             _active_backend,
         })
 
@@ -2151,11 +2697,15 @@ def set_backend() -> Response:
 
     cfg = _load_backend_config()
     cfg['backend'] = backend
-    for k in ('aquaconnect_host', 'rs485_host'):
+    for k in ('aquaconnect_host', 'rs485_host', 'observe_rs485_host'):
         if body.get(k):
             cfg[k] = body[k]
     if body.get('rs485_port'):
         cfg['rs485_port'] = int(body['rs485_port'])
+    if body.get('observe_rs485_port'):
+        cfg['observe_rs485_port'] = int(body['observe_rs485_port'])
+    if 'observe_rs485' in body:
+        cfg['observe_rs485'] = bool(body['observe_rs485'])
 
     # No-op if nothing actually changes (avoid a needless restart loop).
     if backend == _active_backend and cfg == _load_backend_config():
@@ -2176,6 +2726,280 @@ def set_backend() -> Response:
         os._exit(0)
     threading.Thread(target=_restart, daemon=True, name='backend-restart').start()
     return jsonify({'ok': True, 'restarting': True, 'backend': backend})
+
+
+@app.route('/backend/toggle', methods=['POST'])
+def toggle_backend() -> Response:
+    """Flip the active backend to the other one and restart into it.
+
+    The whole-sidecar switch is the 'fully silent idle' toggle: only the active
+    backend's process paths run, so the other bridge never touches the panel —
+    every read/write/benchmark on the new active backend is single-transport.
+    Clears observe_rs485 so the clean (no parallel observer) mode is used.
+    """
+    other = 'rs485' if _active_backend == 'aquaconnect' else 'aquaconnect'
+    cfg = _load_backend_config()
+    cfg['backend'] = other
+    cfg['observe_rs485'] = False   # single-transport: no parallel observer
+    try:
+        _save_backend_config(cfg)
+    except Exception as e:
+        log.error('toggle_backend persist failed: %s', e)
+        return jsonify({'error': f'persist failed: {e}'}), 500
+    log.info('Backend TOGGLE %s -> %s; restarting.', _active_backend, other)
+
+    def _restart() -> None:
+        time.sleep(0.5)
+        os._exit(0)
+    threading.Thread(target=_restart, daemon=True, name='backend-toggle').start()
+    return jsonify({'ok': True, 'restarting': True,
+                    'from': _active_backend, 'to': other})
+
+
+# ── Backend-agnostic live frame stream + per-backend benchmark ───────────────
+# Upstream consumes /stream (active backend) and never names a backend. The
+# /stream/<name> and /benchmark/<name> forms target a specific backend by name
+# — needed for the parallel RS-485 validation where both buses run at once.
+
+_STREAM_BACKENDS = ('aquaconnect', 'rs485')
+
+
+def _sse_response(hub: FrameHub) -> Response:
+    """Server-Sent Events feed of a hub's frames (recent tail, then live)."""
+    def gen():
+        yield 'retry: 3000\n\n'
+        for f in hub.recent(10):
+            yield f'data: {json.dumps(f)}\n\n'
+        for f in hub.follow(timeout=20.0):
+            if f is None:
+                yield ': heartbeat\n\n'        # keep the connection alive
+            else:
+                yield f'data: {json.dumps(f)}\n\n'
+    return Response(gen(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache',
+                             'X-Accel-Buffering': 'no',
+                             'Connection': 'keep-alive'})
+
+
+@app.route('/stream')
+def stream_active() -> Response:
+    """Live LCD frame stream from whichever backend is active (SSE)."""
+    return _sse_response(_get_hub(_active_backend or 'aquaconnect'))
+
+
+@app.route('/stream/<name>')
+def stream_named(name: str) -> Response:
+    """Live LCD frame stream from a named backend, even if it's only observing."""
+    if name not in _STREAM_BACKENDS:
+        return jsonify({'error': f'unknown backend: {name}'}), 404
+    return _sse_response(_get_hub(name))
+
+
+@app.route('/backends')
+def list_backends() -> Response:
+    """List known backends, their role (active/observer/inactive), and liveness."""
+    out = []
+    for name in _STREAM_BACKENDS:
+        hub = _frame_hubs.get(name)
+        if name == _active_backend:
+            role = 'active'
+        elif name == 'rs485' and _rs485_observer is not None:
+            role = 'observer'
+        else:
+            role = 'inactive'
+        info = {
+            'name': name,
+            'role': role,
+            'frames_seen': hub._seq if hub else 0,
+            'last_frame_ts': hub.last_publish if hub else None,
+        }
+        if name == 'rs485' and (_rs485_observer is not None or _rs485_obs_state):
+            with _rs485_obs_lock:
+                info['connected'] = bool(_rs485_obs_state.get('connected'))
+                info['observed_state'] = dict(_rs485_obs_state)
+        out.append(info)
+    return jsonify({'active': _active_backend, 'backends': out})
+
+
+@app.route('/benchmark/<name>', methods=['POST'])
+def benchmark_named(name: str) -> Response:
+    """Run a navigation speed test on a named backend.
+
+    Body: {"laps"?: int=3, "slot"?: int=1, "min_gap"?, "post_menu_settle"?,
+           "key_timeout"?}. Walks read_vsp_slot(slot) for `laps` laps and reports
+    per-lap wall time, keypresses, drops, and (per key) the wait latency from
+    the nav trace. Comparable across backends — for RS-485 the latency is the
+    bus round-trip; for AquaConnect it's the HTTP frame-reader confirm time.
+
+    Prefers the ACTIVE backend (single-transport, no cross-bridge contention).
+    Falls back to the observe-only RS-485 listener only if rs485 is requested
+    while AquaConnect is active.
+    """
+    if name not in _STREAM_BACKENDS:
+        return jsonify({'error': f'unknown backend: {name}'}), 404
+    body = request.get_json(silent=True) or {}
+    laps = max(1, int(body.get('laps', 3)))
+    slot = int(body.get('slot', 1))
+    applied = _apply_overrides(_nav_timing_defaults(), body)
+
+    nav, mode, err, code = _resolve_benchmark_nav(name)
+    if nav is None:
+        return jsonify({'error': err}), code
+
+    result = _run_nav_benchmark(nav, laps, slot, applied, is_rs485=(name == 'rs485'))
+    result['backend'] = name
+    result['mode'] = mode   # 'active' (single-transport) or 'observer'
+    return jsonify(result)
+
+
+@app.route('/benchmark/rs485/sweep', methods=['POST'])
+def rs485_sweep() -> Response:
+    """Sweep key_predelay_ms values to find the RS-485 panel's accept window.
+
+    Body: {"predelays_ms": [30,50,70,100,150], "laps"?: 2, "slot"?: 1,
+           "key_burst"?: 1, "key_timeout"?: 4.0, "post_menu_settle"?: 0.35}
+
+    Runs a benchmark lap for each predelay in order. Returns each run's drop
+    rate and avg key latency so you can pick the timing that minimises drops.
+    Aborts early if a run produces 0 successful keys (panel stuck).
+    """
+    nav, mode, err, code = _resolve_benchmark_nav('rs485')
+    if nav is None:
+        return jsonify({'error': err}), code
+
+    body = request.get_json(force=True) or {}
+    predelays = body.get('predelays_ms',
+                         [20, 30, 50, 70, 100, 130, 160, 200])
+    laps = max(1, int(body.get('laps', 2)))
+    slot = int(body.get('slot', 1))
+    base = _apply_overrides(_nav_timing_defaults(), body)
+
+    runs = []
+    for pd in predelays:
+        applied = dict(base)
+        applied['key_predelay_ms'] = float(pd)
+        result = _run_nav_benchmark(nav, laps, slot, applied, is_rs485=True)
+        s = result['summary']
+        entry = {
+            'key_predelay_ms': pd,
+            'ok_laps': s['ok_laps'],
+            'laps': s['laps'],
+            'avg_s': s['avg_s'],
+            'drop_rate_pct': s['drop_rate_pct'],
+            'avg_key_latency_ms': s.get('avg_key_latency_ms'),
+            'total_drops': s['total_drops'],
+            'total_presses': s['total_presses'],
+        }
+        runs.append(entry)
+        # If every lap failed with this predelay, the panel may be stuck in a
+        # menu — abort rather than compounding errors.
+        if s['ok_laps'] == 0 and s['laps'] >= 2:
+            log.warning('rs485_sweep: all laps failed at predelay=%sms — aborting', pd)
+            break
+
+    # Rank by drop rate (ascending), then avg_s
+    clean = [r for r in runs if r['ok_laps'] > 0]
+    clean.sort(key=lambda r: (r['drop_rate_pct'] or 999, r['avg_s'] or 999))
+    return jsonify({
+        'runs': runs,
+        'best': clean[0] if clean else None,
+        'mode': mode,   # 'active' (single-transport) or 'observer'
+        'params': {'laps': laps, 'slot': slot},
+    })
+
+
+def _pct(sorted_vals: list, p: float):
+    """Simple percentile (nearest-rank) of a pre-sorted list."""
+    if not sorted_vals:
+        return None
+    k = max(0, min(len(sorted_vals) - 1, int(round(p / 100.0 * (len(sorted_vals) - 1)))))
+    return sorted_vals[k]
+
+
+@app.route('/debug/rs485/taptest', methods=['POST'])
+def rs485_taptest() -> Response:
+    """Fast keypress-landing probe for tuning the RS-485/WiFi-bridge timing.
+
+    Body: {"presses"?: 20, "timeout"?: 1.5, "predelay_ms"?: <set live first>}
+
+    Enters the Settings menu and fires single, benign RIGHT/LEFT presses (cursor
+    moves only — no equipment changes), measuring for EACH press whether it
+    landed (display changed) and how long it took. Reports landing rate plus the
+    latency distribution (min/p50/p90/max) of landed presses — the long tail is
+    the signature of bridge buffering/jitter. Much faster than the full nav
+    benchmark, so it's the loop to use while changing bridge settings.
+
+    Single presses with NO re-press, so the landing rate is the raw per-window
+    hit probability (unlike the benchmark, whose navigator re-presses drops).
+    """
+    nav, mode, err, code = _resolve_benchmark_nav('rs485')
+    if nav is None:
+        return jsonify({'error': err}), code
+
+    body = request.get_json(silent=True) or {}
+    presses = max(1, int(body.get('presses', 20)))
+    timeout = float(body.get('timeout', 1.5))
+
+    global KEY_PREDELAY_MS
+    saved_predelay = KEY_PREDELAY_MS
+    if body.get('predelay_ms') is not None:
+        KEY_PREDELAY_MS = float(body['predelay_ms'])
+    saved_timeout = MenuNavigator._KEY_TIMEOUT
+    MenuNavigator._KEY_TIMEOUT = timeout
+
+    results = []
+    anchor_error = None
+    try:
+        with _nav_lock:
+            nav._anchor()
+            for i in range(presses):
+                key = 'RIGHT' if i % 2 == 0 else 'LEFT'
+                before = nav.text()
+                t0 = time.time()
+                after = nav._send(key)
+                dt_ms = round((time.time() - t0) * 1000, 1)
+                # A true landing means display changed AND we're still in the
+                # Settings Menu ring (not a panel-auto-exit to status display).
+                # Without this check, panel timeouts that change the LCD text
+                # look like landed presses (false positives at slow timeouts).
+                real_nav = (after != before and nav._in_settings(after))
+                if not real_nav and after != before:
+                    # Panel escaped the menu — re-anchor before continuing.
+                    try:
+                        nav._anchor()
+                    except RuntimeError:
+                        break
+                results.append({'landed': real_nav, 'latency_ms': dt_ms})
+    except RuntimeError as e:
+        anchor_error = str(e)
+    finally:
+        MenuNavigator._KEY_TIMEOUT = saved_timeout
+        KEY_PREDELAY_MS = saved_predelay
+        try:
+            nav.fast_exit()
+        except Exception:
+            pass
+
+    if anchor_error and not results:
+        return jsonify({'error': anchor_error}), 503
+
+    landed = [r for r in results if r['landed']]
+    lat = sorted(r['latency_ms'] for r in landed)
+    return jsonify({
+        'mode': mode,
+        'presses': presses,
+        'landed': len(landed),
+        'landing_rate_pct': round(100 * len(landed) / presses, 1),
+        'predelay_ms': saved_predelay if body.get('predelay_ms') is None
+                       else float(body['predelay_ms']),
+        'latency_ms': {
+            'min': lat[0] if lat else None,
+            'p50': _pct(lat, 50),
+            'p90': _pct(lat, 90),
+            'max': lat[-1] if lat else None,
+        },
+        'detail': results,
+    })
 
 
 @app.route('/bridge/health')
@@ -2435,40 +3259,78 @@ def run_wedge_test() -> Response:
 
 
 def _nav_timing_defaults() -> dict:
-    """Snapshot the current navigation timing tunables (frame-reader model)."""
+    """Snapshot the current navigation timing tunables."""
     return {
-        'min_gap': _AC_MIN_GAP_S,
+        'min_gap': _AC_MIN_GAP_S,                        # AC only
         'post_menu_settle': MenuNavigator._POST_MENU_SETTLE_S,
         'key_timeout': MenuNavigator._KEY_TIMEOUT,
+        'key_predelay_ms': KEY_PREDELAY_MS,              # RS-485 only
+        'key_burst': KEY_BURST,                          # RS-485 only
     }
 
 
 def _apply_overrides(base: dict, body: dict) -> dict:
     """Merge requested timing overrides onto a base snapshot, coercing types."""
     applied = dict(base)
-    for k in ('min_gap', 'post_menu_settle', 'key_timeout'):
+    for k in ('post_menu_settle', 'key_timeout'):
         if body.get(k) is not None:
             applied[k] = float(body[k])
+    if body.get('min_gap') is not None:
+        applied['min_gap'] = float(body['min_gap'])
+    if body.get('key_predelay_ms') is not None:
+        applied['key_predelay_ms'] = float(body['key_predelay_ms'])
+    if body.get('key_burst') is not None:
+        applied['key_burst'] = int(body['key_burst'])
     return applied
 
 
-def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
+def _resolve_benchmark_nav(name: str):
+    """Pick the navigator to benchmark for `name`.
+
+    Returns (nav, mode, err, http_code). Prefers the ACTIVE backend so the run
+    is single-transport (reads, nav and confirmation all on one bridge — the
+    true 'is this backend viable on its own' test). Only falls back to the
+    observe-only RS-485 listener when rs485 is asked for while AC is active.
+    """
+    if name == _active_backend:
+        nav = _get_navigator()
+        if nav is None:
+            return None, None, f'{name} active but navigator unavailable', 503
+        return nav, 'active', None, 200
+    if name == 'rs485' and _rs485_observer is not None:
+        return _rs485_observer.nav, 'observer', None, 200
+    return None, None, (f'{name} is not the active backend and has no observer; '
+                        f'toggle to it first (POST /backend/toggle)'), 503
+
+
+def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict,
+                       is_rs485: bool = False) -> dict:
     """Apply `applied` tunables, time read_vsp_slot(slot) over `laps`, restore.
 
     read_vsp_slot is pure navigate-and-read — no panel state changes. Returns a
     dict with per-lap detail and an aggregate summary. Always restores the
     previous tunables, even on error.
+
+    For RS-485 benchmarks (is_rs485=True) the relevant tunables are
+    key_predelay_ms, key_burst, key_timeout, and post_menu_settle.  The AC
+    min_gap is not applicable. The 'requests' metric counts AC HTTP requests
+    that happened alongside (the AC poll loop keeps running), so it's omitted
+    from RS-485 results to avoid confusion.
     """
-    global _AC_MIN_GAP_S
+    global _AC_MIN_GAP_S, KEY_PREDELAY_MS, KEY_BURST
     saved = _nav_timing_defaults()
     laps_out: list = []
     try:
         _AC_MIN_GAP_S = applied['min_gap']
         MenuNavigator._POST_MENU_SETTLE_S = applied['post_menu_settle']
         MenuNavigator._KEY_TIMEOUT = applied['key_timeout']
+        if is_rs485:
+            KEY_PREDELAY_MS = applied['key_predelay_ms']
+            KEY_BURST = applied['key_burst']
 
         for i in range(laps):
             seq0 = _NAV_SEQ[0]
+            req0 = _ac_backend._req_count if (_ac_backend and not is_rs485) else 0
             t0 = time.time()
             ok, err = True, None
             try:
@@ -2476,34 +3338,62 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
             except Exception as e:
                 ok, err = False, str(e)
             dt = time.time() - t0
-            # Count keypresses logged during this lap and how many were drops
-            # (a press that produced no display change → caller re-pressed).
             with _NAV_TRACE_LOCK:
                 lap_keys = [e for e in _NAV_TRACE if e['seq'] > seq0]
             presses = len(lap_keys)
             drops = sum(1 for e in lap_keys if not e['changed'])
-            laps_out.append({
+            lap: dict = {
                 'lap': i + 1, 'ok': ok, 'seconds': round(dt, 2),
                 'presses': presses, 'drops': drops,
                 **({'error': err} if err else {}),
-            })
+            }
+            if not is_rs485:
+                # AC: count HTTP requests (presses + frame-reader reads);
+                # validates the N+1-per-N-keys frame-reader design.
+                lap['requests'] = (_ac_backend._req_count - req0
+                                   if _ac_backend else 0)
+            else:
+                # RS-485: report avg per-key latency from the trace (bus
+                # round-trip from send_key → on_change confirmation).
+                key_latencies = [e['wait_s'] for e in lap_keys if e['changed']]
+                lap['avg_key_latency_ms'] = (
+                    round(sum(key_latencies) / len(key_latencies) * 1000, 1)
+                    if key_latencies else None)
+            laps_out.append(lap)
     finally:
         _AC_MIN_GAP_S = saved['min_gap']
         MenuNavigator._POST_MENU_SETTLE_S = saved['post_menu_settle']
         MenuNavigator._KEY_TIMEOUT = saved['key_timeout']
+        if is_rs485:
+            KEY_PREDELAY_MS = saved['key_predelay_ms']
+            KEY_BURST = saved['key_burst']
 
     ok_laps = [l for l in laps_out if l['ok']]
     times = [l['seconds'] for l in ok_laps]
-    summary = {
+    total_presses = sum(l['presses'] for l in laps_out)
+    summary: dict = {
         'laps': laps, 'ok_laps': len(ok_laps),
         'total_s': round(sum(l['seconds'] for l in laps_out), 2),
         'avg_s': round(sum(times) / len(times), 2) if times else None,
         'min_s': min(times) if times else None,
         'max_s': max(times) if times else None,
-        'total_presses': sum(l['presses'] for l in laps_out),
+        'total_presses': total_presses,
         'total_drops': sum(l['drops'] for l in laps_out),
+        'drop_rate_pct': round(
+            100 * sum(l['drops'] for l in laps_out) / total_presses, 1
+        ) if total_presses else None,
     }
-    return {'summary': summary, 'laps_detail': laps_out}
+    if not is_rs485:
+        total_requests = sum(l.get('requests', 0) for l in laps_out)
+        summary['total_requests'] = total_requests
+        summary['requests_per_press'] = (
+            round(total_requests / total_presses, 2) if total_presses else None)
+    else:
+        valid_avgs = [l['avg_key_latency_ms'] for l in laps_out
+                      if l.get('avg_key_latency_ms') is not None]
+        summary['avg_key_latency_ms'] = (
+            round(sum(valid_avgs) / len(valid_avgs), 1) if valid_avgs else None)
+    return {'summary': summary, 'laps_detail': laps_out, 'applied': applied}
 
 
 @app.route('/debug/nav-benchmark', methods=['POST'])
@@ -2588,6 +3478,8 @@ def nav_sweep() -> Response:
                 'post_menu_settle': applied['post_menu_settle'],
                 'total_s': s['total_s'], 'avg_s': s['avg_s'],
                 'drops': s['total_drops'], 'presses': s['total_presses'],
+                'requests': s['total_requests'],
+                'requests_per_press': s['requests_per_press'],
                 'ok_laps': s['ok_laps'], 'laps': s['laps'],
             })
             # A run where EVERY lap failed is the wedge signature: presses
@@ -2675,14 +3567,25 @@ def _ac_canary_probe() -> dict:
 def _canary_probe_loop() -> None:
     """Background thread: periodically probe the command path when idle.
 
-    Healthy: probe every _WEDGE_PROBE_INTERVAL_S (cheap liveness check).
-    Wedged:  probe every _WEDGE_RECOVERY_INTERVAL_S so recovery after a
-             power-cycle is reflected quickly instead of waiting a full cycle.
+    Healthy:  probe every _WEDGE_PROBE_INTERVAL_S (cheap liveness check).
+    Wedged:   wait out the power-cycle cooldown window (_WEDGE_POWERCYCLE_COOLDOWN_S)
+              so the box has time to reboot, then probe immediately. After that
+              probe every _WEDGE_RECOVERY_INTERVAL_S until recovery confirmed.
     """
     # Stagger first probe so it doesn't fire at startup during initial connect.
     time.sleep(60 + random.uniform(0, 30))
     while True:
         try:
+            remaining = _wedge_cooling_down()
+            if remaining is not None:
+                # Still in the power-cycle cooldown — sleep out the remainder
+                # then probe immediately on wake so recovery is detected fast.
+                log.debug('Wedge cooldown: %.0fs remaining — deferring probe', remaining)
+                time.sleep(remaining + 2)   # +2s margin for box to finish booting
+                if _ac_backend is not None and not _nav_lock.busy():
+                    log.info('Wedge cooldown elapsed — probing for recovery')
+                    _ac_canary_probe()
+                continue
             # Defer to any real action that is running OR queued so the probe's
             # canary presses never stomp on a user command (busy() covers both).
             if _ac_backend is not None and not _nav_lock.busy():
@@ -2700,23 +3603,54 @@ def set_mode() -> Response:
     Set pool/spa valve mode.  Body: {"mode": "pool"|"spa"}
 
     For pool+spa-only systems this is a single cycle-key press whenever the
-    current mode differs from the target.  Optimistically updates valve_mode
-    so the next /status poll reflects the change immediately.
+    current mode differs from the target.
     """
     body = request.get_json(force=True)
     target = body.get('mode', '').lower()
     if target not in ('pool', 'spa'):
         return jsonify({'error': 'mode must be "pool" or "spa"'}), 400
+
+    with state_lock:
+        current = state.valve_mode
+        wedged = state.bridge_wedged
+    if current == target:
+        return jsonify({'ok': True, 'mode': target, 'changed': False})
+
+    if _ac_backend is not None:
+        block = _wedge_block_response()
+        if block:
+            return block
+        # SPA and POOL both share key code '07' (the panel's pool/spa cycle key).
+        # We only press when not already in the target state (idempotency guard).
+        key_name = 'SPA' if target == 'spa' else 'POOL'
+        try:
+            with _nav_lock:
+                _ac_backend.send_nav_key(key_name)
+                with state_lock:
+                    new_mode = state.valve_mode
+        except Exception as e:
+            # An exception here means the keypress itself failed (socket/HTTP) —
+            # that IS a command-path failure worth a wedge probe.
+            log.error(f'set_mode (AC) {target}: {e}')
+            _record_command_failure()
+            _immediate_wedge_probe()
+            return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
+        # The keypress landed. We do NOT hard-fail when valve_mode hasn't flipped
+        # yet: the valve actuates over ~10-30s and the mode LEDs lag during the
+        # transition, so a single confirming frame often still shows the old mode.
+        # Report success — the poll loop reconciles valve_mode as the valve
+        # finishes — and only note in the log whether it confirmed immediately.
+        _record_command_success()
+        confirmed = (new_mode == target)
+        log.info('Mode -> %s (AquaConnect)%s', target,
+                 '' if confirmed else ' (actuating, not yet confirmed)')
+        return jsonify({'ok': True, 'mode': target, 'changed': True,
+                        'confirmed': confirmed})
+
     p = _get_panel()
     if p is None:
         return jsonify({'error': 'Not connected'}), 503
-    with state_lock:
-        current = state.valve_mode
-    if current == target:
-        return jsonify({'ok': True, 'mode': target, 'changed': False})
     try:
-        # Send the POOL/SPA cycle key via the existing circuit path.
-        # For pool+spa-only systems one press always toggles.
         p.set_circuit('POOL' if target == 'pool' else 'SPA', True)
         with state_lock:
             state.valve_mode = target
@@ -2728,52 +3662,140 @@ def set_mode() -> Response:
 
 
 # Equipment circuits that toggle with a single AquaConnect keypad key. Maps the
-# circuit name to its _AC_KEY_CODES entry. POOL/SPA/SPILLOVER are valve-mode
-# controls (handled via /mode) and HEATER_1 routes through the navigator below,
-# so neither appears here.
+# circuit name to its _AC_KEY_CODES entry. POOL/SPA are handled above (shared
+# key 07, mode cycle). HEATER_1 routes through the navigator's Settings menu.
 _AC_CIRCUIT_KEYS = {
     'FILTER': 'FILTER', 'LIGHTS': 'LIGHTS', 'AUX_1': 'AUX1', 'AUX_2': 'AUX2',
 }
 
 
-def _ac_set_circuit(key: str, on: bool) -> Response:
-    """Drive a circuit on/off through the AquaConnect backend.
+def _ac_heater_enable(which: str, on: bool) -> Response:
+    """Toggle a heater on/off via AquaConnect keypad press, then read the setpoint.
 
-    HEATER_1 is the shared heater: it follows the active valve mode (pool heater
-    in pool mode, spa heater in spa mode) and goes through the navigator's
-    Settings-menu enable toggle — the keypad HEATER_1 key is unreliable from the
-    idle screen. The simple equipment circuits send their keypad key once (only
-    if not already in the desired state) and confirm via the re-read LED state.
+    Two-phase:
+    1. Press HEATER1 key (code 13) directly if `which` matches the current active
+       body — the LCD response immediately shows 'Heater1 Auto Control' or
+       'Heater1 Manual Off' which _apply_ac_scroll_to_state captures, giving
+       HomeKit a sub-second confirmation.  If `which` is the non-active body
+       (e.g. pool heater while in spa mode), fall back to menu navigation.
+    2. If enabling: spawn a background thread to nav.read_heater(which) so the
+       thermostat's target-temperature field is populated from the Settings menu.
     """
-    log.info('HomeKit action: circuit %s -> %s', key, 'ON' if on else 'OFF')
-    with state_lock:
-        wedged = state.bridge_wedged
-    if wedged:
-        return jsonify({
-            'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
-            'bridge_wedged': True,
-        }), 503
+    block = _wedge_block_response()
+    if block:
+        return block
 
-    if key == 'HEATER_1':
+    with state_lock:
+        cur = state.spa_heater_enabled if which == 'spa' else state.pool_heater_enabled
+        cur_mode = state.valve_mode
+
+    if cur == on:
+        return jsonify({'ok': True, 'already': True, 'which': which})
+
+    if cur_mode == which:
+        # Active body → direct keypad press; LCD response confirms the new state.
+        with _nav_lock:
+            _ac_backend.send_nav_key('HEATER1')   # key code '13'
+            with state_lock:
+                new = state.spa_heater_enabled if which == 'spa' else state.pool_heater_enabled
+        if new != on:
+            log.warning('Heater %s -> %s not confirmed from LCD (still %s)', which, on, new)
+            _record_command_failure()
+            _immediate_wedge_probe()
+            return jsonify({
+                'error': f'Heater {which} enable={on} not confirmed',
+                'bridge_wedged': state.bridge_wedged,
+            }), 502
+    else:
+        # Non-active body → must navigate Settings menu to reach the right heater.
         nav = _get_navigator()
         if nav is None:
             return jsonify({'error': 'Not connected'}), 503
-        with state_lock:
-            which = 'spa' if state.valve_mode == 'spa' else 'pool'
         try:
-            result = nav.set_heater_enabled(which, on)
+            # set_heater_enabled acquires _nav_lock itself — do NOT wrap it in
+            # another `with _nav_lock:` here. _nav_lock is non-reentrant, so a
+            # nested acquire deadlocks the thread (and pins the lock forever,
+            # wedging every later command).
+            nav.set_heater_enabled(which, on)
         except Exception as e:
-            log.error('HomeKit action HEATER_1 failed: %s — probing bridge', e)
+            log.error('Heater %s enable via nav failed: %s', which, e)
             _record_command_failure()
             _immediate_wedge_probe()
             return jsonify({'error': str(e), 'bridge_wedged': state.bridge_wedged}), 502
-        # Frame reader wakes immediately after set_heater_enabled releases
-        # _nav_lock (send_nav_key signals _read_wake on each keypress), so the
-        # confirmation screen lands in pool/spa_heater_enabled within one read
-        # cycle — no explicit read needed here.
-        _record_command_success()
-        log.info('AquaConnect heater (%s) -> %s', which, 'ON' if on else 'OFF')
-        return jsonify({'ok': True, 'which': which, **result})
+
+    _record_command_success()
+    log.info('Heater %s -> %s (AquaConnect)', which, 'ON' if on else 'OFF')
+
+    # Phase 2: if enabling, read the setpoint from the Settings menu in the
+    # background so the thermostat tile shows the target temperature without
+    # blocking the HomeKit response.
+    if on:
+        def _bg_read_setpoint():
+            nav = _get_navigator()
+            if nav is None:
+                return
+            try:
+                # read_heater acquires _nav_lock itself — wrapping it in another
+                # `with _nav_lock:` here self-deadlocks (non-reentrant lock) and
+                # pins the lock forever, wedging every later command.
+                nav.read_heater(which)
+                log.debug('bg heater read %s: setpoint updated', which)
+            except Exception as exc:
+                log.debug('bg heater read %s: %s', which, exc)
+        threading.Thread(target=_bg_read_setpoint, daemon=True,
+                         name=f'bg-heater-{which}').start()
+
+    return jsonify({'ok': True, 'which': which})
+
+
+def _ac_set_circuit(key: str, on: bool) -> Response:
+    """Drive a circuit on/off through the AquaConnect backend.
+
+    HEATER_1 routes through _ac_heater_enable (direct keypress + background
+    setpoint read). POOL/SPA are body-mode cycle presses. Simple equipment
+    circuits send their keypad key once and confirm via the re-read LED state.
+    """
+    log.info('HomeKit action: circuit %s -> %s', key, 'ON' if on else 'OFF')
+    block = _wedge_block_response()
+    if block:
+        return block
+
+    if key == 'HEATER_1':
+        with state_lock:
+            which = 'spa' if state.valve_mode == 'spa' else 'pool'
+        return _ac_heater_enable(which, on)
+
+    # POOL and SPA share key '07' (mode cycle: POOL → SPA → SPILLOVER → POOL).
+    # Turning one on turns the other off (mutually exclusive body modes).
+    # Turning one OFF means switching to the other body.
+    if key in ('POOL', 'SPA'):
+        dest = key.lower() if on else ('pool' if key == 'SPA' else 'spa')
+        with state_lock:
+            cur_mode = state.valve_mode
+        if cur_mode == dest:
+            return jsonify({'ok': True, 'already': True})
+        # Press the shared mode key up to 3 times (full cycle length) until
+        # the LED poll confirms the target mode. No menu navigation needed —
+        # this is a direct keypad press that the next read cycle confirms.
+        with _nav_lock:
+            for _ in range(3):
+                _ac_backend.send_nav_key('POOL')  # 'POOL'/'SPA'/'SPILLOVER' all → key 07
+                with state_lock:
+                    if state.valve_mode == dest:
+                        break
+            with state_lock:
+                confirmed = state.valve_mode == dest
+        if confirmed:
+            _record_command_success()
+            log.info('Body mode -> %s (AquaConnect circuit %s -> %s)', dest, key, 'ON' if on else 'OFF')
+            return jsonify({'ok': True, 'valve_mode': dest})
+        log.warning('Body mode switch to %s not confirmed (still %s) — probing bridge', dest, state.valve_mode)
+        _record_command_failure()
+        _immediate_wedge_probe()
+        return jsonify({
+            'error': f'Body mode switch to {dest} not confirmed',
+            'bridge_wedged': state.bridge_wedged,
+        }), 502
 
     keypad = _AC_CIRCUIT_KEYS.get(key)
     if keypad is None:
@@ -2908,15 +3930,27 @@ def debug_rawkey() -> Response:
         return jsonify({'error': str(e)}), 500
 
 
+def _current_key_timing() -> dict:
+    return {'burst': KEY_BURST, 'predelay_ms': KEY_PREDELAY_MS,
+            'gap_ms': KEY_GAP_MS, 'max_retries': KEY_MAX_RETRIES,
+            'verify_delay_s': KEY_VERIFY_DELAY_S, 'pad_bytes': KEY_PAD_BYTES}
+
+
+@app.route('/keytiming', methods=['GET', 'POST'])
 @app.route('/debug/keyburst', methods=['GET', 'POST'])
 def debug_keyburst() -> Response:
-    """Live-tune the key-burst timing without a restart (diagnostics).
+    """Live-tune the RS-485 key timing without a restart.
 
-    POST JSON any of: burst (int), predelay_ms (float), gap_ms (float).
-    The _send_frame_burst closure reads these globals on each send, so changes
-    take effect on the next keypress.
+    POST JSON any of: burst (int), predelay_ms (float), gap_ms (float),
+    max_retries (int), verify_delay_s (float), pad_bytes (int). The send path
+    reads these globals on each keypress, so changes take effect immediately.
+
+    Pass "persist": true to save the resulting values to backend.json so they
+    survive sidecar restarts/reboots — useful when dialing in timing over many
+    debug runs. The persisted values override the CLI --key-* args at startup.
     """
     global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES
+    persisted = False
     if request.method == 'POST':
         body = request.get_json(force=True) or {}
         if 'burst' in body:
@@ -2931,15 +3965,21 @@ def debug_keyburst() -> Response:
             KEY_VERIFY_DELAY_S = float(body['verify_delay_s'])
         if 'pad_bytes' in body:
             KEY_PAD_BYTES = max(0, int(body['pad_bytes']))
-        log.info('Key-burst retuned: burst=%d predelay=%.0fms gap=%.0fms '
+        log.info('Key timing retuned: burst=%d predelay=%.0fms gap=%.0fms '
                  'retries=%d verify=%.1fs pad=%d', KEY_BURST, KEY_PREDELAY_MS,
                  KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES)
-    return jsonify({'burst': KEY_BURST,
-                    'predelay_ms': KEY_PREDELAY_MS,
-                    'gap_ms': KEY_GAP_MS,
-                    'max_retries': KEY_MAX_RETRIES,
-                    'verify_delay_s': KEY_VERIFY_DELAY_S,
-                    'pad_bytes': KEY_PAD_BYTES})
+        if body.get('persist'):
+            try:
+                cfg = _load_backend_config()
+                cfg['key_timing'] = _current_key_timing()
+                _save_backend_config(cfg)
+                persisted = True
+                log.info('Key timing persisted to backend.json')
+            except Exception as e:
+                log.error('Could not persist key timing: %s', e)
+    out = _current_key_timing()
+    out['persisted'] = persisted
+    return jsonify(out)
 
 
 @app.route('/debug/aquaconnect', methods=['GET', 'POST'])
@@ -2959,7 +3999,7 @@ def debug_aquaconnect() -> Response:
                                  '(start with --backend aquaconnect)'}), 400
     if request.method == 'GET':
         with _ac_backend._http_lock:
-            body = _ac_backend._post('00')
+            body = _ac_backend._read()
         lcd, led = _ac_backend._parse(body) if body else (None, {})
         lines = _ac_backend._body_lines(body) if body else []
         out = {
@@ -3191,11 +4231,17 @@ def get_heater_state(which: str) -> Response:
 @app.route('/heater/<which>/enable', methods=['POST'])
 def set_heater_enable(which: str) -> Response:
     """
-    Enable/disable a heater (Auto vs Manual Off) via menu navigation.
+    Enable/disable a heater (Auto vs Manual Off).
     Body: {"on": true|false}
+    AquaConnect: direct keypad press + background setpoint read (see _ac_heater_enable).
+    RS-485: menu navigation via navigator.
     """
     body = request.get_json(force=True)
     on = bool(body.get('on', False))
+    if which not in ('pool', 'spa'):
+        return jsonify({'error': 'which must be pool or spa'}), 400
+    if _ac_backend is not None:
+        return _ac_heater_enable(which, on)
     nav = _get_navigator()
     if nav is None:
         return jsonify({'error': 'Not connected'}), 503
@@ -3273,6 +4319,22 @@ def set_heater_setpoint_legacy() -> Response:
     return set_heater_setpoint(which)
 
 
+@app.route('/prefetch', methods=['POST'])
+def prefetch_all() -> Response:
+    """Read every menu-navigable value (heater setpoints, chlorinator %, VSP
+    slot speeds, spa speed) in a SINGLE menu session. The plugin calls this
+    once at startup instead of 5–6 separate read endpoints — far fewer menu
+    entries/exits, so it's faster and a lot gentler on the bridge."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        return jsonify(nav.read_all_settings())
+    except Exception as e:
+        log.error(f'prefetch: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/vsp/slots')
 def get_vsp_all_slots() -> Response:
     """Read all four VSP slot speeds via menu navigation."""
@@ -3336,6 +4398,38 @@ def activate_vsp_slot(slot: int) -> Response:
         return jsonify({'error': str(e)}), (400 if isinstance(e, ValueError) else 500)
 
 
+@app.route('/vsp/spa')
+def get_vsp_spa() -> Response:
+    """Read the Spa Speed setting from the VSP submenu."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        return jsonify(nav.read_spa_speed())
+    except Exception as e:
+        log.error(f'read_spa_speed: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/vsp/spa', methods=['POST'])
+def set_vsp_spa() -> Response:
+    """Set the Spa Speed setting. Body: {"speed_pct": 80}. Snaps to 5% grid."""
+    body = request.get_json(force=True)
+    pct = body.get('speed_pct')
+    if pct is None:
+        return jsonify({'error': 'speed_pct is required'}), 400
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        result = nav.set_spa_speed(int(pct))
+        log.info(f'VSP spa speed -> {result["spa_speed"]}%')
+        return jsonify(result)
+    except Exception as e:
+        log.error(f'set_spa_speed: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 # Legacy slot-4 aliases — kept for backwards compatibility with existing callers.
 @app.route('/vsp/slot4')
 def get_vsp_slot4_compat() -> Response:
@@ -3348,6 +4442,21 @@ def set_vsp_slot4_compat() -> Response:
 @app.route('/vsp/slot4/activate', methods=['POST'])
 def activate_vsp_slot4_compat() -> Response:
     return activate_vsp_slot(4)
+
+
+@app.route('/chlorinator/<which>')
+def get_chlorinator_which(which: str) -> Response:
+    """Read pool or spa chlorinator output % via menu navigation."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    try:
+        return jsonify(nav.read_chlorinator(which))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        log.error(f'read_chlorinator {which}: {e}')
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/chlorinator/<which>', methods=['POST'])
@@ -3456,6 +4565,68 @@ def health() -> Response:
     return jsonify({'connected': connected, 'data_age_seconds': age}), (200 if connected else 503)
 
 
+# Manual navigation: send ONE menu-navigation keypress on the active backend
+# and return the resulting LCD text. Limited to the five nav keys so the manual
+# keypad in the cockpit can't fire an equipment circuit by accident (circuits,
+# heater, etc. have their own dedicated, guarded endpoints).
+_MANUAL_NAV_KEYS = {'MENU', 'RIGHT', 'LEFT', 'PLUS', 'MINUS'}
+
+
+@app.route('/key/<name>', methods=['POST'])
+def send_key(name: str) -> Response:
+    key = name.upper()
+    if key not in _MANUAL_NAV_KEYS:
+        return jsonify({'error': f'{name!r} is not a manual-nav key; '
+                                 f'allowed: {sorted(_MANUAL_NAV_KEYS)}'}), 400
+    block = _wedge_block_response()
+    if block:
+        return block
+    try:
+        if _ac_backend is not None:
+            with _nav_lock:
+                _ac_backend.send_nav_key(key)
+                lcd_txt = lcd.text()
+        else:
+            nav = _get_navigator()
+            if nav is None:
+                return jsonify({'error': 'Not connected'}), 503
+            with _nav_lock:
+                lcd_txt = nav._send(key)
+        _record_command_success()
+        return jsonify({'ok': True, 'key': key, 'lcd': lcd_txt})
+    except Exception as e:
+        log.error('manual key %s: %s', key, e)
+        _record_command_failure()
+        return jsonify({'error': str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Local web UI (read-only cockpit — Screen 1). Static single-page app served
+# from sidecar/web/, consuming the existing /status and /stream endpoints. No
+# control endpoints are called from here, so it cannot touch the panel.
+# ---------------------------------------------------------------------------
+_WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
+
+
+def _no_cache(resp: Response) -> Response:
+    # The cockpit is iterated on often; without this the browser serves a stale
+    # cached copy after a deploy ("I don't see my changes"). no-cache forces a
+    # revalidate every load (cheap — it 304s when unchanged).
+    resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+    return resp
+
+
+@app.route('/')
+@app.route('/ui')
+def web_index() -> Response:
+    return _no_cache(send_from_directory(_WEB_DIR, 'index.html'))
+
+
+@app.route('/ui/<path:filename>')
+def web_asset(filename: str) -> Response:
+    return _no_cache(send_from_directory(_WEB_DIR, filename))
+
+
 # ---------------------------------------------------------------------------
 # Background heater refresher
 #
@@ -3483,6 +4654,70 @@ def refresher_thread(interval: float) -> None:
                 did_initial = True
         # Retry quickly until the first successful read, then settle to interval.
         time.sleep(interval if did_initial else 10)
+
+
+# Seconds to let the backend settle (link up + first frames) before the
+# one-shot startup pre-fetch navigates the menu.
+_STARTUP_PREFETCH_SETTLE_S = 10.0
+
+
+def startup_prefetch_thread() -> None:
+    """One-shot: once the backend is up, read every menu-navigable value
+    (heater setpoints, chlorinator %, VSP slot speeds, spa speed) in a single
+    pass so they populate on EVERY sidecar restart — deploy, crash, reboot —
+    not just when the Homebridge plugin restarts. Best-effort; never raises.
+    """
+    # Wait for a navigator (immediate on AquaConnect; after the panel connects
+    # on RS-485), then let the first frames settle before navigating.
+    for _ in range(120):
+        if _get_navigator() is not None:
+            break
+        time.sleep(1)
+    nav = _get_navigator()
+    if nav is None:
+        log.warning('Startup pre-fetch skipped: navigator unavailable')
+        return
+    time.sleep(_STARTUP_PREFETCH_SETTLE_S)
+    try:
+        result = nav.read_all_settings()
+        got = {k: v for k, v in result.items() if v}
+        log.info('Startup pre-fetch complete: %s', got)
+    except Exception as e:
+        log.warning('Startup pre-fetch failed: %s', e)
+
+
+def setpoint_backfill_thread() -> None:
+    """Self-heal a missing heater setpoint.
+
+    The heater's on/off (Auto) state updates passively from the idle scroll, but
+    the target °F is only readable by navigating the Settings menu. So a heater
+    can read 'enabled' with a null setpoint — e.g. turned on AT THE PANEL (no
+    HomeKit action to trigger a read), at startup before the sweep reached it,
+    or after a failed background read. This loop notices that gap and navigates
+    once to read the °F; once the setpoint is known the condition clears, so it
+    stops on its own (no constant menu churn). Defers while the nav lock is busy
+    or the bridge is wedged.
+    """
+    while True:
+        time.sleep(45)
+        with state_lock:
+            wedged = state.bridge_wedged
+            need = []
+            if state.pool_heater_enabled and state.pool_setpoint_f is None:
+                need.append('pool')
+            if state.spa_heater_enabled and state.spa_setpoint_f is None:
+                need.append('spa')
+        if wedged or not need or _nav_lock.busy():
+            continue
+        nav = _get_navigator()
+        if nav is None:
+            continue
+        for which in need:
+            try:
+                nav.read_heater(which)
+                log.info('Backfilled %s heater setpoint (was on with no target)', which)
+            except Exception as e:
+                log.debug('setpoint backfill %s: %s', which, e)
 
 
 # ---------------------------------------------------------------------------
@@ -3515,6 +4750,16 @@ def main() -> None:
                         help='Navigation backend: rs485 (default) or aquaconnect (HTTP).')
     parser.add_argument('--aquaconnect-host', default='192.168.50.100',
                         help='AquaConnect box IP for --backend aquaconnect. Default 192.168.50.100.')
+    parser.add_argument('--observe-rs485', action='store_true',
+                        help='In aquaconnect mode, also run an observe-only RS-485 '
+                             'listener in parallel (streams to /stream/rs485, '
+                             'benchmarkable via /benchmark/rs485). Sends no keys '
+                             'except during a benchmark.')
+    parser.add_argument('--observe-rs485-host', default=None,
+                        help='RS-485 bridge host for the parallel observer '
+                             '(default: --host).')
+    parser.add_argument('--observe-rs485-port', type=int, default=8899,
+                        help='RS-485 bridge port for the parallel observer. Default 8899.')
     args = parser.parse_args()
 
     # Persisted backend selection (written by POST /backend) overrides CLI args,
@@ -3525,10 +4770,29 @@ def main() -> None:
     aquaconnect_host = cfg.get('aquaconnect_host', args.aquaconnect_host)
     rs485_host = cfg.get('rs485_host', args.host)
     rs485_port = cfg.get('rs485_port', args.port)
+    # The CLI flag force-enables the observer even if backend.json persisted
+    # observe_rs485=false (e.g. from a prior /backend/toggle single-transport
+    # run). Persisted true also enables it. Otherwise off.
+    observe_rs485 = bool(args.observe_rs485 or cfg.get('observe_rs485', False))
+    observe_rs485_host = (cfg.get('observe_rs485_host')
+                          or args.observe_rs485_host or rs485_host or args.host)
+    observe_rs485_port = cfg.get('observe_rs485_port', args.observe_rs485_port)
 
+    global KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES
     KEY_BURST = args.key_burst
     KEY_PREDELAY_MS = args.key_predelay_ms
     KEY_GAP_MS = args.key_gap_ms
+    # Persisted key timing (POST /keytiming {persist:true}) overrides the CLI
+    # --key-* args, so a value dialed in over many debug runs survives restarts.
+    kt = cfg.get('key_timing') or {}
+    if 'burst' in kt:         KEY_BURST = max(1, int(kt['burst']))
+    if 'predelay_ms' in kt:   KEY_PREDELAY_MS = float(kt['predelay_ms'])
+    if 'gap_ms' in kt:        KEY_GAP_MS = float(kt['gap_ms'])
+    if 'max_retries' in kt:   KEY_MAX_RETRIES = max(1, int(kt['max_retries']))
+    if 'verify_delay_s' in kt: KEY_VERIFY_DELAY_S = float(kt['verify_delay_s'])
+    if 'pad_bytes' in kt:     KEY_PAD_BYTES = max(0, int(kt['pad_bytes']))
+    if kt:
+        log.info('Loaded persisted key timing: %s', kt)
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend
@@ -3541,6 +4805,27 @@ def main() -> None:
         log.info('AquaConnect backend: http://%s/WNewSt.htm', aquaconnect_host)
         threading.Thread(target=_canary_probe_loop, daemon=True,
                          name='ac-canary').start()
+        # Optional parallel RS-485 observer (observe-only; never touches the
+        # global state or sends keys outside a benchmark).
+        if observe_rs485:
+            if observe_rs485_host:
+                threading.Thread(
+                    target=rs485_observer_thread,
+                    args=(observe_rs485_host, observe_rs485_port),
+                    daemon=True, name='rs485-observer').start()
+                log.info('RS-485 observer (observe-only) -> %s:%s',
+                         observe_rs485_host, observe_rs485_port)
+            else:
+                log.warning('--observe-rs485 set but no RS-485 host given; '
+                            'observer not started')
+        # Read all menu-navigable values once on startup (every sidecar
+        # restart), so heater setpoints / chlorinator % / VSP speeds populate
+        # without waiting for a Homebridge restart.
+        threading.Thread(target=startup_prefetch_thread, daemon=True,
+                         name='startup-prefetch').start()
+        # Self-heal a heater enabled-but-no-setpoint gap (e.g. enabled at the panel).
+        threading.Thread(target=setpoint_backfill_thread, daemon=True,
+                         name='setpoint-backfill').start()
         # AquaConnect mode: no RS-485 panel thread needed
         app.run(host=args.api_host, port=args.api_port, threaded=True)
         return
@@ -3556,6 +4841,14 @@ def main() -> None:
     if args.heater_refresh > 0:
         threading.Thread(target=refresher_thread, args=(args.heater_refresh,),
                          daemon=True, name='refresher').start()
+
+    # One-shot startup pre-fetch + heater setpoint backfill (skip in simulation
+    # — SimPanel has no _aq for the navigator key-sends).
+    if not args.simulate:
+        threading.Thread(target=startup_prefetch_thread, daemon=True,
+                         name='startup-prefetch').start()
+        threading.Thread(target=setpoint_backfill_thread, daemon=True,
+                         name='setpoint-backfill').start()
 
     log.info('REST API listening on %s:%s (key-burst=%d)',
              args.api_host, args.api_port, KEY_BURST)

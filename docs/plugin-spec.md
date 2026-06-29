@@ -362,7 +362,36 @@ uses Settings menu navigation on both backends.
 | GET | `/backend` | `{"active": "aquaconnect"\|"rs485", "config": {...}}` |
 | POST | `/backend` | `{"backend", "aquaconnect_host"?, "rs485_host"?, "rs485_port"?}` — persists + restarts |
 
-### 6.8 Debug
+### 6.8 Backend toggle, live stream, and benchmark
+
+The two backends are **complete, isolated interfaces**; exactly one is active at
+a time (the idle one is fully silent — its process paths don't run, so its
+bridge never touches the panel). Validation is **single-transport**: toggle the
+whole sidecar to a backend, then read/write/benchmark entirely on that bridge —
+no cross-bridge contention. Toggling RS-485 → permanent is the production swap.
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/backend/toggle` | Flip active backend to the other and restart into it (clears `observe_rs485` for clean single-transport). Returns `{from, to, restarting}` |
+| GET | `/stream` | SSE feed of LCD frames from the **active** backend (recent tail, then live). `data: {seq, ts, text, raw}`; `: heartbeat` on idle |
+| GET | `/stream/<name>` | SSE feed from a named backend's `FrameHub` (`aquaconnect`\|`rs485`) |
+| GET | `/backends` | List backends: `{name, role: active\|observer\|inactive, frames_seen, last_frame_ts}` |
+| POST | `/benchmark/<name>` | Nav speed test. Body `{laps?=3, slot?=1, key_predelay_ms?, key_burst?, key_timeout?, post_menu_settle?, min_gap?}`. Reports per-lap wall time, presses, drops, `drop_rate_pct`; RS-485 adds `avg_key_latency_ms`, AC adds `requests_per_press`. **Prefers the active backend** (`mode: active`, single-transport); falls back to the observer (`mode: observer`) only if rs485 is requested while AC is active |
+| POST | `/benchmark/rs485/sweep` | Sweep `predelays_ms` (default `[20,30,50,70,100,130,160,200]`) to find the panel's post-keep-alive accept window; ranks by drop rate; aborts early if the panel gets stuck |
+
+**RS-485 keypress timing.** The WiFi serial bridge has a narrow accept window
+after each keep-alive frame; `key_predelay_ms` (default 70) targets it. Missing
+it drops the key. Use `/benchmark/rs485/sweep` to find the lowest-drop predelay
+for the panel, then bake it into the sidecar's `--key-predelay-ms` startup arg.
+
+**Parallel observer (optional, off by default).** `--observe-rs485` runs an
+observe-only RS-485 listener alongside an active AquaConnect backend, streaming
+to `/stream/rs485` with an isolated state snapshot. It exists for a future live
+side-by-side dashboard, but is **not** the validation path — single-transport
+toggling is, because mixing a read on one bridge with a write on the other
+muddies measurements and doesn't reflect the swapped end-state.
+
+### 6.9 Debug
 
 | Method | Path | Notes |
 |---|---|---|
@@ -619,6 +648,16 @@ homebridge-prologic/
 
 ## 10. Known Limitations and Future Work
 
+### 10.0 Recent changes (week of 2026-06-28)
+
+- **Critical deadlock fixes.** `/status` self-deadlocked on the non-reentrant `state_lock` (it called `_wedge_cooling_down()` while already holding the lock) — this took the **whole plugin offline** (all tiles unresponsive). Separately, `_ac_heater_enable` self-deadlocked on `_nav_lock` via a nested acquire on the heater enable/setpoint-read path. Both fixed and are the most important changes of the week.
+- **Spa support.** Added spa chlorinator % (`spa_chlorinator_percent`) and a **Spa Speed** VSP tile; the chlorinator fan is now **valve-mode aware** (shows pool % in pool mode, spa % in spa mode). Both bodies' chlorinator % and heater setpoints are pre-fetched on startup.
+- **Speed slider fix.** A non-zero `RotationSpeed` `minValue` made the Home app render speed sliders as **0–65% instead of 35–100%**. All speed fans now use `minValue: 0` (honest 0–100%) and **snap up to the floor on commit** instead. The per-slot floor still applies, just enforced in software rather than via `minValue`.
+- **Heater restore hardening.** A setpoint read briefly enables the heater to reveal the stored °F; the restore-to-Manual-Off now **verifies and retries** (`_restore_heater_off`) so a read can never leave the heater on (it did once, on the lossy RS-485 path).
+- **Read-only web cockpit (Screen 1).** Self-contained SPA served by the sidecar at `/` and `/ui`, consuming `/status` + `/stream` (SSE) + `/display`. **No control endpoints** — cannot touch the panel. Designed to be exposed via a Tailscale `tailscale serve` proxy so the sidecar stays localhost-bound.
+- **Log hardening.** The debug-log handler is now best-effort with a per-uid fallback; a non-writable `/tmp/pool_sidecar_debug.log` (stale owner from a prior run) **no longer crashes sidecar startup**.
+- **Wedge power-cycle cooldown.** 2-minute command block after wedge detection, then an immediate recovery probe — pairs with a HomeKit smart-plug auto-power-cycle automation.
+
 ### 10.1 Completed
 
 | Item | Status | Notes |
@@ -645,9 +684,11 @@ homebridge-prologic/
 |---|---|---|
 | **Dedicated LCD frame-watcher *service*** | Partial | The in-process frame-reader (§5.3) is now the single shared reader with a `_frame_cond` pub/sub inside the sidecar. A *separate* always-on service exposing an external pub/sub API (latest value, change notifications, last-known per field) to other consumers is still open. Won't speed up navigation (0.6s/request box limit) |
 | FILTER circuit as Fanv2 | Backlog | Could expose pump on/off alongside slot tiles |
-| RS-485 backend parity | Partial | Nav exists; not end-to-end verified on current codebase |
+| Pool active-slot highlight | Done | Cockpit highlights the running pool speed from `vsp_active_slot`. Parsed from two confirmed panel formats: the idle scroll line `Filter Speed 50% Speed2` and the brief startup slot-selection window `Filter On:Spd2 +/- to change` (the WBON `<span>` is stripped first). Right after a restart the field is `None` until one of those scrolls past |
+| RS-485 backend: reads | Done | Verified on three TCP bridges; live state decodes cleanly (observer-confirmed) |
+| RS-485 backend: writes | Blocked on hardware | **Writes do NOT work over a TCP serial bridge** — the bridge's network latency misses the panel's keypress-response window (see automation-spec §0). Reliable writes need a **direct serial** connection (isolated USB-RS485 on the Pi). The `--serial-device` sidecar option for this is not yet implemented |
 | Spillover mode | Not tested | Not present on this installation |
 | Valve mode detection lag | ~10–30s | Scroll-dependent; no event-driven update (would benefit from the frame-watcher) |
 | System fault indicator | Not implemented | "Check System" / "Inspect Cell" LCD frames not surfaced to HomeKit |
-| Spa heater setpoint | Not confirmed | `spa_heater_enabled` shows null; needs a spa-mode test session |
+| Spa heater setpoint | Done | Spa heater enable + setpoint work on AquaConnect; both bodies' setpoints pre-fetched on startup so the thermostats show real values |
 | `/debug/aquaconnect` GET uses `_post('00')` | Minor | The only remaining read path that injects a keypad event; manual diagnostic only, but could switch to `_read()` for zero phantom events anywhere |
