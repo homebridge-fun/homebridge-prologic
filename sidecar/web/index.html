@@ -156,8 +156,8 @@
   <div class="card">
     <h2>Conditions</h2>
     <div class="grid">
-      <div class="stat"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water °F</span></div>
-      <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air °F</span></div>
+      <div class="stat"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water</span></div>
+      <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air</span></div>
       <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt ppm</span></div>
     </div>
   </div>
@@ -222,6 +222,7 @@
   const txt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
   const num = v => (v === null || v === undefined) ? '—' : v;
   const deg = v => (v == null ? '—' : v + '°');
+  const degF = v => (v === null || v === undefined) ? '—' : v + '°F';
   const pctv = v => (v == null ? '—' : v + '%');
   let lastStatusTs = 0;
   let last = {};                 // most recent /status
@@ -424,9 +425,9 @@
     const spa = s.valve_mode === 'spa';   // real mode drives temps + active-body flags
 
     // Conditions — single water temp tagged with the live mode
-    txt('water_temp', num(spa ? s.spa_temp : s.pool_temp));
-    txt('water_k', 'Water °F · ' + (spa ? 'Spa' : 'Pool'));
-    txt('air_temp', num(s.air_temp));
+    txt('water_temp', degF(spa ? s.spa_temp : s.pool_temp));
+    txt('water_k', 'Water · ' + (spa ? 'Spa' : 'Pool'));
+    txt('air_temp', degF(s.air_temp));
     txt('salt_level', num(s.salt_level));
 
     // Heat — both setpoints (staged value overlaid + dashed), active body flagged
