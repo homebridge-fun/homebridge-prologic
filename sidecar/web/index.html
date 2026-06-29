@@ -98,10 +98,11 @@
   /* Interactivity */
   .ctl { cursor: pointer; user-select: none; }
   body.busy .ctl { pointer-events: none; opacity: .45; }
-  #busy { position: sticky; top: 53px; z-index: 4; display: none; margin: 0 14px 0;
-    background: rgba(56,189,248,.14); border: 1px solid var(--accent); color: var(--accent);
-    border-radius: 10px; padding: 9px 13px; font-weight: 600; }
+  #busy { display: none; flex: 1; min-width: 0; margin: 0 12px; color: var(--accent);
+    font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; text-align: right; }
   #busy.show { display: block; }
+  header.busy .conn { display: none; }
   #apply { position: sticky; top: 53px; z-index: 4; display: none; margin: 0 14px;
     background: rgba(56,189,248,.14); border: 1px solid var(--accent); color: var(--accent);
     border-radius: 10px; padding: 9px 13px; font-weight: 600;
@@ -137,9 +138,9 @@
 <body>
 <header>
   <h1>Pool Cockpit</h1>
+  <div id="busy"></div>
   <div class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></div>
 </header>
-<div id="busy"></div>
 <div id="apply"><span class="n" id="apply_n"></span><span class="btns"><button id="cancel_btn">Cancel</button><button id="apply_btn">Apply</button></span></div>
 <main>
   <div id="banner" class="banner"></div>
@@ -236,6 +237,7 @@
   function setBusy(on, label) {
     busy = on;
     document.body.classList.toggle('busy', on);
+    document.querySelector('header').classList.toggle('busy', on);
     const e = $('busy');
     e.classList.toggle('show', on);
     if (on) e.textContent = '⟳ ' + label + '…';
