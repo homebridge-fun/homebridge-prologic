@@ -85,7 +85,10 @@
   .bd.editing { border-color: var(--accent); }
   .step:active { background: var(--accent); color: #04263a; }
   /* Grouped speeds (pool slots vs spa) */
-  .speedgrp + .speedgrp { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel2); }
+  .speedrow { display: flex; gap: 12px; align-items: flex-start; }
+  .speedcol { display: flex; flex-direction: column; }
+  .speedcol.pool { flex: 4; }
+  .speedcol.spa { flex: 1; padding-left: 12px; border-left: 1px solid var(--panel2); }
   .grp-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 7px; }
   .banner { background: rgba(251,191,36,.12); border: 1px solid var(--warn); color: var(--warn);
     border-radius: 12px; padding: 12px 14px; font-weight: 600; display: none; }
@@ -173,8 +176,10 @@
   <div class="card">
     <h2>Pump Speed</h2>
     <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
-    <div class="speedgrp" style="margin-top:10px"><div class="grp-k">Pool</div><div class="slots" id="slots"></div></div>
-    <div class="speedgrp"><div class="grp-k">Spa</div><div class="slots" id="spa_slots"></div></div>
+    <div class="speedrow" style="margin-top:10px">
+      <div class="speedcol pool"><div class="grp-k">Pool</div><div class="slots" id="slots"></div></div>
+      <div class="speedcol spa"><div class="grp-k">Spa</div><div class="slots" id="spa_slots"></div></div>
+    </div>
     <div class="slot-editor" id="slot_editor">
       <span class="se-label" id="se_label"></span>
       <span class="setrow-inline"><button class="step ctl" id="se_dn">−</button><span class="bd-v" id="se_val">—</span><button class="step ctl" id="se_up">+</button></span>
@@ -471,7 +476,7 @@
       slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, filterOn && !spa && s.vsp_active_slot === i));
     }
     const spaSlots = $('spa_slots'); spaSlots.innerHTML = '';
-    spaSlots.appendChild(slotTile('Spa Speed', 'spaSpeed', s.spa_speed, filterOn && spa));
+    spaSlots.appendChild(slotTile('Speed', 'spaSpeed', s.spa_speed, filterOn && spa));
     // Inline slot editor
     const ed = $('slot_editor');
     if (selectedSlot) {
