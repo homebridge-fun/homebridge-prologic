@@ -26,17 +26,28 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
 sudo apt update
 sudo apt install -y caddy
 
-# 2. Create the password hash (copy the $2a$... output).
-caddy hash-password --plaintext 'CHANGE-ME'
-
-# 3. Install the Caddyfile and paste your hash into it.
+# 2. Install the Caddyfile (the placeholder hash is replaced in step 3).
 sudo cp /home/greg/development/homebridge-prologic/deploy/Caddyfile /etc/caddy/Caddyfile
-sudo nano /etc/caddy/Caddyfile        # replace REPLACE_WITH_YOUR_BCRYPT_HASH
 
-# 4. Reload Caddy.
-sudo systemctl reload caddy
+# 3. Set the password (prompts hidden; hashes, updates the Caddyfile, reloads).
+sudo /home/greg/development/homebridge-prologic/deploy/set-cockpit-password.sh greg
+
 sudo systemctl status caddy --no-pager
 ```
+
+## Changing the password later
+Just re-run the helper any time — it re-hashes, updates the Caddyfile (keeping a
+`.bak`), validates, reloads Caddy, and verifies a test login:
+
+```bash
+sudo /home/greg/development/homebridge-prologic/deploy/set-cockpit-password.sh greg
+```
+
+Pass a different username as the argument to change it (e.g. `... .sh alice`).
+We keep this as a script rather than a Homebridge-UI setting on purpose: letting
+the plugin edit `/etc/caddy` + reload Caddy would require granting the
+homebridge user sudo rights, which is the privilege-escalation surface we're
+avoiding.
 
 Then browse to `http://<pi-lan-ip>/` and you'll get the Basic-auth prompt, then
 the cockpit.
