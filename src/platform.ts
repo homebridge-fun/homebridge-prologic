@@ -91,6 +91,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
   private discoverAccessories(): void {
     const toRegister: PlatformAccessory[] = [];
+    const toUpdate: PlatformAccessory[] = [];
     const toKeep = new Set<string>();
 
     const register = (label: string, uuid: string): PlatformAccessory => {
@@ -100,6 +101,14 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         acc = new this.api.platformAccessory(label, uuid);
         toRegister.push(acc);
         this.log.info(`Registering new accessory: ${label}`);
+      } else if (acc.displayName !== label) {
+        // The config label changed (e.g. a circuitLabels rename). The UUID is
+        // stable, so the accessory persists — but its displayName is only set
+        // at creation. Update it here (before the service handler reads it) and
+        // persist, otherwise the rename is silently ignored.
+        this.log.info(`Renaming accessory: ${acc.displayName} -> ${label}`);
+        acc.displayName = label;
+        toUpdate.push(acc);
       }
       return acc;
     };
@@ -225,6 +234,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     }
     if (toRegister.length > 0) {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, toRegister);
+    }
+    if (toUpdate.length > 0) {
+      this.api.updatePlatformAccessories(toUpdate);
     }
   }
 
