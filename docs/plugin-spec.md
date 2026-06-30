@@ -657,7 +657,13 @@ homebridge-prologic/
 - **AquaConnect LCD tag stripping.** The box wraps highlighted/flashing values in HTML (`<span class="WBON">..</span>`); the parser now strips tags so raw markup no longer leaks onto the panel display, and the scroll-pattern regexes match cleanly.
 - **Single-pass startup pre-fetch.** `read_all_settings()` sweeps the Settings ring in one menu session (RIGHT through the heaters/chlorinators, LEFT back to VSP) instead of re-entering the menu per value; triggers on every **sidecar** restart. Key timeout lowered 4s→3s with overshoot "two keys → back up" recovery (`_press_back`).
 - **Remote/LAN access architecture (decided).** See §10.0a. Chose **stock Caddy (apt) + HTTP Basic auth on the LAN**, sidecar kept localhost-bound; **Tailscale** retained for remote.
-- **Wedge probe scaled back.** The proactive AUX2 canary (a real write to the box) went from every **5 min → 30 min** to cut self-inflicted command-path load; it's now configurable via `backend.json` `wedge_probe_interval_s` or `POST /wedge-probe` (`0` = reactive-only). The reactive on-failure probe and 30s re-probe-while-wedged are unaffected. Diagnostic: `deploy/wedge-report.sh` summarizes sensor-firing wedge episodes + recovery durations.
+- **Wedge probe scaled back.** The proactive AUX2 canary (a real write to the box) went from every **5 min → 30 min** to cut self-inflicted command-path load; it's now configurable via `backend.json` `wedge_probe_interval_s` or `POST /wedge-probe` (`0` = reactive-only). The reactive on-failure probe and 30s re-probe-while-wedged are unaffected. Diagnostic: `deploy/wedge-report.sh` summarizes sensor-firing wedge episodes + recovery durations. See §10.0c for the tuning commands.
+- **Cockpit "Lights" / switches driven by Homebridge config.** A Lights card (placed right after "At a glance") renders a staged On/Off toggle per controllable circuit (LIGHTS/AUX_1/AUX_2/SPILLOVER). The plugin POSTs its enabled `circuits` + `circuitLabels` to the sidecar (`/config/ui`); the sidecar surfaces them in `/status` (`ui_circuits`, `circuit_labels`); the cockpit shows exactly those with override labels (falls back to panel-reported circuits if the plugin hasn't pushed yet).
+- **Cockpit "At a glance" card.** Conditions renamed; temps (Water/Air/Salt) on one row with units (`°F`/`ppm`) rendered small and inline; a divided list below for Filter (first), Heater mode, and Calling-for-heat with larger pills.
+- **Cockpit polish.** Apply bar is now a **fixed floating bottom bar** (overlays content, never reflows the page); highlight colors unified (**green = live/active**, **cyan = staged/selected**); pill toggles enlarged for touch.
+- **`circuitLabels` rename fix.** Renaming a circuit (e.g. Spa → "Spa Mode") was silently ignored for cached accessories (UUID is stable; displayName was only set at creation). The plugin now updates `displayName` + `updatePlatformAccessories` when the configured label changes. (Note: a name set in the Apple Home app still wins over the plugin's.)
+- **RS-485 key-event frame type — finding + harness.** The `aqualogic` library transmits **LOCAL_WIRED** (`00 02`) for keys ≤ 0xffff and **WIRELESS** (`00 83`) for keys > 0xffff (incl. `HEATER_1`); it **never** transmits **REMOTE_WIRED** (`00 03`). Untested whether a bus-attached remote needs REMOTE_WIRED. `POST /debug/rawkey` now supports `local|remote|wireless` to sweep this on direct serial. See automation-spec §0.
+- **Caddy password helper.** `deploy/set-cockpit-password.sh` sets the Basic-auth credential in one sudo step (hidden prompt → hash → update Caddyfile → validate → reload → verify). Kept out of the Homebridge UI on purpose (no sudoers/escalation path for the plugin).
 
 ### 10.0a Access architecture
 
@@ -677,6 +683,42 @@ and remains the upgrade path if persistent no-login access or remote-without-VPN
 is wanted; caddy-security (self-hosted persistent sessions) was rejected for its
 out-of-apt binary lifecycle and single-maintainer plugin. Revocable per-key auth
 was deemed over-engineering for a single user; "rotate the one password" suffices.
+
+### 10.0c Operational reference — wedge probe tuning
+
+The proactive AUX2 canary is a real write to the AquaConnect box, so its cadence
+trades wedge-detection latency against self-inflicted command-path load. Default
+is **1800s (30 min)**. `0` = **reactive-only** (no idle probing; a wedge is then
+caught when a real command fails to confirm). The reactive on-failure probe and
+the 30s re-probe-while-wedged always run regardless of this setting, so the
+HomeKit "Bridge Needs Rebooting" sensor + auto power-cycle plug keep working.
+
+```bash
+# Inspect the current setting
+curl -s http://127.0.0.1:5757/wedge-probe
+
+# Set to 30 min and persist across restarts
+curl -s -X POST http://127.0.0.1:5757/wedge-probe \
+  -H 'Content-Type: application/json' -d '{"interval_s": 1800, "persist": true}'
+
+# Go fully reactive-only (no idle probing) and persist
+curl -s -X POST http://127.0.0.1:5757/wedge-probe \
+  -H 'Content-Type: application/json' -d '{"interval_s": 0, "persist": true}'
+```
+
+Persisted value lives in `backend.json` as `wedge_probe_interval_s` and overrides
+the code default at startup. Review wedge history any time with:
+
+```bash
+./deploy/wedge-report.sh                 # all history
+./deploy/wedge-report.sh "2026-06-30"    # since a date
+```
+
+It pairs each sensor-firing wedge with its recovery, tags recoveries faster than
+a reboot (~60s) as **self-healed** vs **possibly the power-cycle**, and counts
+per day. (Wedge paths: a canary-probe wedge sets `bridge_wedged` but historically
+did **not** set `wedge_detected_at`, so the 120s power-cycle cooldown only
+engaged on the "2 unconfirmed writes" path — see backlog.)
 
 ### 10.0b Recent changes (week of 2026-06-28)
 
@@ -714,6 +756,7 @@ was deemed over-engineering for a single user; "rotate the one password" suffice
 |---|---|---|
 | **Dedicated LCD frame-watcher *service*** | Partial | The in-process frame-reader (§5.3) is now the single shared reader with a `_frame_cond` pub/sub inside the sidecar. A *separate* always-on service exposing an external pub/sub API (latest value, change notifications, last-known per field) to other consumers is still open. Won't speed up navigation (0.6s/request box limit) |
 | FILTER circuit as Fanv2 | Backlog | Could expose pump on/off alongside slot tiles |
+| Canary-probe wedge skips power-cycle cooldown | Backlog | The active-canary-probe wedge path (line ~3565) sets `bridge_wedged=True` but **not** `wedge_detected_at`, so the 120s `_WEDGE_POWERCYCLE_COOLDOWN_S` never engages — the sidecar keeps re-probing every 30s during what should be the box's reboot window, and a 30s "recovery" can race the auto power-cycle plug. The "2 unconfirmed writes" path sets it correctly. Fix: set `wedge_detected_at = now` in the canary path too. Observed 2026-06-29: all post-Jun-21 wedges were canary-probe type; the ~34–37s recoveries were too fast to be a completed reboot (self-healed), so the plug's effect couldn't be confirmed |
 | Pool active-slot highlight | Done | Cockpit highlights the running pool speed from `vsp_active_slot`. Parsed from two confirmed panel formats: the idle scroll line `Filter Speed 50% Speed2` and the brief startup slot-selection window `Filter On:Spd2 +/- to change` (the WBON `<span>` is stripped first). Right after a restart the field is `None` until one of those scrolls past |
 | RS-485 backend: reads | Done | Verified on three TCP bridges; live state decodes cleanly (observer-confirmed) |
 | RS-485 backend: writes | Blocked on hardware | **Writes do NOT work over a TCP serial bridge** — the bridge's network latency misses the panel's keypress-response window (see automation-spec §0). Reliable writes need a **direct serial** connection (isolated USB-RS485 on the Pi). The `--serial-device` sidecar option for this is not yet implemented |
