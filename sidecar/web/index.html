@@ -46,10 +46,14 @@
   .swlist .label { font-size: 16px; }
   /* Higher specificity than .pill.ctl so the ctl pills (Filter/Heater) match
      the plain ones. Wider box, height only ~10% over the original. */
-  .card .condlist .pill, .card .swlist .pill { font-size: 15px; padding: 7px 24px; }
-  /* Wider when on (the "Auto" look), skinnier when off. */
-  .card .condlist .pill.on, .card .swlist .pill.on { padding-left: 30px; padding-right: 30px; }
-  .card .condlist .pill.off, .card .swlist .pill.off { padding-left: 16px; padding-right: 16px; }
+  /* Fixed widths per state (centered, low padding) so every pill on every row
+     is the same size regardless of its text — one width for off, a larger one
+     for on (the "Auto" look). */
+  .card .condlist .pill, .card .swlist .pill {
+    font-size: 15px; padding: 7px 8px; display: inline-block;
+    box-sizing: border-box; text-align: center; }
+  .card .condlist .pill.on, .card .swlist .pill.on { min-width: 92px; }
+  .card .condlist .pill.off, .card .swlist .pill.off { min-width: 64px; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
