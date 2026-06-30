@@ -44,6 +44,8 @@
   .condlist { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--panel2); }
   .condlist .label { font-size: 16px; }
   .condlist .pill { font-size: 15px; padding: 6px 16px; }
+  .swlist .label { font-size: 16px; }
+  .swlist .pill { font-size: 15px; padding: 6px 16px; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
@@ -199,6 +201,11 @@
     </div>
   </div>
 
+  <div class="card" id="switches_card" style="display:none">
+    <h2>Switches</h2>
+    <div class="swlist" id="switches"></div>
+  </div>
+
   <div class="card">
     <h2>Panel Display</h2>
     <div class="lcd" id="lcd">—<div class="t" id="lcd_t"></div></div>
@@ -290,6 +297,17 @@
     if (!eff === real) delete staged.filter; else staged.filter = !eff;
     reRender();
   }
+  // Extra controllable circuits shown as toggles when the panel reports them.
+  // FILTER lives in Pump Speed, POOL/SPA in Mode, HEATER_1 in Conditions.
+  const SWITCHES = [['LIGHTS', 'Lights'], ['AUX_1', 'Aux 1'], ['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover']];
+  function stageCircuit(name) {
+    if (busy) return;
+    const real = !!(last.circuits && last.circuits[name]);
+    const key = 'ckt:' + name;
+    const eff = (key in staged) ? staged[key] : real;
+    if (!eff === real) delete staged[key]; else staged[key] = !eff;
+    reRender();
+  }
   function stageHeat() {
     if (busy) return;
     const which = last.valve_mode === 'spa' ? 'spa' : 'pool';   // current active body
@@ -349,6 +367,10 @@
     for (let n = 1; n <= 4; n++)
       if (('slot' + n) in staged) items.push([`Set Speed ${n} to ${staged['slot' + n]}%`, `/vsp/slot/${n}`, { speed_pct: staged['slot' + n] }]);
     if ('spaSpeed' in staged) items.push([`Set Spa Speed to ${staged.spaSpeed}%`, '/vsp/spa', { speed_pct: staged.spaSpeed }]);
+    for (const [name, label] of SWITCHES) {
+      const key = 'ckt:' + name;
+      if (key in staged) items.push([(staged[key] ? 'Turn on ' : 'Turn off ') + label, '/circuit/' + name, { on: staged[key] }]);
+    }
     for (const k in staged) delete staged[k];
     selectedSlot = null;
     setEditing(null);
@@ -495,6 +517,22 @@
     } else {
       ed.classList.remove('show');
     }
+
+    // Switches — one toggle per controllable circuit the panel reports
+    const sw = $('switches'); sw.innerHTML = '';
+    SWITCHES.forEach(([name, label]) => {
+      if (!s.circuits || !(name in s.circuits)) return;
+      const key = 'ckt:' + name;
+      const real = !!s.circuits[name];
+      const eff = (key in staged) ? staged[key] : real;
+      const row = document.createElement('div');
+      row.className = 'row';
+      const cls = 'pill ctl' + (eff ? ' on' : ' off') + ((key in staged) ? ' staged' : '');
+      row.innerHTML = `<span class="label">${label}</span><span class="${cls}">${eff ? 'On' : 'Off'}</span>`;
+      row.querySelector('.pill').onclick = () => { setEditing(null); stageCircuit(name); };
+      sw.appendChild(row);
+    });
+    $('switches_card').style.display = sw.children.length ? '' : 'none';
 
     // Wedge banner
     const b = $('banner');
