@@ -258,6 +258,12 @@ _BACKEND_CONFIG_PATH = os.path.join(
 # Which backend is live in this process (set in main()).
 _active_backend: Optional[str] = None
 
+# UI config mirrored from the Homebridge plugin (POST /config/ui): which
+# circuits the user enabled and any display-label overrides. The web cockpit
+# reads these from /status so it shows the same switches/labels as HomeKit.
+_ui_circuits: list = []
+_ui_circuit_labels: dict = {}
+
 
 def _load_backend_config() -> dict:
     """Read the persisted backend selection, or {} if none/unreadable."""
@@ -2654,6 +2660,8 @@ def get_status() -> Response:
             'bridge_wedged':       state.bridge_wedged,
             'wedge_cooldown_remaining_s': round(cooldown) if cooldown else 0,
             'backend':             _active_backend,
+            'ui_circuits':         list(_ui_circuits),
+            'circuit_labels':      dict(_ui_circuit_labels),
         })
 
 
@@ -3595,6 +3603,25 @@ def _canary_probe_loop() -> None:
         with state_lock:
             wedged = state.bridge_wedged
         time.sleep(_WEDGE_RECOVERY_INTERVAL_S if wedged else _WEDGE_PROBE_INTERVAL_S)
+
+
+@app.route('/config/ui', methods=['POST'])
+def set_ui_config() -> Response:
+    """
+    Mirror the Homebridge plugin's UI config so the web cockpit shows the same
+    switches and labels as HomeKit.  Body:
+        {"circuits": ["LIGHTS", "AUX_1", ...], "labels": {"AUX_1": "Waterfall"}}
+    Best-effort: stored in-memory and surfaced via /status.
+    """
+    global _ui_circuits, _ui_circuit_labels
+    body = request.get_json(force=True) or {}
+    circuits = body.get('circuits')
+    labels = body.get('labels')
+    if isinstance(circuits, list):
+        _ui_circuits = [str(c).upper() for c in circuits]
+    if isinstance(labels, dict):
+        _ui_circuit_labels = {str(k).upper(): str(v) for k, v in labels.items()}
+    return jsonify({'ok': True, 'circuits': _ui_circuits, 'labels': _ui_circuit_labels})
 
 
 @app.route('/mode', methods=['POST'])

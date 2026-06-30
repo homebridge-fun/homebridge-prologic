@@ -47,6 +47,14 @@ export class SidecarClient {
     await this.http.post(`/circuit/${encodeURIComponent(name)}`, { on });
   }
 
+  /**
+   * Mirror the plugin's UI config (enabled circuits + label overrides) to the
+   * sidecar so the web cockpit renders the same switches/labels as HomeKit.
+   */
+  async setUiConfig(circuits: string[], labels: Record<string, string>): Promise<void> {
+    await this.http.post('/config/ui', { circuits, labels });
+  }
+
   // ── Bridge health ─────────────────────────────────────────────────────────
 
   /**

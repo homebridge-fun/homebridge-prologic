@@ -76,6 +76,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
     this.api.on('didFinishLaunching', () => {
       this.reconcileBackend();
+      this.pushUiConfig();
       this.discoverAccessories();
       this.startPolling();
     });
@@ -262,6 +263,20 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       });
     } catch (err) {
       this.log.warn('Backend reconcile failed (sidecar may be unreachable):',
+        (err as Error).message);
+    }
+  }
+
+  /**
+   * Mirror the enabled circuits + label overrides to the sidecar so the web
+   * cockpit shows the same switches and names as HomeKit. Best-effort.
+   */
+  private async pushUiConfig(): Promise<void> {
+    try {
+      await this.sidecar.setUiConfig(this.cfg.circuits, this.cfg.circuitLabels);
+      this.log.debug('Pushed UI config (circuits + labels) to sidecar.');
+    } catch (err) {
+      this.log.debug('Push UI config failed (sidecar may be unreachable):',
         (err as Error).message);
     }
   }
