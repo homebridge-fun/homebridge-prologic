@@ -37,6 +37,7 @@ export interface PoolStatus {
   connected: boolean;
   last_update: number;
   bridge_wedged: boolean;
+  ui_circuits?: string[];  // circuits the sidecar currently knows about (mirrored from this plugin)
 }
 
 export interface PlatformConfig {

@@ -3678,6 +3678,16 @@ def set_ui_config() -> Response:
         _ui_circuits = [str(c).upper() for c in circuits]
     if isinstance(labels, dict):
         _ui_circuit_labels = {str(k).upper(): str(v) for k, v in labels.items()}
+    # Persist so the config survives a sidecar restart (the plugin only re-pushes
+    # on a Homebridge restart). Otherwise the cockpit falls back to panel-reported
+    # circuits, which include the AUX2 canary.
+    try:
+        cfg = _load_backend_config()
+        cfg['ui_circuits'] = _ui_circuits
+        cfg['ui_circuit_labels'] = _ui_circuit_labels
+        _save_backend_config(cfg)
+    except Exception as e:
+        log.warning('Could not persist UI config: %s', e)
     return jsonify({'ok': True, 'circuits': _ui_circuits, 'labels': _ui_circuit_labels})
 
 
@@ -4944,6 +4954,17 @@ def main() -> None:
                      ' (reactive-only)' if _WEDGE_PROBE_INTERVAL_S == 0 else '')
         except (TypeError, ValueError):
             log.warning('Bad wedge_probe_interval_s in backend.json: %r', cfg['wedge_probe_interval_s'])
+
+    # Persisted cockpit UI config (enabled circuits + label overrides). The
+    # plugin re-pushes on Homebridge start, but loading here means a sidecar-only
+    # restart keeps the right switches instead of falling back to panel circuits.
+    global _ui_circuits, _ui_circuit_labels
+    if isinstance(cfg.get('ui_circuits'), list):
+        _ui_circuits = [str(c).upper() for c in cfg['ui_circuits']]
+    if isinstance(cfg.get('ui_circuit_labels'), dict):
+        _ui_circuit_labels = {str(k).upper(): str(v) for k, v in cfg['ui_circuit_labels'].items()}
+    if _ui_circuits:
+        log.info('Loaded persisted UI circuits: %s', _ui_circuits)
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend

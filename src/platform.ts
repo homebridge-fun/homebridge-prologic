@@ -286,6 +286,14 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       try {
         const status = await this.sidecar.getStatus();
 
+        // Self-heal: if the sidecar restarted on its own it loses the pushed UI
+        // config until the next Homebridge restart, leaving the cockpit to fall
+        // back to panel-reported circuits (which include the AUX2 canary).
+        // Re-push whenever we see it empty.
+        if (!status.ui_circuits || status.ui_circuits.length === 0) {
+          this.pushUiConfig();
+        }
+
         this.currentValveMode = status.valve_mode;
 
         for (const [circuit, sw] of this.switches) {
