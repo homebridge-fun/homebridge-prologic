@@ -43,9 +43,10 @@
   .stat .k { font-size: 12px; color: var(--dim); }
   .condlist { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--panel2); }
   .condlist .label { font-size: 16px; }
-  .condlist .pill { font-size: 17px; padding: 9px 24px; }
   .swlist .label { font-size: 16px; }
-  .swlist .pill { font-size: 17px; padding: 9px 24px; }
+  /* Higher specificity than .pill.ctl so the ctl pills (Filter/Heater) match
+     the plain ones. Wider box, height only ~10% over the original. */
+  .card .condlist .pill, .card .swlist .pill { font-size: 15px; padding: 7px 24px; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
