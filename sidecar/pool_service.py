@@ -2730,6 +2730,37 @@ class MenuNavigator:
             self.fast_exit()
         return out
 
+    def sweep_scroll(self, max_presses: int = 24) -> dict:
+        """Actively advance the idle status scroll with RIGHT to capture every
+        reading at normal key timing, instead of waiting ~6s per item for the
+        natural cycle. Each frame is applied to state via the scroll parser.
+        Stops on a full cycle (a frame repeats) or the press budget. Stays in
+        the status display; if a press drifts into a menu, exits cleanly.
+
+        Returns the frames seen + total elapsed, so a caller/tester can tell
+        whether RIGHT is actually advancing the scroll (fast) vs the press doing
+        nothing and us just riding the ~6s natural cycle (slow).
+        """
+        seen = set()
+        frames = []
+        t0 = time.time()
+        drifted = False
+        with _nav_lock:
+            txt = self._lcd.text()
+            for _ in range(max(1, max_presses)):
+                if txt and txt in seen:
+                    break  # wrapped — full cycle captured
+                if txt:
+                    _apply_ac_scroll_to_state(txt)
+                    frames.append({'frame': txt, 'status': self._is_status(txt)})
+                    seen.add(txt)
+                txt = self._send('RIGHT')
+            drifted = bool(txt) and not self._is_status(txt)
+        if drifted:
+            self.fast_exit()   # re-acquires _nav_lock; call outside the block
+        return {'frames': frames, 'count': len(frames),
+                'elapsed_s': round(time.time() - t0, 1)}
+
 
 def _get_panel():
     with panel_lock:
@@ -4174,6 +4205,30 @@ def debug_keyburst() -> Response:
     out = _current_key_timing()
     out['persisted'] = persisted
     return jsonify(out)
+
+
+@app.route('/debug/scroll-sweep', methods=['POST'])
+def debug_scroll_sweep() -> Response:
+    """Test: actively advance the idle status scroll with RIGHT and capture each
+    reading, instead of waiting ~6s per item. Body (optional): {"max_presses":24}.
+    Returns the frames seen + elapsed_s — if elapsed is ~1s/frame, RIGHT advances
+    the scroll (fast); if ~6s/frame, the press is a no-op and we're just riding
+    the natural cycle."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    body = request.get_json(silent=True) or {}
+    try:
+        n = int(body.get('max_presses', 24))
+    except (TypeError, ValueError):
+        n = 24
+    try:
+        return jsonify(nav.sweep_scroll(max_presses=n))
+    except Exception as e:
+        log.error(f'scroll-sweep: {e}')
+        if _ac_backend is not None:
+            _immediate_wedge_probe()
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/wedge-probe', methods=['GET', 'POST'])
