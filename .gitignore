@@ -5,4 +5,5 @@ __pycache__/
 *.pyc
 .env
 sidecar/backend.json
+sidecar/state_cache.json
 .claude/

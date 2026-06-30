@@ -288,6 +288,77 @@ def _save_backend_config(cfg: dict) -> None:
         json.dump(cfg, f, indent=2)
 
 
+# ── Bus-state persistence ────────────────────────────────────────────────────
+# Cache everything we read off the bus so the cockpit/HomeKit show last-known
+# values immediately on restart (instead of '—' until the menu sweep finishes),
+# and so we can later make the startup sweep conditional (only re-read what
+# differs). A background thread flushes on change; the cache is loaded into
+# `state` at startup before the prefetch runs.
+_STATE_CACHE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'state_cache.json')
+_STATE_CACHE_FLUSH_S = 30.0
+_PERSIST_FIELDS = (
+    'pool_temp', 'air_temp', 'spa_temp', 'salt_level',
+    'chlorinator_percent', 'spa_chlorinator_percent',
+    'pump_speed', 'spa_speed',
+    'pool_setpoint_f', 'spa_setpoint_f',
+    'pool_heater_enabled', 'spa_heater_enabled', 'heater_active',
+    'valve_mode', 'vsp_active_slot',
+    'vsp_slot_pct', 'circuits',   # dicts
+)
+
+
+def _snapshot_state_cache() -> dict:
+    with state_lock:
+        snap = {}
+        for f in _PERSIST_FIELDS:
+            v = getattr(state, f, None)
+            snap[f] = dict(v) if isinstance(v, dict) else v
+    return snap
+
+
+def _load_state_cache() -> None:
+    """Restore persisted bus state into `state` at startup (last-known values)."""
+    try:
+        with open(_STATE_CACHE_PATH) as fh:
+            snap = json.load(fh)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        log.warning('State cache load failed: %s', e)
+        return
+    n = 0
+    with state_lock:
+        for f in _PERSIST_FIELDS:
+            if snap.get(f) is None:
+                continue
+            cur = getattr(state, f, None)
+            if isinstance(cur, dict) and isinstance(snap[f], dict):
+                cur.update(snap[f])
+            else:
+                setattr(state, f, snap[f])
+            n += 1
+    log.info('Restored %d persisted state fields from %s', n, _STATE_CACHE_PATH)
+
+
+def _state_cache_thread() -> None:
+    """Flush the bus-state cache to disk whenever it changes."""
+    last = None
+    while True:
+        time.sleep(_STATE_CACHE_FLUSH_S)
+        snap = _snapshot_state_cache()
+        if snap == last:
+            continue
+        try:
+            tmp = _STATE_CACHE_PATH + '.tmp'
+            with open(tmp, 'w') as fh:
+                json.dump(snap, fh)
+            os.replace(tmp, _STATE_CACHE_PATH)   # atomic
+            last = snap
+        except Exception as e:
+            log.debug('State cache save failed: %s', e)
+
+
 panel = None
 panel_lock = threading.Lock()
 
@@ -4971,6 +5042,12 @@ def main() -> None:
     # Coalesce bursts of HomeKit setpoint writes; apply only the final value.
     _setpoint_debouncer = WriteDebouncer(
         lambda which, temp_f: _apply_setpoint(which, temp_f))
+
+    # Restore last-known bus state so the cockpit/HomeKit show real values
+    # immediately on restart, then keep the cache flushed as state changes.
+    _load_state_cache()
+    threading.Thread(target=_state_cache_thread, daemon=True,
+                     name='state-cache').start()
 
     if backend == 'aquaconnect':
         _ac_backend = AquaConnectBackend(host=aquaconnect_host)
