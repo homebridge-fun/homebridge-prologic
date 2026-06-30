@@ -2150,8 +2150,10 @@ class MenuNavigator:
         time.sleep(self._POST_MENU_SETTLE_S)
 
     # Status-cycle prefixes — any of these means we're back in the default display.
-    _STATUS_PREFIXES = ('Thursday', 'Pool Temp', 'Air Temp', 'Pool Chlorinator',
-                        'Salt Level', 'Heater1', 'Filter Speed', 'Spa Temp')
+    _STATUS_PREFIXES = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+                        'Saturday', 'Sunday', 'Pool Temp', 'Air Temp', 'Spa Temp',
+                        'Pool Chlorinator', 'Spa Chlorinator', 'Salt Level',
+                        'Heater1', 'Filter Speed', 'Filter On')
 
     def _is_status(self, norm: str) -> bool:
         return any(norm.startswith(p) for p in self._STATUS_PREFIXES)
@@ -4617,6 +4619,12 @@ def prefetch_all() -> Response:
     nav = _get_navigator()
     if nav is None:
         return jsonify({'error': 'Not connected'}), 503
+    # First sweep the status scroll for the live readings (fast), then the menu
+    # for the deep values (setpoints, slot speeds). Scroll sweep is best-effort.
+    try:
+        nav.sweep_scroll()
+    except Exception as e:
+        log.warning(f'prefetch scroll sweep: {e}')
     try:
         return jsonify(nav.read_all_settings())
     except Exception as e:
@@ -4973,6 +4981,15 @@ def startup_prefetch_thread() -> None:
         log.warning('Startup pre-fetch skipped: navigator unavailable')
         return
     time.sleep(_STARTUP_PREFETCH_SETTLE_S)
+    # Fast: actively advance the status scroll to grab the live readings (temps,
+    # salt, chlorinator, pump speed, heater auto/off, active slot) at ~1s/item
+    # instead of waiting out the ~6s natural cycle.
+    try:
+        sweep = nav.sweep_scroll()
+        log.info('Startup scroll sweep: %d frames in %.1fs',
+                 sweep.get('count', 0), sweep.get('elapsed_s', 0))
+    except Exception as e:
+        log.warning('Startup scroll sweep failed: %s', e)
     try:
         result = nav.read_all_settings()
         got = {k: v for k, v in result.items() if v}
