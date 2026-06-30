@@ -47,6 +47,9 @@
   /* Higher specificity than .pill.ctl so the ctl pills (Filter/Heater) match
      the plain ones. Wider box, height only ~10% over the original. */
   .card .condlist .pill, .card .swlist .pill { font-size: 15px; padding: 7px 24px; }
+  /* Wider when on (the "Auto" look), skinnier when off. */
+  .card .condlist .pill.on, .card .swlist .pill.on { padding-left: 30px; padding-right: 30px; }
+  .card .condlist .pill.off, .card .swlist .pill.off { padding-left: 16px; padding-right: 16px; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
@@ -213,7 +216,7 @@
   </div>
 
   <div class="card">
-    <h2>Panel Display</h2>
+    <h2 class="hrow">Panel Display <button class="lockbtn" id="refresh_btn">↻ Refresh</button></h2>
     <div class="lcd" id="lcd">—<div class="t" id="lcd_t"></div></div>
   </div>
 
@@ -445,6 +448,24 @@
     }
   }
 
+  // Re-read all menu-navigable values from the panel (heater setpoints,
+  // chlorinator %, VSP slot speeds, spa speed). A full menu sweep (~40s).
+  async function triggerRefresh() {
+    if (busy) return;
+    setBusy(true, 'Reading all values from panel…');
+    try {
+      const r = await fetch('/prefetch', { method: 'POST' });
+      let j = {}; try { j = await r.json(); } catch (e) {}
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      await fetchStatus();
+      toast('✓ Refreshed from panel');
+    } catch (e) {
+      toast('⚠ Refresh failed' + (e.message ? ': ' + e.message : ''));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
   function renderStatus(s) {
     last = s;
@@ -634,6 +655,7 @@
   $('nav_left').onclick = () => sendKey('LEFT');
   $('nav_right').onclick = () => sendKey('RIGHT');
   $('nav_menu').onclick = () => sendKey('MENU');
+  $('refresh_btn').onclick = triggerRefresh;
   $('nav_lock').onclick = () => setNavLock(!navLocked);
 
   // Freshness ticker
