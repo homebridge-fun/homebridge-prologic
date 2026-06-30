@@ -2190,6 +2190,43 @@ class MenuNavigator:
         finally:
             self.fast_exit()
 
+    def _read_heater_in_menu(self, read_which: str, direction: str) -> Optional[dict]:
+        """Passively read a heater item while ALREADY in the Settings menu
+        (caller holds _nav_lock and is anchored). Navigates `direction` to the
+        item and captures its setpoint if enabled — never toggles. Used to grab
+        the OTHER body's target opportunistically whenever we're in the menu for
+        an explicit heater action, so both setpoints populate from one trip.
+        Best-effort: returns None on failure.
+        """
+        label = self._HEATER_LABEL[read_which]
+        try:
+            txt = self._press_until(direction, lambda t: label in t,
+                                    self._NAV_MAX, label)
+            enabled = 'Manual Off' not in txt
+            setpoint_f = self._degf(txt) if enabled else None
+            with state_lock:
+                if read_which == 'pool':
+                    state.pool_heater_enabled = enabled
+                    if setpoint_f is not None:
+                        state.pool_setpoint_f = setpoint_f
+                else:
+                    state.spa_heater_enabled = enabled
+                    if setpoint_f is not None:
+                        state.spa_setpoint_f = setpoint_f
+            return {'which': read_which, 'enabled': enabled, 'setpoint_f': setpoint_f}
+        except Exception as e:
+            log.debug('opportunistic %s-heater read failed: %s', read_which, e)
+            return None
+
+    def _read_other_heater(self, primary: str) -> None:
+        """Grab the non-primary body's heater item in the same menu session.
+        Spa Heater1 and Pool Heater1 are adjacent (Spa then Pool), so the other
+        item is one step away: from Pool go LEFT to Spa, from Spa go RIGHT to
+        Pool."""
+        other = 'spa' if primary == 'pool' else 'pool'
+        direction = 'LEFT' if primary == 'pool' else 'RIGHT'
+        self._read_heater_in_menu(other, direction)
+
     def set_heater_enabled(self, which: str, on: bool) -> dict:
         """Enable/disable a heater using the HEATER_1 switch ONLY — never +/-.
 
@@ -2225,6 +2262,8 @@ class MenuNavigator:
                         state.spa_heater_enabled = end_enabled
                         if setpoint_f is not None:
                             state.spa_setpoint_f = setpoint_f
+                # Already in the menu — passively grab the other body's target too.
+                self._read_other_heater(which)
                 return {'which': which, 'enabled': end_enabled, 'was_off': was_off,
                         'setpoint_f': setpoint_f}
         finally:
@@ -2259,6 +2298,8 @@ class MenuNavigator:
                     else:
                         state.spa_setpoint_f = target_f
                         state.spa_heater_enabled = True
+                # Already in the menu — passively grab the other body's target too.
+                self._read_other_heater(which)
                 return {'which': which, 'target_f': target_f}
         finally:
             self.fast_exit()
