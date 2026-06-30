@@ -334,7 +334,14 @@ def _load_state_cache() -> None:
                 continue
             cur = getattr(state, f, None)
             if isinstance(cur, dict) and isinstance(snap[f], dict):
-                cur.update(snap[f])
+                incoming = snap[f]
+                # JSON forces dict keys to strings; vsp_slot_pct is keyed by int
+                # slot number in the live code, so restore int keys — otherwise
+                # the dict ends up with both "1" and 1 and jsonify can't sort it.
+                if f == 'vsp_slot_pct':
+                    incoming = {(int(k) if str(k).isdigit() else k): v
+                                for k, v in incoming.items()}
+                cur.update(incoming)
             else:
                 setattr(state, f, snap[f])
             n += 1
@@ -2743,6 +2750,13 @@ def _get_navigator() -> Optional[MenuNavigator]:
 
 app = Flask(__name__)
 app.logger.setLevel(logging.WARNING)
+# Don't sort JSON keys: sorting a dict with mixed int/str keys raises TypeError
+# and 500s /status (which takes the whole plugin + cockpit offline). Insertion
+# order is fine for our consumers.
+try:
+    app.json.sort_keys = False        # Flask 2.3+
+except AttributeError:
+    app.config['JSON_SORT_KEYS'] = False  # older Flask
 
 
 @app.route('/status')
