@@ -4552,6 +4552,12 @@ def prefetch_all() -> Response:
         return jsonify(nav.read_all_settings())
     except Exception as e:
         log.error(f'prefetch: {e}')
+        # A failure to even reach the Settings menu almost always means the
+        # command path is wedged. Trigger an immediate wedge probe so the
+        # HomeKit sensor/plug can power-cycle the box, instead of it sitting
+        # wedged until the next (now 30-min) proactive canary.
+        if _ac_backend is not None:
+            _immediate_wedge_probe()
         return jsonify({'error': str(e)}), 500
 
 
@@ -4904,6 +4910,10 @@ def startup_prefetch_thread() -> None:
         log.info('Startup pre-fetch complete: %s', got)
     except Exception as e:
         log.warning('Startup pre-fetch failed: %s', e)
+        # Couldn't navigate the menu at startup — probe so a wedged box is
+        # flagged (sensor/plug) rather than waiting for the proactive canary.
+        if _ac_backend is not None:
+            _immediate_wedge_probe()
 
 
 def setpoint_backfill_thread() -> None:
