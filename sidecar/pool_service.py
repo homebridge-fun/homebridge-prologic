@@ -3916,12 +3916,15 @@ def debug_rawkey() -> Response:
     """Send one key under a chosen RS-485 frame type, bypassing send_key.
 
     Body: {"key": "RIGHT", "frametype": "remote"}
-      frametype: "local"  -> 00 02 LOCAL_WIRED_KEY_EVENT (what send_key uses)
-                 "remote" -> 00 03 REMOTE_WIRED_KEY_EVENT (what a wired remote
-                              like the AquaConnect box emits)
+      frametype: "local"    -> 00 02 LOCAL_WIRED_KEY_EVENT (what send_key uses
+                                for keys <= 0xffff)
+                 "remote"   -> 00 03 REMOTE_WIRED_KEY_EVENT (what a wired remote
+                                like the AquaConnect box emits)
+                 "wireless" -> 00 83 WIRELESS_KEY_EVENT (what send_key uses for
+                                keys > 0xffff, e.g. HEATER_1; 4-byte key layout)
     Builds the frame exactly like aqualogic._get_key_event_frame but lets us
-    pick the frame type, so we can prove whether menu-scroll keys need the
-    remote event type. Returns the hex frame queued.
+    pick the frame type, so we can prove whether menu-scroll keys (or the
+    heater key) need a different event type. Returns the hex frame queued.
     """
     p = _get_panel()
     if p is None:
@@ -3929,20 +3932,32 @@ def debug_rawkey() -> Response:
     body = request.get_json(force=True) or {}
     name = body.get('key', '')
     ftype = body.get('frametype', 'remote').lower()
+    if ftype not in ('local', 'remote', 'wireless'):
+        return jsonify({'error': f'frametype must be local|remote|wireless, got {ftype!r}'}), 400
     try:
         aq = p._aq
         Keys = p._Keys
         k = getattr(Keys, name, None)
         if k is None:
             return jsonify({'error': f'Unknown key {name!r}'}), 400
-        type_bytes = aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT if ftype == 'remote' \
-            else aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT
         frame = bytearray()
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_STX)
-        aq._append_data(frame, type_bytes)
-        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
-        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+        if ftype == 'wireless':
+            # Wireless layout differs: 01 marker, then the key value as 4 bytes
+            # twice, then a trailing 00 (mirrors _get_key_event_frame's >0xffff
+            # branch). Lets us test HEATER_1 and the like as wireless events.
+            aq._append_data(frame, aq.FRAME_TYPE_WIRELESS_KEY_EVENT)
+            aq._append_data(frame, b'\x01')
+            aq._append_data(frame, int(k.value).to_bytes(4, byteorder='little'))
+            aq._append_data(frame, int(k.value).to_bytes(4, byteorder='little'))
+            aq._append_data(frame, b'\x00')
+        else:
+            type_bytes = aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT if ftype == 'remote' \
+                else aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT
+            aq._append_data(frame, type_bytes)
+            aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+            aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
         crc = sum(frame)
         aq._append_data(frame, crc.to_bytes(2, byteorder='big'))
         frame.append(aq.FRAME_DLE)
