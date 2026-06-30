@@ -44,7 +44,6 @@
   .condlist { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--panel2); }
   .condlist .label { font-size: 16px; }
   .condlist .pill { font-size: 15px; padding: 6px 16px; }
-  .swlist { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--panel2); }
   .swlist .label { font-size: 16px; }
   .swlist .pill { font-size: 15px; padding: 6px 16px; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
@@ -170,7 +169,6 @@
       <div class="row"><span class="label">Heater</span><span class="pill ctl" id="heat_mode">—</span></div>
       <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
     </div>
-    <div class="swlist" id="switches"></div>
   </div>
 
   <div class="card">
@@ -201,6 +199,11 @@
       <div class="bd ctl" id="chlor_spa" data-field="chlor_spa"><div class="bd-k">Spa</div>
         <div class="setrow"><button class="step ctl" id="cs_dn">−</button><div class="bd-v" id="chlor_spa_v">—</div><button class="step ctl" id="cs_up">+</button></div></div>
     </div>
+  </div>
+
+  <div class="card" id="switches_card" style="display:none">
+    <h2>Lights</h2>
+    <div class="swlist" id="switches"></div>
   </div>
 
   <div class="card">
@@ -537,7 +540,7 @@
       row.querySelector('.pill').onclick = () => { setEditing(null); stageCircuit(name); };
       sw.appendChild(row);
     });
-    sw.style.display = sw.children.length ? '' : 'none';
+    $('switches_card').style.display = sw.children.length ? '' : 'none';
 
     // Wedge banner
     const b = $('banner');
