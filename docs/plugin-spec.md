@@ -657,6 +657,7 @@ homebridge-prologic/
 - **AquaConnect LCD tag stripping.** The box wraps highlighted/flashing values in HTML (`<span class="WBON">..</span>`); the parser now strips tags so raw markup no longer leaks onto the panel display, and the scroll-pattern regexes match cleanly.
 - **Single-pass startup pre-fetch.** `read_all_settings()` sweeps the Settings ring in one menu session (RIGHT through the heaters/chlorinators, LEFT back to VSP) instead of re-entering the menu per value; triggers on every **sidecar** restart. Key timeout lowered 4s→3s with overshoot "two keys → back up" recovery (`_press_back`).
 - **Remote/LAN access architecture (decided).** See §10.0a. Chose **stock Caddy (apt) + HTTP Basic auth on the LAN**, sidecar kept localhost-bound; **Tailscale** retained for remote.
+- **Wedge probe scaled back.** The proactive AUX2 canary (a real write to the box) went from every **5 min → 30 min** to cut self-inflicted command-path load; it's now configurable via `backend.json` `wedge_probe_interval_s` or `POST /wedge-probe` (`0` = reactive-only). The reactive on-failure probe and 30s re-probe-while-wedged are unaffected. Diagnostic: `deploy/wedge-report.sh` summarizes sensor-firing wedge episodes + recovery durations.
 
 ### 10.0a Access architecture
 

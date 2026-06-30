@@ -155,8 +155,13 @@ _wedge_lock = threading.Lock()
 
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
 _WEDGE_CANARY_KEY = 'AUX2'
-# How often (seconds) to run the active canary probe while healthy.
-_WEDGE_PROBE_INTERVAL_S = 300.0
+# How often (seconds) to run the active canary probe while healthy. Each probe
+# is a real AUX2 write to the box, so a short interval adds command-path load;
+# we keep it long and rely mostly on the reactive on-failure probe. Set to 0 to
+# disable the proactive probe entirely (reactive-only): wedges are then detected
+# when a real command fails to confirm. Overridable via backend.json
+# ('wedge_probe_interval_s') or POST /wedge-probe.
+_WEDGE_PROBE_INTERVAL_S = 1800.0
 # Faster probe cadence while wedged, so recovery after a power-cycle shows up
 # quickly (the box stays wedged until power-cycled, so frequent probing is safe).
 _WEDGE_RECOVERY_INTERVAL_S = 30.0
@@ -3594,15 +3599,26 @@ def _canary_probe_loop() -> None:
                     log.info('Wedge cooldown elapsed — probing for recovery')
                     _ac_canary_probe()
                 continue
-            # Defer to any real action that is running OR queued so the probe's
-            # canary presses never stomp on a user command (busy() covers both).
-            if _ac_backend is not None and not _nav_lock.busy():
+            with state_lock:
+                wedged = state.bridge_wedged
+            # Probe when wedged (to detect recovery) always; when healthy, only
+            # if the proactive probe is enabled (interval > 0). Reactive-only
+            # mode (interval 0) skips idle probing — a wedge is then caught when
+            # a real command fails. Defer to any real action running OR queued so
+            # the canary presses never stomp on a user command.
+            proactive = _WEDGE_PROBE_INTERVAL_S > 0
+            if _ac_backend is not None and not _nav_lock.busy() and (wedged or proactive):
                 _ac_canary_probe()
         except Exception as e:
             log.error('Canary probe loop error: %s', e)
         with state_lock:
             wedged = state.bridge_wedged
-        time.sleep(_WEDGE_RECOVERY_INTERVAL_S if wedged else _WEDGE_PROBE_INTERVAL_S)
+        if wedged:
+            time.sleep(_WEDGE_RECOVERY_INTERVAL_S)
+        elif _WEDGE_PROBE_INTERVAL_S > 0:
+            time.sleep(_WEDGE_PROBE_INTERVAL_S)
+        else:
+            time.sleep(60)   # reactive-only idle tick; reactive failures set the flag
 
 
 @app.route('/config/ui', methods=['POST'])
@@ -4022,6 +4038,46 @@ def debug_keyburst() -> Response:
     out = _current_key_timing()
     out['persisted'] = persisted
     return jsonify(out)
+
+
+@app.route('/wedge-probe', methods=['GET', 'POST'])
+def wedge_probe_config() -> Response:
+    """Get/set the proactive wedge-probe interval without a restart.
+
+    POST JSON: {"interval_s": 1800}   (0 = reactive-only, no idle probing)
+    Pass "persist": true to save it to backend.json so it survives restarts.
+
+    The reactive on-failure probe and the 30s re-probe-while-wedged are always
+    active regardless of this setting; this only controls the idle/proactive
+    canary cadence.
+    """
+    global _WEDGE_PROBE_INTERVAL_S
+    persisted = False
+    if request.method == 'POST':
+        body = request.get_json(force=True) or {}
+        if 'interval_s' in body:
+            try:
+                _WEDGE_PROBE_INTERVAL_S = max(0.0, float(body['interval_s']))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'interval_s must be a number >= 0'}), 400
+            log.info('Wedge probe interval set to %.0fs%s', _WEDGE_PROBE_INTERVAL_S,
+                     ' (reactive-only)' if _WEDGE_PROBE_INTERVAL_S == 0 else '')
+        if body.get('persist'):
+            try:
+                cfg = _load_backend_config()
+                cfg['wedge_probe_interval_s'] = _WEDGE_PROBE_INTERVAL_S
+                _save_backend_config(cfg)
+                persisted = True
+                log.info('Wedge probe interval persisted to backend.json')
+            except Exception as e:
+                log.error('Could not persist wedge probe interval: %s', e)
+                return jsonify({'error': f'persist failed: {e}'}), 500
+    return jsonify({
+        'interval_s': _WEDGE_PROBE_INTERVAL_S,
+        'reactive_only': _WEDGE_PROBE_INTERVAL_S == 0,
+        'recovery_interval_s': _WEDGE_RECOVERY_INTERVAL_S,
+        'persisted': persisted,
+    })
 
 
 @app.route('/debug/aquaconnect', methods=['GET', 'POST'])
@@ -4835,6 +4891,18 @@ def main() -> None:
     if 'pad_bytes' in kt:     KEY_PAD_BYTES = max(0, int(kt['pad_bytes']))
     if kt:
         log.info('Loaded persisted key timing: %s', kt)
+
+    # Proactive wedge-probe interval (seconds; 0 = reactive-only). Persisted
+    # value overrides the default.
+    global _WEDGE_PROBE_INTERVAL_S
+    if 'wedge_probe_interval_s' in cfg:
+        try:
+            _WEDGE_PROBE_INTERVAL_S = max(0.0, float(cfg['wedge_probe_interval_s']))
+            log.info('Loaded persisted wedge probe interval: %.0fs%s',
+                     _WEDGE_PROBE_INTERVAL_S,
+                     ' (reactive-only)' if _WEDGE_PROBE_INTERVAL_S == 0 else '')
+        except (TypeError, ValueError):
+            log.warning('Bad wedge_probe_interval_s in backend.json: %r', cfg['wedge_probe_interval_s'])
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend
