@@ -366,6 +366,58 @@ def _state_cache_thread() -> None:
             log.debug('State cache save failed: %s', e)
 
 
+# ── Temperature history ──────────────────────────────────────────────────────
+# A rolling time-series of pool/spa/air temps for the cockpit chart. Sampled
+# every _TEMP_SAMPLE_INTERVAL_S, capped at _TEMP_HISTORY_MAX points, persisted to
+# disk so history survives restarts. Each sample is [epoch_s, pool, spa, air]
+# (any of the temps may be null if not currently known).
+_TEMP_HISTORY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'temp_history.json')
+_TEMP_SAMPLE_INTERVAL_S = 300.0     # 5 min
+_TEMP_HISTORY_MAX = 576             # 48h at 5-min resolution
+_temp_history: list = []
+_temp_history_lock = threading.Lock()
+
+
+def _load_temp_history() -> None:
+    global _temp_history
+    try:
+        with open(_TEMP_HISTORY_PATH) as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            with _temp_history_lock:
+                _temp_history = data[-_TEMP_HISTORY_MAX:]
+            log.info('Restored %d temperature history samples', len(_temp_history))
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        log.warning('Temp history load failed: %s', e)
+
+
+def _temp_history_thread(now_fn=time.time) -> None:
+    """Append a temp sample every interval and persist. Skips samples where all
+    three temps are unknown (nothing to plot)."""
+    while True:
+        time.sleep(_TEMP_SAMPLE_INTERVAL_S)
+        with state_lock:
+            pool, spa, air = state.pool_temp, state.spa_temp, state.air_temp
+        if pool is None and spa is None and air is None:
+            continue
+        sample = [round(now_fn()), pool, spa, air]
+        with _temp_history_lock:
+            _temp_history.append(sample)
+            if len(_temp_history) > _TEMP_HISTORY_MAX:
+                del _temp_history[:-_TEMP_HISTORY_MAX]
+            snapshot = list(_temp_history)
+        try:
+            tmp = _TEMP_HISTORY_PATH + '.tmp'
+            with open(tmp, 'w') as fh:
+                json.dump(snapshot, fh)
+            os.replace(tmp, _TEMP_HISTORY_PATH)
+        except Exception as e:
+            log.debug('Temp history save failed: %s', e)
+
+
 panel = None
 panel_lock = threading.Lock()
 
@@ -2792,6 +2844,23 @@ except AttributeError:
     app.config['JSON_SORT_KEYS'] = False  # older Flask
 
 
+@app.route('/history')
+def get_history() -> Response:
+    """Rolling pool/spa/air temperature history for the cockpit chart.
+    Optional ?hours=N trims to the last N hours. Returns
+    {"samples": [[epoch_s, pool, spa, air], ...]}."""
+    with _temp_history_lock:
+        samples = list(_temp_history)
+    try:
+        hours = float(request.args.get('hours', 0))
+    except (TypeError, ValueError):
+        hours = 0
+    if hours > 0 and samples:
+        cutoff = time.time() - hours * 3600
+        samples = [s for s in samples if s and s[0] >= cutoff]
+    return jsonify({'samples': samples})
+
+
 @app.route('/status')
 def get_status() -> Response:
     # Compute the cooldown remainder BEFORE taking state_lock: _wedge_cooling_down()
@@ -5144,6 +5213,11 @@ def main() -> None:
     _load_state_cache()
     threading.Thread(target=_state_cache_thread, daemon=True,
                      name='state-cache').start()
+
+    # Temperature history for the cockpit chart (persisted across restarts).
+    _load_temp_history()
+    threading.Thread(target=_temp_history_thread, daemon=True,
+                     name='temp-history').start()
 
     if backend == 'aquaconnect':
         _ac_backend = AquaConnectBackend(host=aquaconnect_host)

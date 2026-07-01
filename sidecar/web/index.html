@@ -145,6 +145,30 @@
     letter-spacing: 0; text-transform: none; }
   .lockbtn.unlocked { border-color: var(--accent); color: var(--accent); }
   .dpad.locked { opacity: .35; pointer-events: none; }
+  .stat.tap { cursor: pointer; }
+  .stat.tap:active { opacity: .6; }
+  /* Temperature history chart modal */
+  #chart_modal { position: fixed; inset: 0; z-index: 40; display: none;
+    background: rgba(2,8,16,.72); align-items: center; justify-content: center;
+    padding: 16px; }
+  #chart_modal.show { display: flex; }
+  .modal-card { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 14px 14px 10px; width: 100%; max-width: 620px; }
+  .modal-hd { display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px; }
+  .modal-hd .t { font-size: 15px; font-weight: 700; }
+  .modal-hd .btns { display: flex; gap: 6px; align-items: center; }
+  .rbtn { font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel2); color: var(--dim); }
+  .rbtn.on { border-color: var(--accent); color: var(--accent); }
+  .xbtn { font-size: 16px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: transparent; color: var(--dim); }
+  #chart_canvas { width: 100%; height: 240px; display: block; touch-action: none; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); }
+  .legend i { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+  #chart_readout { font-size: 12px; color: var(--dim); min-height: 16px; margin-top: 4px;
+    font-variant-numeric: tabular-nums; }
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
     background: var(--bad); color: #fff; padding: 11px 16px; border-radius: 10px;
     font-weight: 600; z-index: 10; opacity: 0; transition: opacity .2s; pointer-events: none;
@@ -173,8 +197,8 @@
   <div class="card">
     <h2>At a glance</h2>
     <div class="grid">
-      <div class="stat"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water</span></div>
-      <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air</span></div>
+      <div class="stat tap" id="stat_water"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water</span></div>
+      <div class="stat tap" id="stat_air"><span class="n" id="air_temp">—</span><span class="k">Air</span></div>
       <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt</span></div>
     </div>
     <div class="condlist">
@@ -236,6 +260,24 @@
   </div>
 </main>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
+
+<div id="chart_modal">
+  <div class="modal-card">
+    <div class="modal-hd">
+      <span class="t" id="chart_title">Temperature history</span>
+      <span class="btns">
+        <button class="rbtn on" id="chart_6">6h</button>
+        <button class="rbtn" id="chart_24">24h</button>
+        <button class="rbtn" id="chart_48">48h</button>
+        <button class="xbtn" id="chart_close">✕</button>
+      </span>
+    </div>
+    <canvas id="chart_canvas"></canvas>
+    <div class="legend" id="chart_legend"></div>
+    <div id="chart_readout"></div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -470,6 +512,109 @@
     }
   }
 
+  // ── Temperature history chart ──────────────────────────────────────────────
+  const CHART = { hours: 6, samples: [], hoverX: null };
+  const SERIES = [
+    { key: 1, label: 'Pool', color: '#38bdf8' },
+    { key: 2, label: 'Spa',  color: '#f472b6' },
+    { key: 3, label: 'Air',  color: '#9fb6cf' },
+  ];
+  async function openChart() {
+    $('chart_modal').classList.add('show');
+    await loadChart();
+  }
+  function closeChart() { $('chart_modal').classList.remove('show'); CHART.hoverX = null; }
+  async function loadChart() {
+    try {
+      const r = await fetch('/history?hours=' + CHART.hours);
+      const j = await r.json();
+      CHART.samples = (j.samples || []).filter(s => s && s.length >= 4);
+    } catch (e) { CHART.samples = []; }
+    drawChart();
+  }
+  function setRange(h) {
+    CHART.hours = h;
+    for (const id of ['chart_6', 'chart_24', 'chart_48'])
+      $(id).classList.toggle('on', id === 'chart_' + h);
+    loadChart();
+  }
+  const hhmm = t => { const d = new Date(t * 1000);
+    return d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  function drawChart() {
+    const cv = $('chart_canvas'), ctx = cv.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const x0 = 34, x1 = W - 8, y0 = 8, y1 = H - 20;
+    const s = CHART.samples;
+    if (!s.length) {
+      ctx.fillStyle = '#9fb6cf'; ctx.font = '13px -apple-system, sans-serif';
+      ctx.textAlign = 'center'; ctx.fillText('No history yet — sampled every 5 min', W / 2, H / 2);
+      renderLegend([]); txt('chart_readout', ''); return;
+    }
+    const tMin = s[0][0], tMax = s[s.length - 1][0];
+    let vMin = Infinity, vMax = -Infinity; const present = [];
+    for (const ser of SERIES) {
+      let any = false;
+      for (const row of s) { const v = row[ser.key];
+        if (v != null) { any = true; if (v < vMin) vMin = v; if (v > vMax) vMax = v; } }
+      if (any) present.push(ser);
+    }
+    if (!isFinite(vMin)) { vMin = 60; vMax = 100; }
+    if (vMin === vMax) { vMin -= 2; vMax += 2; }
+    const padV = (vMax - vMin) * 0.12 || 2; vMin -= padV; vMax += padV;
+    const sx = t => x0 + (tMax === tMin ? 0.5 : (t - tMin) / (tMax - tMin)) * (x1 - x0);
+    const sy = v => y1 - (v - vMin) / (vMax - vMin) * (y1 - y0);
+    ctx.strokeStyle = 'rgba(159,182,207,.15)'; ctx.fillStyle = '#9fb6cf';
+    ctx.font = '10px -apple-system, sans-serif'; ctx.lineWidth = 1;
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+      const v = vMin + (vMax - vMin) * i / 4, y = sy(v);
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      ctx.fillText(Math.round(v) + '°', x0 - 4, y + 3);
+    }
+    ctx.textAlign = 'center';
+    for (const t of [tMin, (tMin + tMax) / 2, tMax]) ctx.fillText(hhmm(t), sx(t), y1 + 14);
+    for (const ser of present) {
+      ctx.strokeStyle = ser.color; ctx.lineWidth = 2; ctx.beginPath();
+      let started = false;
+      for (const row of s) { const v = row[ser.key];
+        if (v == null) { started = false; continue; }
+        const X = sx(row[0]), Y = sy(v);
+        if (started) ctx.lineTo(X, Y); else { ctx.moveTo(X, Y); started = true; } }
+      ctx.stroke();
+    }
+    let readout = '';
+    if (CHART.hoverX != null) {
+      let best = null, bestDx = Infinity;
+      for (const row of s) { const dx = Math.abs(sx(row[0]) - CHART.hoverX);
+        if (dx < bestDx) { bestDx = dx; best = row; } }
+      if (best) {
+        const hx = sx(best[0]);
+        ctx.strokeStyle = 'rgba(159,182,207,.4)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(hx, y0); ctx.lineTo(hx, y1); ctx.stroke();
+        for (const ser of present) { const v = best[ser.key];
+          if (v != null) { ctx.fillStyle = ser.color;
+            ctx.beginPath(); ctx.arc(hx, sy(v), 3, 0, 7); ctx.fill(); } }
+        readout = hhmm(best[0]) + '   ' + present.map(ser =>
+          ser.label + ' ' + (best[ser.key] != null ? best[ser.key] + '°' : '—')).join('   ');
+      }
+    }
+    txt('chart_readout', readout);
+    renderLegend(present);
+  }
+  function renderLegend(present) {
+    $('chart_legend').innerHTML = present.map(ser =>
+      `<span><i style="background:${ser.color}"></i>${ser.label}</span>`).join('');
+  }
+  function chartHover(e) {
+    const rect = $('chart_canvas').getBoundingClientRect();
+    CHART.hoverX = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    drawChart();
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
   function renderStatus(s) {
     last = s;
@@ -660,6 +805,16 @@
   $('nav_right').onclick = () => sendKey('RIGHT');
   $('nav_menu').onclick = () => sendKey('MENU');
   $('refresh_btn').onclick = triggerRefresh;
+  // Temperature history chart: tap Water or Air to open.
+  $('stat_water').onclick = openChart;
+  $('stat_air').onclick = openChart;
+  $('chart_close').onclick = closeChart;
+  $('chart_6').onclick = () => setRange(6);
+  $('chart_24').onclick = () => setRange(24);
+  $('chart_48').onclick = () => setRange(48);
+  $('chart_modal').onclick = (e) => { if (e.target.id === 'chart_modal') closeChart(); };
+  $('chart_canvas').addEventListener('pointermove', chartHover);
+  $('chart_canvas').addEventListener('pointerdown', chartHover);
   $('nav_lock').onclick = () => setNavLock(!navLocked);
 
   // Freshness ticker

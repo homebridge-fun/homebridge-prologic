@@ -6,4 +6,5 @@ __pycache__/
 .env
 sidecar/backend.json
 sidecar/state_cache.json
+sidecar/temp_history.json
 .claude/
