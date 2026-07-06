@@ -109,6 +109,8 @@
   footer { text-align: center; color: var(--off); font-size: 12px; padding: 8px 0 18px; }
   /* Interactivity */
   .ctl { cursor: pointer; user-select: none; }
+  /* Disable iOS double-tap-to-zoom on controls (keeps scroll + pinch-zoom). */
+  .ctl, button, .stat.tap { touch-action: manipulation; }
   body.busy .ctl { pointer-events: none; opacity: .45; }
   #busy { display: none; flex: 1; min-width: 0; margin: 0 12px; color: var(--accent);
     font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden;
