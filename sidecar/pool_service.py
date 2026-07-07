@@ -1219,9 +1219,42 @@ _AC_SCROLL_PATTERNS = (
 _AC_HEATER_STATE_RE = re.compile(
     r'(Pool |Spa )?Heater1\s+(Auto Control|Manual Off)', re.I)
 
+# Fault/alert phrases the panel interleaves into the status scroll. Matched
+# case-insensitively as substrings. Each match records a last-seen time; a fault
+# is considered active until it stops appearing for _FAULT_TTL_S (it resolves by
+# ceasing to scroll). Surfaced in /status['faults'] for the cockpit banner (not
+# HomeKit). Curated for this AquaLogic/ProLogic panel; extend as new alerts show.
+_FAULT_PHRASES = (
+    'Check System', 'Inspect Cell', 'No Flow', 'Check Flow', 'Low Salt',
+    'High Salt', 'Very Low Salt', 'Check PCB', 'Cold Water', 'Sensor Error',
+    'Service Mode', 'Check AC', 'Comm Error', 'Low Temp',
+)
+_FAULT_TTL_S = 300.0
+_active_faults: dict = {}          # phrase -> last_seen epoch
+_faults_lock = threading.Lock()
+
+
+def _check_faults(lcd: str) -> None:
+    """Record any fault/alert phrase seen in a scroll frame with a timestamp."""
+    low = lcd.lower()
+    now = time.time()
+    hits = [p for p in _FAULT_PHRASES if p.lower() in low]
+    if hits:
+        with _faults_lock:
+            for p in hits:
+                _active_faults[p] = now
+
+
+def _current_faults() -> list:
+    """Faults seen within the TTL window (i.e. still scrolling = still active)."""
+    cutoff = time.time() - _FAULT_TTL_S
+    with _faults_lock:
+        return sorted(p for p, ts in _active_faults.items() if ts >= cutoff)
+
 
 def _apply_ac_scroll_to_state(lcd: str) -> None:
     """Pull numeric readings + heater enable out of a scroll/menu LCD screen."""
+    _check_faults(lcd)
     with state_lock:
         for field, pat in _AC_SCROLL_PATTERNS:
             m = pat.search(lcd)
@@ -2895,6 +2928,7 @@ def get_status() -> Response:
             'backend':             _active_backend,
             'ui_circuits':         list(_ui_circuits),
             'circuit_labels':      dict(_ui_circuit_labels),
+            'faults':              _current_faults(),
         })
 
 
