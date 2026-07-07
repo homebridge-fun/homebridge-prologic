@@ -1233,9 +1233,65 @@ _FAULT_TTL_S = 300.0
 _active_faults: dict = {}          # phrase -> last_seen epoch
 _faults_lock = threading.Lock()
 
+# Discovery: frames that LOOK like an alert (contain one of these words) but are
+# not a known reading or known fault get logged + persisted so we can learn this
+# panel's exact alert wording and promote real ones into _FAULT_PHRASES.
+_FAULT_HINT_RE = re.compile(
+    r'\b(check|inspect|error|fault|fail|alarm|alert|service|warning|replace|'
+    r'freeze|sensor|no flow|clean|low|high)\b', re.I)
+_FAULT_CANDIDATES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'fault_candidates.json')
+_fault_candidates: dict = {}       # frame text -> {first, last, count}
+_fault_cand_lock = threading.Lock()
+
+
+def _is_known_reading(lcd: str) -> bool:
+    """True if the frame is a recognized status reading or heater-state screen."""
+    if _AC_HEATER_STATE_RE.search(lcd):
+        return True
+    return any(pat.search(lcd) for _f, pat in _AC_SCROLL_PATTERNS)
+
+
+def _load_fault_candidates() -> None:
+    global _fault_candidates
+    try:
+        with open(_FAULT_CANDIDATES_PATH) as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            _fault_candidates = data
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        log.warning('Fault candidates load failed: %s', e)
+
+
+def _record_fault_candidate(frame: str, now: float) -> None:
+    if not frame:
+        return
+    is_new = False
+    with _fault_cand_lock:
+        e = _fault_candidates.get(frame)
+        if e is None:
+            _fault_candidates[frame] = {'first': now, 'last': now, 'count': 1}
+            is_new = True
+        else:
+            e['last'] = now
+            e['count'] = e.get('count', 0) + 1
+        snapshot = dict(_fault_candidates)
+    if is_new:
+        log.warning('FAULT-CANDIDATE (unknown alert-like frame): %r', frame)
+        try:
+            tmp = _FAULT_CANDIDATES_PATH + '.tmp'
+            with open(tmp, 'w') as fh:
+                json.dump(snapshot, fh, indent=2)
+            os.replace(tmp, _FAULT_CANDIDATES_PATH)
+        except Exception as e:
+            log.debug('Fault candidates save failed: %s', e)
+
 
 def _check_faults(lcd: str) -> None:
-    """Record any fault/alert phrase seen in a scroll frame with a timestamp."""
+    """Record any known fault phrase with a timestamp; log unknown alert-like
+    frames as candidates for the discovery backlog."""
     low = lcd.lower()
     now = time.time()
     hits = [p for p in _FAULT_PHRASES if p.lower() in low]
@@ -1243,6 +1299,10 @@ def _check_faults(lcd: str) -> None:
         with _faults_lock:
             for p in hits:
                 _active_faults[p] = now
+        return  # known fault — no need to flag as a candidate
+    # Discovery: alert-looking but unrecognized frame → log for review.
+    if _FAULT_HINT_RE.search(lcd) and not _is_known_reading(lcd):
+        _record_fault_candidate(lcd.strip(), now)
 
 
 def _current_faults() -> list:
@@ -2875,6 +2935,26 @@ try:
     app.json.sort_keys = False        # Flask 2.3+
 except AttributeError:
     app.config['JSON_SORT_KEYS'] = False  # older Flask
+
+
+@app.route('/faults/candidates', methods=['GET', 'POST'])
+def fault_candidates() -> Response:
+    """Discovery log of alert-looking frames we don't yet recognize, for building
+    the fault backlog. GET returns them (frame -> {first,last,count}); once a
+    real one is triaged into _FAULT_PHRASES, POST {"clear": true} to reset."""
+    if request.method == 'POST':
+        body = request.get_json(silent=True) or {}
+        if body.get('clear'):
+            with _fault_cand_lock:
+                _fault_candidates.clear()
+            try:
+                with open(_FAULT_CANDIDATES_PATH, 'w') as fh:
+                    json.dump({}, fh)
+            except Exception:
+                pass
+            return jsonify({'ok': True, 'cleared': True})
+    with _fault_cand_lock:
+        return jsonify({'candidates': dict(_fault_candidates)})
 
 
 @app.route('/history')
@@ -5257,6 +5337,9 @@ def main() -> None:
     _load_temp_history()
     threading.Thread(target=_temp_history_thread, daemon=True,
                      name='temp-history').start()
+
+    # Fault-discovery candidates persist across restarts so the backlog accrues.
+    _load_fault_candidates()
 
     if backend == 'aquaconnect':
         _ac_backend = AquaConnectBackend(host=aquaconnect_host)
