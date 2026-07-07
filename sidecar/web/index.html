@@ -50,10 +50,12 @@
      is the same size regardless of its text — one width for off, a larger one
      for on (the "Auto" look). */
   .card .condlist .pill, .card .swlist .pill {
-    font-size: 15px; padding: 7px 8px; display: inline-block;
+    font-size: 15px; padding: 4px 8px; display: inline-block;
     box-sizing: border-box; text-align: center; }
   .card .condlist .pill.on, .card .swlist .pill.on { min-width: 92px; }
   .card .condlist .pill.off, .card .swlist .pill.off { min-width: 64px; }
+  /* Tighter rows in the pill lists (At a glance / Lights). */
+  .condlist .row, .swlist .row { min-height: 0; padding: 3px 0; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
