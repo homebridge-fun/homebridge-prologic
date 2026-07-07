@@ -175,8 +175,9 @@
   .modal-hd { display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 8px; }
   .modal-hd .t { font-size: 15px; font-weight: 700; }
-  .modal-hd .btns { display: flex; gap: 6px; align-items: center; }
-  .rbtn { font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 8px;
+  .ranges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .ranges .rbtn { flex: 1; min-width: 42px; }
+  .rbtn { font-size: 13px; font-weight: 600; padding: 5px 10px; border-radius: 8px;
     border: 1px solid var(--line); background: var(--panel2); color: var(--dim); }
   .rbtn.on { border-color: var(--accent); color: var(--accent); }
   .xbtn { font-size: 16px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line);
@@ -286,12 +287,15 @@
   <div class="modal-card">
     <div class="modal-hd">
       <span class="t" id="chart_title">Temperature history</span>
-      <span class="btns">
-        <button class="rbtn on" id="chart_6">6h</button>
-        <button class="rbtn" id="chart_24">24h</button>
-        <button class="rbtn" id="chart_48">48h</button>
-        <button class="xbtn" id="chart_close">✕</button>
-      </span>
+      <button class="xbtn" id="chart_close">✕</button>
+    </div>
+    <div class="ranges" id="chart_ranges">
+      <button class="rbtn on" data-h="6">6h</button>
+      <button class="rbtn" data-h="24">1d</button>
+      <button class="rbtn" data-h="72">3d</button>
+      <button class="rbtn" data-h="168">7d</button>
+      <button class="rbtn" data-h="720">30d</button>
+      <button class="rbtn" data-h="2160">90d</button>
     </div>
     <canvas id="chart_canvas"></canvas>
     <div class="legend" id="chart_legend"></div>
@@ -555,12 +559,16 @@
   }
   function setRange(h) {
     CHART.hours = h;
-    for (const id of ['chart_6', 'chart_24', 'chart_48'])
-      $(id).classList.toggle('on', id === 'chart_' + h);
+    document.querySelectorAll('#chart_ranges .rbtn').forEach(b =>
+      b.classList.toggle('on', +b.dataset.h === h));
     loadChart();
   }
+  const rangeLabel = h => h < 24 ? h + 'h' : (h / 24) + 'd';
   const hhmm = t => { const d = new Date(t * 1000);
     return d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  const mdy = t => { const d = new Date(t * 1000); return (d.getMonth() + 1) + '/' + d.getDate(); };
+  // Axis/readout label: time-of-day for short spans, date for multi-day.
+  const tlabel = (t, wide) => wide ? mdy(t) : hhmm(t);
   function drawChart() {
     const cv = $('chart_canvas'), ctx = cv.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
@@ -572,7 +580,7 @@
     const s = CHART.samples;
     // Reflect the selected range + how much data it covers, so switching ranges
     // is visibly confirmed even when the (stable) temp line looks similar.
-    txt('chart_title', 'Temperature · last ' + CHART.hours + 'h · ' + s.length + ' pts');
+    txt('chart_title', 'Temperature · ' + rangeLabel(CHART.hours) + ' · ' + s.length + ' pts');
     if (!s.length) {
       ctx.fillStyle = '#9fb6cf'; ctx.font = '13px -apple-system, sans-serif';
       ctx.textAlign = 'center'; ctx.fillText('No history yet — sampled every 5 min', W / 2, H / 2);
@@ -600,7 +608,8 @@
       ctx.fillText(Math.round(v) + '°', x0 - 4, y + 3);
     }
     ctx.textAlign = 'center';
-    for (const t of [tMin, (tMin + tMax) / 2, tMax]) ctx.fillText(hhmm(t), sx(t), y1 + 14);
+    const wide = (tMax - tMin) > 48 * 3600;   // multi-day span → date labels
+    for (const t of [tMin, (tMin + tMax) / 2, tMax]) ctx.fillText(tlabel(t, wide), sx(t), y1 + 14);
     for (const ser of present) {
       ctx.strokeStyle = ser.color; ctx.lineWidth = 2; ctx.beginPath();
       let started = false;
@@ -622,7 +631,7 @@
         for (const ser of present) { const v = best[ser.key];
           if (v != null) { ctx.fillStyle = ser.color;
             ctx.beginPath(); ctx.arc(hx, sy(v), 3, 0, 7); ctx.fill(); } }
-        readout = hhmm(best[0]) + '   ' + present.map(ser =>
+        readout = (wide ? mdy(best[0]) + ' ' : '') + hhmm(best[0]) + '   ' + present.map(ser =>
           ser.label + ' ' + (best[ser.key] != null ? best[ser.key] + '°' : '—')).join('   ');
       }
     }
@@ -842,9 +851,8 @@
   $('stat_water').onclick = openChart;
   $('stat_air').onclick = openChart;
   $('chart_close').onclick = closeChart;
-  $('chart_6').onclick = () => setRange(6);
-  $('chart_24').onclick = () => setRange(24);
-  $('chart_48').onclick = () => setRange(48);
+  document.querySelectorAll('#chart_ranges .rbtn').forEach(b =>
+    b.onclick = () => setRange(+b.dataset.h));
   $('chart_modal').onclick = (e) => { if (e.target.id === 'chart_modal') closeChart(); };
   $('chart_canvas').addEventListener('pointermove', chartHover);
   $('chart_canvas').addEventListener('pointerdown', chartHover);

@@ -377,16 +377,41 @@ def _state_cache_thread() -> None:
 
 
 # ── Temperature history ──────────────────────────────────────────────────────
-# A rolling time-series of pool/spa/air temps for the cockpit chart. Sampled
-# every _TEMP_SAMPLE_INTERVAL_S, capped at _TEMP_HISTORY_MAX points, persisted to
-# disk so history survives restarts. Each sample is [epoch_s, pool, spa, air]
-# (any of the temps may be null if not currently known).
+# A rolling time-series of pool/spa/air temps for the cockpit chart. Two-tier
+# retention: full 5-min detail for the last day, thinned to 15-min buckets
+# beyond that, dropped after 90 days. Persisted so it survives restarts. Each
+# sample is [epoch_s, pool, spa, air] (any temp may be null if not known).
 _TEMP_HISTORY_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'temp_history.json')
-_TEMP_SAMPLE_INTERVAL_S = 300.0     # 5 min
-_TEMP_HISTORY_MAX = 576             # 48h at 5-min resolution
+_TEMP_SAMPLE_INTERVAL_S = 300.0        # 5 min live sampling
+_TEMP_FINE_WINDOW_S = 86400            # keep full 5-min detail for the last day
+_TEMP_COARSE_BUCKET_S = 900            # 15-min buckets beyond the fine window
+_TEMP_RETENTION_S = 90 * 86400         # drop samples older than 90 days
+_TEMP_HISTORY_MAX = 15000              # hard backstop (~8.8k expected at steady state)
 _temp_history: list = []
 _temp_history_lock = threading.Lock()
+
+
+def _compact_history(hist: list, now: float) -> list:
+    """Apply two-tier retention: keep every sample within the last day, thin to
+    one-per-15-min beyond that, drop older than 90 days. Order-preserving and
+    idempotent, so it can run on every append."""
+    fine_cutoff = now - _TEMP_FINE_WINDOW_S
+    drop_cutoff = now - _TEMP_RETENTION_S
+    out = []
+    last_bucket = None
+    for s in hist:
+        t = s[0]
+        if t < drop_cutoff:
+            continue
+        if t >= fine_cutoff:
+            out.append(s)                       # recent: full 5-min detail
+        else:
+            b = int(t // _TEMP_COARSE_BUCKET_S)  # aged: one per 15-min bucket
+            if b != last_bucket:
+                out.append(s)
+                last_bucket = b
+    return out
 
 # When the state cache was last flushed (epoch), read back on load so startup
 # can decide whether the persisted values are fresh enough to skip the sweep.
@@ -400,7 +425,7 @@ def _load_temp_history() -> None:
             data = json.load(fh)
         if isinstance(data, list):
             with _temp_history_lock:
-                _temp_history = data[-_TEMP_HISTORY_MAX:]
+                _temp_history = _compact_history(data, time.time())[-_TEMP_HISTORY_MAX:]
             log.info('Restored %d temperature history samples', len(_temp_history))
     except FileNotFoundError:
         return
@@ -420,6 +445,7 @@ def _temp_history_thread(now_fn=time.time) -> None:
         sample = [round(now_fn()), pool, spa, air]
         with _temp_history_lock:
             _temp_history.append(sample)
+            _temp_history[:] = _compact_history(_temp_history, sample[0])
             if len(_temp_history) > _TEMP_HISTORY_MAX:
                 del _temp_history[:-_TEMP_HISTORY_MAX]
             snapshot = list(_temp_history)
