@@ -319,6 +319,7 @@ def _snapshot_state_cache() -> dict:
 
 def _load_state_cache() -> None:
     """Restore persisted bus state into `state` at startup (last-known values)."""
+    global _cache_saved_at
     try:
         with open(_STATE_CACHE_PATH) as fh:
             snap = json.load(fh)
@@ -327,6 +328,7 @@ def _load_state_cache() -> None:
     except Exception as e:
         log.warning('State cache load failed: %s', e)
         return
+    _cache_saved_at = snap.get('_saved_at')
     n = 0
     with state_lock:
         for f in _PERSIST_FIELDS:
@@ -349,19 +351,27 @@ def _load_state_cache() -> None:
 
 
 def _state_cache_thread() -> None:
-    """Flush the bus-state cache to disk whenever it changes."""
+    """Flush the bus-state cache to disk when it changes, plus a ~60s heartbeat
+    so `_saved_at` reflects how recently the sidecar was alive — startup uses
+    that to decide whether the persisted values are fresh enough to skip the
+    menu sweep."""
     last = None
+    last_write = 0.0
     while True:
         time.sleep(_STATE_CACHE_FLUSH_S)
         snap = _snapshot_state_cache()
-        if snap == last:
+        now = time.time()
+        if snap == last and (now - last_write) < 60:
             continue
+        payload = dict(snap)
+        payload['_saved_at'] = round(now)
         try:
             tmp = _STATE_CACHE_PATH + '.tmp'
             with open(tmp, 'w') as fh:
-                json.dump(snap, fh)
+                json.dump(payload, fh)
             os.replace(tmp, _STATE_CACHE_PATH)   # atomic
             last = snap
+            last_write = now
         except Exception as e:
             log.debug('State cache save failed: %s', e)
 
@@ -377,6 +387,10 @@ _TEMP_SAMPLE_INTERVAL_S = 300.0     # 5 min
 _TEMP_HISTORY_MAX = 576             # 48h at 5-min resolution
 _temp_history: list = []
 _temp_history_lock = threading.Lock()
+
+# When the state cache was last flushed (epoch), read back on load so startup
+# can decide whether the persisted values are fresh enough to skip the sweep.
+_cache_saved_at: Optional[float] = None
 
 
 def _load_temp_history() -> None:
@@ -1219,6 +1233,15 @@ _AC_SCROLL_PATTERNS = (
 _AC_HEATER_STATE_RE = re.compile(
     r'(Pool |Spa )?Heater1\s+(Auto Control|Manual Off)', re.I)
 
+# Passive capture of MENU-only values whenever the panel displays them — whether
+# from our own nav OR the owner changing them by hand at the panel (the physical
+# LCD shows the menu, and our poll reads it). The setpoint °F only appears when
+# the heater is enabled, so seeing it also confirms Auto. Slot label is
+# 'Filter Speed1 90%' (digit adjacent, so it never collides with the scroll's
+# 'Filter Speed 50%' pump-speed reading).
+_AC_HEATER_SETPOINT_RE = re.compile(r'(Pool|Spa) Heater1[^0-9]*(\d{2,3})\s*\xb0?\s*F', re.I)
+_AC_VSP_SLOT_RE = re.compile(r'Filter Speed([1-4])[^0-9]+(\d{1,3})\s*%', re.I)
+
 # Fault/alert phrases the panel interleaves into the status scroll. Matched
 # case-insensitively as substrings. Each match records a last-seen time; a fault
 # is considered active until it stops appearing for _FAULT_TTL_S (it resolves by
@@ -1331,6 +1354,24 @@ def _apply_ac_scroll_to_state(lcd: str) -> None:
             else:
                 state.pool_heater_enabled = enabled
             state.last_update = time.time()
+        # Menu-only values captured passively when their frame is on screen.
+        sm = _AC_HEATER_SETPOINT_RE.search(lcd)
+        if sm:
+            sp = int(sm.group(2))
+            if 40 <= sp <= 110:   # sanity-bound a real setpoint
+                if sm.group(1).lower() == 'spa':
+                    state.spa_setpoint_f = sp
+                    state.spa_heater_enabled = True
+                else:
+                    state.pool_setpoint_f = sp
+                    state.pool_heater_enabled = True
+                state.last_update = time.time()
+        vm = _AC_VSP_SLOT_RE.search(lcd)
+        if vm:
+            pct = int(vm.group(2))
+            if 0 <= pct <= 100:
+                state.vsp_slot_pct[int(vm.group(1))] = pct
+                state.last_update = time.time()
 
 
 def _apply_ac_led_to_state(led: dict) -> None:
@@ -5150,6 +5191,10 @@ def refresher_thread(interval: float) -> None:
 # Seconds to let the backend settle (link up + first frames) before the
 # one-shot startup pre-fetch navigates the menu.
 _STARTUP_PREFETCH_SETTLE_S = 10.0
+# Skip the startup menu sweep if the persisted state cache was flushed within
+# this window — the menu-only values (setpoints, slot speeds) can't have gone
+# stale in that time, so we avoid the menu-nav load/wedge risk on a quick restart.
+_STARTUP_SKIP_SWEEP_S = 180.0
 
 
 def startup_prefetch_thread() -> None:
@@ -5178,6 +5223,15 @@ def startup_prefetch_thread() -> None:
                  sweep.get('count', 0), sweep.get('elapsed_s', 0))
     except Exception as e:
         log.warning('Startup scroll sweep failed: %s', e)
+    # Conditional: skip the (expensive, wedge-prone) menu sweep when the persisted
+    # cache is fresh — the menu-only values can't have changed in <3 min, and any
+    # panel-side change is captured passively anyway (setpoint/slot parsers).
+    if _cache_saved_at is not None:
+        age = time.time() - _cache_saved_at
+        if age < _STARTUP_SKIP_SWEEP_S:
+            log.info('Startup menu sweep skipped — state cache is %.0fs old (<%.0fs)',
+                     age, _STARTUP_SKIP_SWEEP_S)
+            return
     try:
         result = nav.read_all_settings()
         got = {k: v for k, v in result.items() if v}
