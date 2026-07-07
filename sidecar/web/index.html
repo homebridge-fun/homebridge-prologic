@@ -570,6 +570,9 @@
     ctx.clearRect(0, 0, W, H);
     const x0 = 34, x1 = W - 8, y0 = 8, y1 = H - 20;
     const s = CHART.samples;
+    // Reflect the selected range + how much data it covers, so switching ranges
+    // is visibly confirmed even when the (stable) temp line looks similar.
+    txt('chart_title', 'Temperature · last ' + CHART.hours + 'h · ' + s.length + ' pts');
     if (!s.length) {
       ctx.fillStyle = '#9fb6cf'; ctx.font = '13px -apple-system, sans-serif';
       ctx.textAlign = 'center'; ctx.fillText('No history yet — sampled every 5 min', W / 2, H / 2);
