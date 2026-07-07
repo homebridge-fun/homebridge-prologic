@@ -41,8 +41,9 @@
   .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .stat .n .u { font-size: 15px; font-weight: 600; color: var(--dim); margin-left: 2px; }
   .stat .k { font-size: 14px; color: var(--dim); white-space: nowrap; }
-  /* Match the divider spacing to the inter-pill rhythm (3px above/below). */
-  .condlist { margin-top: 3px; padding-top: 0; border-top: 1px solid rgba(159,182,207,.32); }
+  /* More space above the divider (separates temps from pills); tight below it
+     so the divider-to-Filter-pill gap stays the same. */
+  .condlist { margin-top: 12px; padding-top: 0; border-top: 1px solid rgba(159,182,207,.32); }
   .condlist .label { font-size: 16px; }
   .swlist .label { font-size: 16px; }
   /* Higher specificity than .pill.ctl so the ctl pills (Filter/Heater) match
