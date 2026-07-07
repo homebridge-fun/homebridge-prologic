@@ -3797,6 +3797,11 @@ def _ac_canary_probe() -> dict:
             if not already:
                 with state_lock:
                     state.bridge_wedged = True
+                    # Also stamp wedge_detected_at so the 120s power-cycle
+                    # cooldown engages (the "2 unconfirmed writes" path does this
+                    # too). Without it the sidecar keeps probing every 30s during
+                    # the box's reboot window and a fast "recovery" races the plug.
+                    state.wedge_detected_at = time.time()
                 log.warning('Bridge command path wedged (active canary probe). '
                             'Power-cycle the AquaConnect box to recover.')
         return result
