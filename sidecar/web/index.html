@@ -692,7 +692,7 @@
       const sel = selectedSlot === key;
       const d = document.createElement('div');
       d.className = 'slot ctl' + (running ? ' run' : '') + (sel ? ' sel' : '');
-      d.innerHTML = `<div class="s">${label}${running ? ' ●' : ''}</div>` +
+      d.innerHTML = `<div class="s">${label}</div>` +
                     `<div class="p${key in staged ? ' pend' : ''}">${pctv(eff)}</div>`;
       d.onclick = () => selectSlot(key);
       return d;
