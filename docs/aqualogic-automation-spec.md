@@ -39,6 +39,11 @@ Tested three serial-to-Ethernet bridges (USR-W610 WiFi, Waveshare RS485-to-ETH, 
 
 **Conclusion:** reliable RS-485 **writes require a direct serial connection** — an **isolated USB-RS485 adapter on the Pi** (FT232+SP485 class), no TCP in the loop. Two viable topologies: (a) Pi local at the pad, or (b) run the RS-485 twisted pair to the house Pi (add TVS/surge protection at both ends; galvanic isolation is mandatory for the long pool-to-house run). The TCP bridge remains useful as a **read-only observer**. The current daily-control path is the **AquaConnect HTTP backend**, which is unaffected by all of this.
 
+**Untested variable — key-event FRAME TYPE `[OPEN, to test on direct serial]`.** The `aqualogic` library picks the transmit frame type purely by key value in `_get_key_event_frame()`: keys ≤ `0xffff` go out as **LOCAL_WIRED** (`00 02`), keys > `0xffff` (incl. `HEATER_1` = `0x00040000`, `VALVE_3/4`, `AUX_8+`) go out as **WIRELESS** (`00 83`). It **never transmits REMOTE_WIRED** (`00 03`) — that type is only parsed on receive. Our adapter taps the bus as effectively a *remote* device, so it's plausible the panel ignores a LOCAL_WIRED event from a second bus device where it would honor a REMOTE_WIRED one. All write testing to date used the library default (LOCAL_WIRED for nav, WIRELESS for HEATER_1); we never swept the frame type. The timing problem confounds this over a TCP bridge, so test on **direct serial**.
+
+- Harness: `POST /debug/rawkey {"key":"RIGHT","frametype":"local|remote|wireless"}` builds and queues a single key frame of the chosen type (bypasses `send_key`). Requires the rs485 backend active and the panel connected.
+- Sweep recipe: switch to the rs485 backend → press a visibly-confirmable key (`RIGHT` enters the Settings menu) under each frametype in turn, watching the LCD (`/display` or the cockpit Panel Display). Whichever type actually moves the panel is the one a bus remote must use. For the heater, repeat with `key=HEATER_1` (`wireless` is the library default; also try `remote`).
+
 ---
 
 ## 1. System facts

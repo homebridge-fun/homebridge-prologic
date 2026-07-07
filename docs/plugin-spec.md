@@ -648,7 +648,85 @@ homebridge-prologic/
 
 ## 10. Known Limitations and Future Work
 
-### 10.0 Recent changes (week of 2026-06-28)
+### 10.0 Recent changes (week of 2026-06-29)
+
+- **Cockpit moves to interactive (stage-then-Apply).** The web cockpit is no longer read-only. Controls stage locally and **nothing is sent until Apply** (single busy-lock mirroring the panel's one-lane nav). Tap-to-edit ± steppers (the +/- only appear once you tap a controllable item), a lockable manual-nav D-pad, and a single Apply/Cancel bar. The in-flight progress now shows **in the top header** instead of a sticky banner.
+- **Cockpit layout.** Single "Water" temp tagged with the live mode (°F shown inline with the number); Heat card shows **both setpoints with the active body flagged**; Chlorinator likewise; Speeds merged into the Water card as **"Pump Speed"** with the running slot highlighted; Pool/Spa speed slots share one labeled row with the Spa tile sized like the Pool slots.
+- **Heater switch-only model.** Auto/Off is only ever changed via the heater switch (`_enable_heater` / `_restore_heater_off`); reads are pure (never scroll when "Manual Off"). A 45s **setpoint-backfill** thread fills a missing °F when a heater is enabled. Fixes "heater active but no target temp" and HomeKit changes not reflecting in the cockpit.
+- **Both heater targets read per explicit action.** An explicit heater enable/setpoint write already navigates the menu, so it now also passively reads the *other* body's heater item in the same trip (`_read_other_heater`, one adjacent step Spa↔Pool) — capturing that body's °F if it's enabled, without ever toggling an off heater. So enabling pool heat also records the spa target when the spa heater is on (an off heater still shows no temperature, so it keeps its last-known value).
+- **Active VSP slot parsing.** `vsp_active_slot` is now read from **both** panel formats — the idle scroll `Filter Speed 50% Speed2` and the startup window `Filter On:Spd2 +/- to change`. The cockpit highlight is decoupled from the FILTER circuit flag (spa runs on its own pump line).
+- **AquaConnect LCD tag stripping.** The box wraps highlighted/flashing values in HTML (`<span class="WBON">..</span>`); the parser now strips tags so raw markup no longer leaks onto the panel display, and the scroll-pattern regexes match cleanly.
+- **Temperature history chart.** The sidecar records a rolling pool/spa/air temp series (`_temp_history_thread`, sampled every 5 min, capped 48h, persisted to `sidecar/temp_history.json`, restored on startup) served at `GET /history?hours=N`. Tapping **Water** or **Air** in the cockpit opens an interactive canvas chart (Pool/Spa/Air lines, 6h/24h/48h ranges, drag to read values at a point).
+- **Active scroll sweep at startup.** The idle status scroll (temps, salt, chlorinator, pump speed, heater Auto/Off, active slot) can be advanced with RIGHT at normal key timing instead of waiting ~6s per item for the natural cycle — verified 2026-06-30: 6 frames in 7.3s (~1.2s/item). `sweep_scroll()` runs first in the startup pre-fetch and on the cockpit Refresh button (`/prefetch`), then `read_all_settings()` handles the menu-only values. Test endpoint: `POST /debug/scroll-sweep`.
+- **Bus-state persistence across restarts.** Everything read off the bus (setpoints, heater enabled, chlorinator %, VSP slot speeds, spa speed, temps, salt, valve mode, circuits) is cached to `sidecar/state_cache.json` (atomic write, flushed on change every 30s) and **restored into `state` at startup before the prefetch runs** — so the cockpit/HomeKit show last-known values immediately instead of "—" until the menu sweep finishes. Foundation for making the startup sweep conditional later (only re-read what differs). See backlog.
+- **Single-pass startup pre-fetch.** `read_all_settings()` sweeps the Settings ring in one menu session (RIGHT through the heaters/chlorinators, LEFT back to VSP) instead of re-entering the menu per value; triggers on every **sidecar** restart. Key timeout lowered 4s→3s with overshoot "two keys → back up" recovery (`_press_back`).
+- **Remote/LAN access architecture (decided).** See §10.0a. Chose **stock Caddy (apt) + HTTP Basic auth on the LAN**, sidecar kept localhost-bound; **Tailscale** retained for remote.
+- **Wedge probe scaled back.** The proactive AUX2 canary (a real write to the box) went from every **5 min → 30 min** to cut self-inflicted command-path load; it's now configurable via `backend.json` `wedge_probe_interval_s` or `POST /wedge-probe` (`0` = reactive-only). The reactive on-failure probe and 30s re-probe-while-wedged are unaffected. Diagnostic: `deploy/wedge-report.sh` summarizes sensor-firing wedge episodes + recovery durations. See §10.0c for the tuning commands.
+- **Canary-probe wedge now engages the power-cycle cooldown.** The active-canary-probe wedge path also sets `wedge_detected_at` now, so a canary-detected wedge triggers the 120s `_WEDGE_POWERCYCLE_COOLDOWN_S` (blocks commands, defers the recovery probe to the reboot window) instead of re-probing every 30s and racing the auto power-cycle plug — matching the "2 unconfirmed writes" path.
+- **Menu-nav failure now trips the wedge probe.** A failed `read_all_settings()` ("Could not reach Settings Menu") — manual `/prefetch` or startup pre-fetch — now fires `_immediate_wedge_probe()`, so a wedged box gets flagged (sensor/plug) within seconds instead of sitting wedged until the next 30-min canary. Closes the detection gap the longer proactive interval opened (a real wedge sat undetected for ~an hour on 2026-06-30).
+- **Cockpit "Lights" / switches driven by Homebridge config.** A Lights card (placed right after "At a glance") renders a staged On/Off toggle per controllable circuit (LIGHTS/AUX_1/AUX_2/SPILLOVER). The plugin POSTs its enabled `circuits` + `circuitLabels` to the sidecar (`/config/ui`); the sidecar surfaces them in `/status` (`ui_circuits`, `circuit_labels`); the cockpit shows exactly those with override labels (falls back to panel-reported circuits if the plugin hasn't pushed yet).
+- **Cockpit "At a glance" card.** Conditions renamed; temps (Water/Air/Salt) on one row with units (`°F`/`ppm`) rendered small and inline; a divided list below for Filter (first), Heater mode, and Calling-for-heat with larger pills.
+- **Cockpit polish.** Apply bar is now a **fixed floating bottom bar** (overlays content, never reflows the page); highlight colors unified (**green = live/active**, **cyan = staged/selected**); pill toggles enlarged for touch.
+- **`circuitLabels` rename fix.** Renaming a circuit (e.g. Spa → "Spa Mode") was silently ignored for cached accessories (UUID is stable; displayName was only set at creation). The plugin now updates `displayName` + `updatePlatformAccessories` when the configured label changes. (Note: a name set in the Apple Home app still wins over the plugin's.)
+- **RS-485 key-event frame type — finding + harness.** The `aqualogic` library transmits **LOCAL_WIRED** (`00 02`) for keys ≤ 0xffff and **WIRELESS** (`00 83`) for keys > 0xffff (incl. `HEATER_1`); it **never** transmits **REMOTE_WIRED** (`00 03`). Untested whether a bus-attached remote needs REMOTE_WIRED. `POST /debug/rawkey` now supports `local|remote|wireless` to sweep this on direct serial. See automation-spec §0.
+- **Caddy password helper.** `deploy/set-cockpit-password.sh` sets the Basic-auth credential in one sudo step (hidden prompt → hash → update Caddyfile → validate → reload → verify). Kept out of the Homebridge UI on purpose (no sudoers/escalation path for the plugin).
+
+### 10.0a Access architecture
+
+The sidecar (cockpit + control API) binds to `127.0.0.1:5757` and is **never**
+exposed to the network directly — the bespoke Flask app stays off the LAN to
+avoid turning the Pi into an attack/pivot surface. Two front-ends sit in front:
+
+| Path | Front-end | Auth | Notes |
+|---|---|---|---|
+| **Home / LAN** | **Caddy** (stock, official apt repo) reverse-proxying `127.0.0.1:5757` | HTTP Basic (bcrypt) | Hardened, apt-maintained binary is the only LAN listener. Config: `deploy/Caddyfile` + `deploy/CADDY.md`. Basic auth has no session, so an iOS pinned web app re-prompts on cold launches |
+| **Remote** | **Tailscale** (`tailscale serve`) | WireGuard device identity | No inbound port; reachable only from the tailnet |
+
+Rationale (evaluated 2026-06-29): opening the sidecar's own port was rejected as
+the only option that grows the Pi's inbound surface. Cloudflare Tunnel + Access
+(outbound-only, revocable service tokens, apt `cloudflared`) was the runner-up
+and remains the upgrade path if persistent no-login access or remote-without-VPN
+is wanted; caddy-security (self-hosted persistent sessions) was rejected for its
+out-of-apt binary lifecycle and single-maintainer plugin. Revocable per-key auth
+was deemed over-engineering for a single user; "rotate the one password" suffices.
+
+### 10.0c Operational reference — wedge probe tuning
+
+The proactive AUX2 canary is a real write to the AquaConnect box, so its cadence
+trades wedge-detection latency against self-inflicted command-path load. Default
+is **1800s (30 min)**. `0` = **reactive-only** (no idle probing; a wedge is then
+caught when a real command fails to confirm). The reactive on-failure probe and
+the 30s re-probe-while-wedged always run regardless of this setting, so the
+HomeKit "Bridge Needs Rebooting" sensor + auto power-cycle plug keep working.
+
+```bash
+# Inspect the current setting
+curl -s http://127.0.0.1:5757/wedge-probe
+
+# Set to 30 min and persist across restarts
+curl -s -X POST http://127.0.0.1:5757/wedge-probe \
+  -H 'Content-Type: application/json' -d '{"interval_s": 1800, "persist": true}'
+
+# Go fully reactive-only (no idle probing) and persist
+curl -s -X POST http://127.0.0.1:5757/wedge-probe \
+  -H 'Content-Type: application/json' -d '{"interval_s": 0, "persist": true}'
+```
+
+Persisted value lives in `backend.json` as `wedge_probe_interval_s` and overrides
+the code default at startup. Review wedge history any time with:
+
+```bash
+./deploy/wedge-report.sh                 # all history
+./deploy/wedge-report.sh "2026-06-30"    # since a date
+```
+
+It pairs each sensor-firing wedge with its recovery, tags recoveries faster than
+a reboot (~60s) as **self-healed** vs **possibly the power-cycle**, and counts
+per day. (Wedge paths: a canary-probe wedge sets `bridge_wedged` but historically
+did **not** set `wedge_detected_at`, so the 120s power-cycle cooldown only
+engaged on the "2 unconfirmed writes" path — see backlog.)
+
+### 10.0b Recent changes (week of 2026-06-28)
 
 - **Critical deadlock fixes.** `/status` self-deadlocked on the non-reentrant `state_lock` (it called `_wedge_cooling_down()` while already holding the lock) — this took the **whole plugin offline** (all tiles unresponsive). Separately, `_ac_heater_enable` self-deadlocked on `_nav_lock` via a nested acquire on the heater enable/setpoint-read path. Both fixed and are the most important changes of the week.
 - **Spa support.** Added spa chlorinator % (`spa_chlorinator_percent`) and a **Spa Speed** VSP tile; the chlorinator fan is now **valve-mode aware** (shows pool % in pool mode, spa % in spa mode). Both bodies' chlorinator % and heater setpoints are pre-fetched on startup.
@@ -682,13 +760,17 @@ homebridge-prologic/
 
 | Item | Priority | Notes |
 |---|---|---|
-| **Dedicated LCD frame-watcher *service*** | Partial | The in-process frame-reader (§5.3) is now the single shared reader with a `_frame_cond` pub/sub inside the sidecar. A *separate* always-on service exposing an external pub/sub API (latest value, change notifications, last-known per field) to other consumers is still open. Won't speed up navigation (0.6s/request box limit) |
-| FILTER circuit as Fanv2 | Backlog | Could expose pump on/off alongside slot tiles |
+| **Dedicated LCD frame-watcher** | Done (in-process) | Exists: `_poll_loop` continuously reads the LCD (single shared reader), `_frame_cond` is the in-process pub/sub, and external consumers already get change-notification + last-known-per-field via `/stream` (SSE), `/status`, `/display`, `/display/history`. The originally-scoped *separate standalone process* offers no functional gain — the sidecar is already the always-on watcher and exposes the pub/sub API — so it's not planned unless a concrete external need appears. Cannot speed navigation (0.6s/request box limit) |
+| FILTER circuit as Fanv2 | Won't do | Redundant: FILTER *is* the pump on this system, and on/off (Filter pill / circuit switch) + speed (VSP slot tiles) already exist. A single Fanv2 0–100% slider also misrepresents the panel's slot-based speed model (4 discrete presets, one active). Dropped 2026-06-30 |
+| Conditional startup sweep | Done | The state cache stamps `_saved_at` on each flush (with a ~60s heartbeat so it reflects "sidecar alive"); on startup, if the cache is <`_STARTUP_SKIP_SWEEP_S` (3 min) old the menu sweep is skipped entirely (values can't have gone stale). Complemented by passive menu-value capture below, so panel-side changes land without a sweep |
+| Passive menu-value capture | Done | Menu-only values (heater setpoint °F `Pool/Spa Heater1 85°F`, VSP slot speeds `Filter Speed1 90%`) are now parsed from any LCD frame — so when the **owner changes them by hand at the panel**, the physical display shows the menu, our poll reads it, and state updates with no active nav. (Chlorinator % and spa speed were already caught via scroll patterns.) Heater setpoints and slot speeds were the only blind spots; now closed |
+| Canary-probe wedge skips power-cycle cooldown | Done | Fixed 2026-06-30: the active-canary-probe wedge path now also sets `wedge_detected_at`, so the 120s `_WEDGE_POWERCYCLE_COOLDOWN_S` engages (matching the "2 unconfirmed writes" path). The sidecar now blocks commands + defers probing for the reboot window instead of re-probing every 30s and racing the auto power-cycle plug |
 | Pool active-slot highlight | Done | Cockpit highlights the running pool speed from `vsp_active_slot`. Parsed from two confirmed panel formats: the idle scroll line `Filter Speed 50% Speed2` and the brief startup slot-selection window `Filter On:Spd2 +/- to change` (the WBON `<span>` is stripped first). Right after a restart the field is `None` until one of those scrolls past |
 | RS-485 backend: reads | Done | Verified on three TCP bridges; live state decodes cleanly (observer-confirmed) |
 | RS-485 backend: writes | Blocked on hardware | **Writes do NOT work over a TCP serial bridge** — the bridge's network latency misses the panel's keypress-response window (see automation-spec §0). Reliable writes need a **direct serial** connection (isolated USB-RS485 on the Pi). The `--serial-device` sidecar option for this is not yet implemented |
 | Spillover mode | Not tested | Not present on this installation |
 | Valve mode detection lag | ~10–30s | Scroll-dependent; no event-driven update (would benefit from the frame-watcher) |
-| System fault indicator | Not implemented | "Check System" / "Inspect Cell" LCD frames not surfaced to HomeKit |
+| System fault indicator | Done (cockpit) | Fault/alert phrases the panel interleaves into the status scroll (`_FAULT_PHRASES`: Check System, Inspect Cell, No/Check Flow, Low/High Salt, Check PCB, etc.) are tracked with a last-seen time (`_active_faults`, `_FAULT_TTL_S` = 5 min = "still scrolling = still active") and surfaced in `/status['faults']`. Cockpit shows a red banner at the very top listing active faults. **Not** surfaced to HomeKit (owner preference) |
+| Fault-phrase discovery log | Ongoing | Alert-looking frames (`_FAULT_HINT_RE`) that aren't a known reading or known fault are logged (`FAULT-CANDIDATE`) and persisted to `fault_candidates.json`; view via `GET /faults/candidates`, reset with `POST {"clear":true}`. **Periodically pull this to find real alert wording on the panel and promote it into `_FAULT_PHRASES`.** Grep the journal: `journalctl -u pool-sidecar \| grep FAULT-CANDIDATE` |
 | Spa heater setpoint | Done | Spa heater enable + setpoint work on AquaConnect; both bodies' setpoints pre-fetched on startup so the thermostats show real values |
-| `/debug/aquaconnect` GET uses `_post('00')` | Minor | The only remaining read path that injects a keypad event; manual diagnostic only, but could switch to `_read()` for zero phantom events anywhere |
+| `/debug/aquaconnect` GET uses `_post('00')` | Done | Verified 2026-06-30: the GET already uses `_read()` (`'Update Local Server&'`), a pure read with no phantom keypress. No `_post('00')` read paths remain (only a docstring reference and an intentional RS-485 wedge-test keypress) |

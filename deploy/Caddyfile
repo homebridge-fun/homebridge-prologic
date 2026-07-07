@@ -1,0 +1,32 @@
+# Pool Cockpit — Caddy reverse proxy (LAN front-end)
+#
+# Purpose: put a hardened, apt-maintained web server in front of the cockpit
+# instead of exposing the bespoke Flask sidecar to the LAN. The sidecar stays
+# bound to 127.0.0.1:5757; Caddy is the only thing listening on the LAN.
+# Remote access continues to go through Tailscale (tailscale serve), untouched.
+#
+# Auth: HTTP Basic (stock Caddy from the official apt repo — no plugins, so it
+# stays in your normal `apt upgrade` routine). Note: Basic auth has no
+# persistent session, so an iOS pinned web app will re-prompt on cold launches.
+#
+# Generate the password hash with:
+#     caddy hash-password --plaintext 'your-password-here'
+# then paste the bcrypt string below (it starts with $2a$...).
+#
+# Install/refresh this file on the Pi at /etc/caddy/Caddyfile, then:
+#     sudo systemctl reload caddy
+
+# Listen on port 80 on all interfaces (LAN + tailnet). Plain HTTP keeps it
+# simple on a private network; for encryption of the Basic credentials, switch
+# the address line to `https://pool.lan` and add `tls internal` (then install
+# Caddy's root CA on your devices — see deploy/CADDY.md).
+http:// {
+	# One user. Replace the hash with your own `caddy hash-password` output.
+	basic_auth {
+		greg $2a$14$REPLACE_WITH_YOUR_BCRYPT_HASH
+	}
+
+	# Forward everything to the localhost cockpit. reverse_proxy streams, so the
+	# cockpit's SSE (/stream) passes through fine.
+	reverse_proxy 127.0.0.1:5757
+}

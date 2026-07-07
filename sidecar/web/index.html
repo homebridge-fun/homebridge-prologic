@@ -28,7 +28,7 @@
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); }
   .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
   .dot.warn { background: var(--warn); }
-  main { padding: 14px; max-width: 640px; margin: 0 auto; display: grid; gap: 14px; }
+  main { padding: 14px 14px 84px; max-width: 640px; margin: 0 auto; display: grid; gap: 14px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
   .card h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
     color: var(--dim); margin: 0 0 10px; font-weight: 600; }
@@ -36,10 +36,24 @@
   .row + .row { border-top: 1px solid var(--panel2); }
   .label { color: var(--dim); }
   .val { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 12px; }
   .stat { display: flex; flex-direction: column; gap: 2px; }
-  .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .n { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .stat .n .u { font-size: 12px; font-weight: 600; color: var(--dim); margin-left: 2px; }
   .stat .k { font-size: 12px; color: var(--dim); }
+  .condlist { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--panel2); }
+  .condlist .label { font-size: 16px; }
+  .swlist .label { font-size: 16px; }
+  /* Higher specificity than .pill.ctl so the ctl pills (Filter/Heater) match
+     the plain ones. Wider box, height only ~10% over the original. */
+  /* Fixed widths per state (centered, low padding) so every pill on every row
+     is the same size regardless of its text — one width for off, a larger one
+     for on (the "Auto" look). */
+  .card .condlist .pill, .card .swlist .pill {
+    font-size: 15px; padding: 7px 8px; display: inline-block;
+    box-sizing: border-box; text-align: center; }
+  .card .condlist .pill.on, .card .swlist .pill.on { min-width: 92px; }
+  .card .condlist .pill.off, .card .swlist .pill.off { min-width: 64px; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
@@ -48,9 +62,9 @@
   .mode { display: flex; gap: 6px; }
   .mode .seg { flex: 1; text-align: center; padding: 11px; border-radius: 9px;
     background: var(--panel2); color: var(--dim); font-weight: 600; }
-  .mode .seg.active { background: var(--accent); color: #04263a; }
-  .slots { display: flex; gap: 8px; flex-wrap: wrap; }
-  .slot { flex: 1; min-width: 60px; text-align: center; background: var(--panel2);
+  .mode .seg.active { background: var(--ok); color: #04263a; }
+  .slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .slot { text-align: center; background: var(--panel2);
     border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; }
   .slot.run { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
   .slot.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
@@ -70,11 +84,11 @@
   /* Dual-body (pool/spa) panel with the active one flagged */
   .duo { display: flex; gap: 10px; }
   .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
-    border-radius: 10px; padding: 10px 12px; }
-  .bd.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+    border-radius: 10px; padding: 8px 10px; }
+  .bd.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
-  .bd.active .bd-k::after { content: ' ● active'; color: var(--accent); letter-spacing: 0; }
-  .bd-v { flex: 1; text-align: center; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bd.active .bd-k::after { content: ' ● active'; color: var(--ok); letter-spacing: 0; }
+  .bd-v { flex: 1; text-align: center; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .bd-v.pend { color: var(--accent); }
   .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
   .step { width: 36px; height: 36px; flex: 0 0 auto; border-radius: 9px;
@@ -85,28 +99,41 @@
   .bd.editing { border-color: var(--accent); }
   .step:active { background: var(--accent); color: #04263a; }
   /* Grouped speeds (pool slots vs spa) */
-  .speedrow { display: flex; gap: 12px; align-items: flex-start; }
-  .speedcol { display: flex; flex-direction: column; }
-  .speedcol.pool { flex: 4; }
-  .speedcol.spa { flex: 1; padding-left: 12px; border-left: 1px solid var(--panel2); }
+  .speedsec:first-of-type { margin-top: 10px; }
+  .speedsec + .speedsec { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--panel2); }
   .grp-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 7px; }
   .banner { background: rgba(251,191,36,.12); border: 1px solid var(--warn); color: var(--warn);
     border-radius: 12px; padding: 12px 14px; font-weight: 600; display: none; }
   .banner.bad { background: rgba(248,113,113,.12); border-color: var(--bad); color: var(--bad); }
   .banner.show { display: block; }
+  /* System fault banner (top of app) */
+  .faults { display: none; background: rgba(248,113,113,.14); border: 1px solid var(--bad);
+    color: var(--bad); border-radius: 12px; padding: 11px 14px; }
+  .faults.show { display: block; }
+  .faults .fh { font-size: 13px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; display: flex; align-items: center; gap: 7px; }
+  .faults ul { margin: 6px 0 0; padding-left: 20px; font-weight: 600; }
+  .faults li { padding: 1px 0; }
   footer { text-align: center; color: var(--off); font-size: 12px; padding: 8px 0 18px; }
   /* Interactivity */
   .ctl { cursor: pointer; user-select: none; }
+  /* Disable iOS double-tap-to-zoom on controls (keeps scroll + pinch-zoom). */
+  .ctl, button, .stat.tap { touch-action: manipulation; }
   body.busy .ctl { pointer-events: none; opacity: .45; }
   #busy { display: none; flex: 1; min-width: 0; margin: 0 12px; color: var(--accent);
     font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; text-align: right; }
   #busy.show { display: block; }
   header.busy .conn { display: none; }
-  #apply { position: sticky; top: 53px; z-index: 4; display: none; margin: 0 14px;
-    background: rgba(56,189,248,.14); border: 1px solid var(--accent); color: var(--accent);
-    border-radius: 10px; padding: 9px 13px; font-weight: 600;
-    align-items: center; justify-content: space-between; gap: 10px; }
+  /* Floating bottom action bar — overlays content (fixed) so showing/hiding it
+     never reflows the page. A constant gutter on <main> keeps the last card
+     from ever sitting under it. */
+  #apply { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: none;
+    margin: 0 auto; max-width: 640px; color: var(--accent);
+    background: var(--panel); border-top: 2px solid var(--accent);
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); font-weight: 600;
+    align-items: center; justify-content: space-between; gap: 10px;
+    box-shadow: 0 -6px 22px rgba(0,0,0,.4); }
   #apply.show { display: flex; }
   #apply .n { font-size: 13px; }
   #apply .btns { display: flex; gap: 8px; flex: 0 0 auto; }
@@ -128,6 +155,30 @@
     letter-spacing: 0; text-transform: none; }
   .lockbtn.unlocked { border-color: var(--accent); color: var(--accent); }
   .dpad.locked { opacity: .35; pointer-events: none; }
+  .stat.tap { cursor: pointer; }
+  .stat.tap:active { opacity: .6; }
+  /* Temperature history chart modal */
+  #chart_modal { position: fixed; inset: 0; z-index: 40; display: none;
+    background: rgba(2,8,16,.72); align-items: center; justify-content: center;
+    padding: 16px; }
+  #chart_modal.show { display: flex; }
+  .modal-card { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 14px 14px 10px; width: 100%; max-width: 620px; }
+  .modal-hd { display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px; }
+  .modal-hd .t { font-size: 15px; font-weight: 700; }
+  .modal-hd .btns { display: flex; gap: 6px; align-items: center; }
+  .rbtn { font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel2); color: var(--dim); }
+  .rbtn.on { border-color: var(--accent); color: var(--accent); }
+  .xbtn { font-size: 16px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: transparent; color: var(--dim); }
+  #chart_canvas { width: 100%; height: 240px; display: block; touch-action: none; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); }
+  .legend i { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+  #chart_readout { font-size: 12px; color: var(--dim); min-height: 16px; margin-top: 4px;
+    font-variant-numeric: tabular-nums; }
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
     background: var(--bad); color: #fff; padding: 11px 16px; border-radius: 10px;
     font-weight: 600; z-index: 10; opacity: 0; transition: opacity .2s; pointer-events: none;
@@ -143,6 +194,7 @@
 </header>
 <div id="apply"><span class="n" id="apply_n"></span><span class="btns"><button id="cancel_btn">Cancel</button><button id="apply_btn">Apply</button></span></div>
 <main>
+  <div id="faults" class="faults"></div>
   <div id="banner" class="banner"></div>
 
   <div class="card">
@@ -154,12 +206,22 @@
   </div>
 
   <div class="card">
-    <h2>Conditions</h2>
+    <h2>At a glance</h2>
     <div class="grid">
-      <div class="stat"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water</span></div>
-      <div class="stat"><span class="n" id="air_temp">—</span><span class="k">Air</span></div>
-      <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt ppm</span></div>
+      <div class="stat tap" id="stat_water"><span class="n" id="water_temp">—</span><span class="k" id="water_k">Water</span></div>
+      <div class="stat tap" id="stat_air"><span class="n" id="air_temp">—</span><span class="k">Air</span></div>
+      <div class="stat"><span class="n" id="salt_level">—</span><span class="k">Salt</span></div>
     </div>
+    <div class="condlist">
+      <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
+      <div class="row"><span class="label">Heater</span><span class="pill ctl" id="heat_mode">—</span></div>
+      <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
+    </div>
+  </div>
+
+  <div class="card" id="switches_card" style="display:none">
+    <h2>Lights</h2>
+    <div class="swlist" id="switches"></div>
   </div>
 
   <div class="card">
@@ -170,17 +232,12 @@
       <div class="bd ctl" id="heat_spa" data-field="heat_spa"><div class="bd-k">Spa</div>
         <div class="setrow"><button class="step ctl" id="hs_dn">−</button><div class="bd-v" id="heat_spa_set">—</div><button class="step ctl" id="hs_up">+</button></div></div>
     </div>
-    <div class="row" style="margin-top:10px"><span class="label">Heater Mode</span><span class="pill ctl" id="heat_mode">—</span></div>
-    <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
   </div>
 
   <div class="card">
     <h2>Pump Speed</h2>
-    <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
-    <div class="speedrow" style="margin-top:10px">
-      <div class="speedcol pool"><div class="grp-k">Pool</div><div class="slots" id="slots"></div></div>
-      <div class="speedcol spa"><div class="grp-k">Spa</div><div class="slots" id="spa_slots"></div></div>
-    </div>
+    <div class="speedsec"><div class="grp-k">Pool</div><div class="slots" id="slots"></div></div>
+    <div class="speedsec"><div class="grp-k">Spa</div><div class="slots" id="spa_slots"></div></div>
     <div class="slot-editor" id="slot_editor">
       <span class="se-label" id="se_label"></span>
       <span class="setrow-inline"><button class="step ctl" id="se_dn">−</button><span class="bd-v" id="se_val">—</span><button class="step ctl" id="se_up">+</button></span>
@@ -198,7 +255,7 @@
   </div>
 
   <div class="card">
-    <h2>Panel Display</h2>
+    <h2 class="hrow">Panel Display <button class="lockbtn" id="refresh_btn">↻ Refresh</button></h2>
     <div class="lcd" id="lcd">—<div class="t" id="lcd_t"></div></div>
   </div>
 
@@ -214,6 +271,24 @@
   </div>
 </main>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
+
+<div id="chart_modal">
+  <div class="modal-card">
+    <div class="modal-hd">
+      <span class="t" id="chart_title">Temperature history</span>
+      <span class="btns">
+        <button class="rbtn on" id="chart_6">6h</button>
+        <button class="rbtn" id="chart_24">24h</button>
+        <button class="rbtn" id="chart_48">48h</button>
+        <button class="xbtn" id="chart_close">✕</button>
+      </span>
+    </div>
+    <canvas id="chart_canvas"></canvas>
+    <div class="legend" id="chart_legend"></div>
+    <div id="chart_readout"></div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -222,7 +297,9 @@
   const txt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
   const num = v => (v === null || v === undefined) ? '—' : v;
   const deg = v => (v == null ? '—' : v + '°');
-  const degF = v => (v === null || v === undefined) ? '—' : v + '°F';
+  const degF = v => (v === null || v === undefined) ? '—' : v + '<span class="u">°F</span>';
+  const ppm = v => (v === null || v === undefined) ? '—' : v + '<span class="u">ppm</span>';
+  const html = (id, v) => { const e = $(id); if (e) e.innerHTML = v; };
   const pctv = v => (v == null ? '—' : v + '%');
   let lastStatusTs = 0;
   let last = {};                 // most recent /status
@@ -286,6 +363,17 @@
     if (!eff === real) delete staged.filter; else staged.filter = !eff;
     reRender();
   }
+  // Extra controllable circuits shown as toggles when the panel reports them.
+  // FILTER lives in Pump Speed, POOL/SPA in Mode, HEATER_1 in Conditions.
+  const SWITCHES = [['LIGHTS', 'Lights'], ['AUX_1', 'Aux 1'], ['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover']];
+  function stageCircuit(name) {
+    if (busy) return;
+    const real = !!(last.circuits && last.circuits[name]);
+    const key = 'ckt:' + name;
+    const eff = (key in staged) ? staged[key] : real;
+    if (!eff === real) delete staged[key]; else staged[key] = !eff;
+    reRender();
+  }
   function stageHeat() {
     if (busy) return;
     const which = last.valve_mode === 'spa' ? 'spa' : 'pool';   // current active body
@@ -345,6 +433,13 @@
     for (let n = 1; n <= 4; n++)
       if (('slot' + n) in staged) items.push([`Set Speed ${n} to ${staged['slot' + n]}%`, `/vsp/slot/${n}`, { speed_pct: staged['slot' + n] }]);
     if ('spaSpeed' in staged) items.push([`Set Spa Speed to ${staged.spaSpeed}%`, '/vsp/spa', { speed_pct: staged.spaSpeed }]);
+    for (const [name, dflt] of SWITCHES) {
+      const key = 'ckt:' + name;
+      if (key in staged) {
+        const label = (last.circuit_labels && last.circuit_labels[name]) || dflt;
+        items.push([(staged[key] ? 'Turn on ' : 'Turn off ') + label, '/circuit/' + name, { on: staged[key] }]);
+      }
+    }
     for (const k in staged) delete staged[k];
     selectedSlot = null;
     setEditing(null);
@@ -410,6 +505,127 @@
     }
   }
 
+  // Re-read all menu-navigable values from the panel (heater setpoints,
+  // chlorinator %, VSP slot speeds, spa speed). A full menu sweep (~40s).
+  async function triggerRefresh() {
+    if (busy) return;
+    setBusy(true, 'Reading all values from panel…');
+    try {
+      const r = await fetch('/prefetch', { method: 'POST' });
+      let j = {}; try { j = await r.json(); } catch (e) {}
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      await fetchStatus();
+      toast('✓ Refreshed from panel');
+    } catch (e) {
+      toast('⚠ Refresh failed' + (e.message ? ': ' + e.message : ''));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── Temperature history chart ──────────────────────────────────────────────
+  const CHART = { hours: 6, samples: [], hoverX: null };
+  const SERIES = [
+    { key: 1, label: 'Pool', color: '#38bdf8' },
+    { key: 2, label: 'Spa',  color: '#f472b6' },
+    { key: 3, label: 'Air',  color: '#9fb6cf' },
+  ];
+  async function openChart() {
+    $('chart_modal').classList.add('show');
+    await loadChart();
+  }
+  function closeChart() { $('chart_modal').classList.remove('show'); CHART.hoverX = null; }
+  async function loadChart() {
+    try {
+      const r = await fetch('/history?hours=' + CHART.hours);
+      const j = await r.json();
+      CHART.samples = (j.samples || []).filter(s => s && s.length >= 4);
+    } catch (e) { CHART.samples = []; }
+    drawChart();
+  }
+  function setRange(h) {
+    CHART.hours = h;
+    for (const id of ['chart_6', 'chart_24', 'chart_48'])
+      $(id).classList.toggle('on', id === 'chart_' + h);
+    loadChart();
+  }
+  const hhmm = t => { const d = new Date(t * 1000);
+    return d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  function drawChart() {
+    const cv = $('chart_canvas'), ctx = cv.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const x0 = 34, x1 = W - 8, y0 = 8, y1 = H - 20;
+    const s = CHART.samples;
+    if (!s.length) {
+      ctx.fillStyle = '#9fb6cf'; ctx.font = '13px -apple-system, sans-serif';
+      ctx.textAlign = 'center'; ctx.fillText('No history yet — sampled every 5 min', W / 2, H / 2);
+      renderLegend([]); txt('chart_readout', ''); return;
+    }
+    const tMin = s[0][0], tMax = s[s.length - 1][0];
+    let vMin = Infinity, vMax = -Infinity; const present = [];
+    for (const ser of SERIES) {
+      let any = false;
+      for (const row of s) { const v = row[ser.key];
+        if (v != null) { any = true; if (v < vMin) vMin = v; if (v > vMax) vMax = v; } }
+      if (any) present.push(ser);
+    }
+    if (!isFinite(vMin)) { vMin = 60; vMax = 100; }
+    if (vMin === vMax) { vMin -= 2; vMax += 2; }
+    const padV = (vMax - vMin) * 0.12 || 2; vMin -= padV; vMax += padV;
+    const sx = t => x0 + (tMax === tMin ? 0.5 : (t - tMin) / (tMax - tMin)) * (x1 - x0);
+    const sy = v => y1 - (v - vMin) / (vMax - vMin) * (y1 - y0);
+    ctx.strokeStyle = 'rgba(159,182,207,.15)'; ctx.fillStyle = '#9fb6cf';
+    ctx.font = '10px -apple-system, sans-serif'; ctx.lineWidth = 1;
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+      const v = vMin + (vMax - vMin) * i / 4, y = sy(v);
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      ctx.fillText(Math.round(v) + '°', x0 - 4, y + 3);
+    }
+    ctx.textAlign = 'center';
+    for (const t of [tMin, (tMin + tMax) / 2, tMax]) ctx.fillText(hhmm(t), sx(t), y1 + 14);
+    for (const ser of present) {
+      ctx.strokeStyle = ser.color; ctx.lineWidth = 2; ctx.beginPath();
+      let started = false;
+      for (const row of s) { const v = row[ser.key];
+        if (v == null) { started = false; continue; }
+        const X = sx(row[0]), Y = sy(v);
+        if (started) ctx.lineTo(X, Y); else { ctx.moveTo(X, Y); started = true; } }
+      ctx.stroke();
+    }
+    let readout = '';
+    if (CHART.hoverX != null) {
+      let best = null, bestDx = Infinity;
+      for (const row of s) { const dx = Math.abs(sx(row[0]) - CHART.hoverX);
+        if (dx < bestDx) { bestDx = dx; best = row; } }
+      if (best) {
+        const hx = sx(best[0]);
+        ctx.strokeStyle = 'rgba(159,182,207,.4)'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(hx, y0); ctx.lineTo(hx, y1); ctx.stroke();
+        for (const ser of present) { const v = best[ser.key];
+          if (v != null) { ctx.fillStyle = ser.color;
+            ctx.beginPath(); ctx.arc(hx, sy(v), 3, 0, 7); ctx.fill(); } }
+        readout = hhmm(best[0]) + '   ' + present.map(ser =>
+          ser.label + ' ' + (best[ser.key] != null ? best[ser.key] + '°' : '—')).join('   ');
+      }
+    }
+    txt('chart_readout', readout);
+    renderLegend(present);
+  }
+  function renderLegend(present) {
+    $('chart_legend').innerHTML = present.map(ser =>
+      `<span><i style="background:${ser.color}"></i>${ser.label}</span>`).join('');
+  }
+  function chartHover(e) {
+    const rect = $('chart_canvas').getBoundingClientRect();
+    CHART.hoverX = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    drawChart();
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
   function renderStatus(s) {
     last = s;
@@ -425,10 +641,10 @@
     const spa = s.valve_mode === 'spa';   // real mode drives temps + active-body flags
 
     // Conditions — single water temp tagged with the live mode
-    txt('water_temp', degF(spa ? s.spa_temp : s.pool_temp));
+    html('water_temp', degF(spa ? s.spa_temp : s.pool_temp));
     txt('water_k', 'Water · ' + (spa ? 'Spa' : 'Pool'));
-    txt('air_temp', degF(s.air_temp));
-    txt('salt_level', num(s.salt_level));
+    html('air_temp', degF(s.air_temp));
+    html('salt_level', ppm(s.salt_level));
 
     // Heat — both setpoints (staged value overlaid + dashed), active body flagged
     const effSetPool = ('setPool' in staged) ? staged.setPool : s.pool_setpoint_f;
@@ -491,6 +707,36 @@
     } else {
       ed.classList.remove('show');
     }
+
+    // Switches — driven by the Homebridge config (which circuits are enabled +
+    // label overrides), mirrored to /status. Falls back to panel-reported
+    // circuits if the plugin hasn't pushed its config yet.
+    const cfgC = s.ui_circuits;
+    const labels = s.circuit_labels || {};
+    const sw = $('switches'); sw.innerHTML = '';
+    SWITCHES.forEach(([name, dflt]) => {
+      const enabled = (cfgC && cfgC.length) ? cfgC.includes(name) : (s.circuits && name in s.circuits);
+      if (!enabled) return;
+      const key = 'ckt:' + name;
+      const real = !!(s.circuits && s.circuits[name]);
+      const eff = (key in staged) ? staged[key] : real;
+      const row = document.createElement('div');
+      row.className = 'row';
+      const cls = 'pill ctl' + (eff ? ' on' : ' off') + ((key in staged) ? ' staged' : '');
+      row.innerHTML = `<span class="label">${labels[name] || dflt}</span><span class="${cls}">${eff ? 'On' : 'Off'}</span>`;
+      row.querySelector('.pill').onclick = () => { setEditing(null); stageCircuit(name); };
+      sw.appendChild(row);
+    });
+    $('switches_card').style.display = sw.children.length ? '' : 'none';
+
+    // System faults (top of app)
+    const fx = $('faults');
+    const faults = Array.isArray(s.faults) ? s.faults : [];
+    if (faults.length) {
+      fx.className = 'faults show';
+      fx.innerHTML = '<div class="fh">⚠ System fault' + (faults.length > 1 ? 's' : '') + '</div>'
+        + '<ul>' + faults.map(f => `<li>${f}</li>`).join('') + '</ul>';
+    } else { fx.className = 'faults'; fx.innerHTML = ''; }
 
     // Wedge banner
     const b = $('banner');
@@ -578,6 +824,17 @@
   $('nav_left').onclick = () => sendKey('LEFT');
   $('nav_right').onclick = () => sendKey('RIGHT');
   $('nav_menu').onclick = () => sendKey('MENU');
+  $('refresh_btn').onclick = triggerRefresh;
+  // Temperature history chart: tap Water or Air to open.
+  $('stat_water').onclick = openChart;
+  $('stat_air').onclick = openChart;
+  $('chart_close').onclick = closeChart;
+  $('chart_6').onclick = () => setRange(6);
+  $('chart_24').onclick = () => setRange(24);
+  $('chart_48').onclick = () => setRange(48);
+  $('chart_modal').onclick = (e) => { if (e.target.id === 'chart_modal') closeChart(); };
+  $('chart_canvas').addEventListener('pointermove', chartHover);
+  $('chart_canvas').addEventListener('pointerdown', chartHover);
   $('nav_lock').onclick = () => setNavLock(!navLocked);
 
   // Freshness ticker

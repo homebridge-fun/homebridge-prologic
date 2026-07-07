@@ -155,8 +155,13 @@ _wedge_lock = threading.Lock()
 
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
 _WEDGE_CANARY_KEY = 'AUX2'
-# How often (seconds) to run the active canary probe while healthy.
-_WEDGE_PROBE_INTERVAL_S = 300.0
+# How often (seconds) to run the active canary probe while healthy. Each probe
+# is a real AUX2 write to the box, so a short interval adds command-path load;
+# we keep it long and rely mostly on the reactive on-failure probe. Set to 0 to
+# disable the proactive probe entirely (reactive-only): wedges are then detected
+# when a real command fails to confirm. Overridable via backend.json
+# ('wedge_probe_interval_s') or POST /wedge-probe.
+_WEDGE_PROBE_INTERVAL_S = 1800.0
 # Faster probe cadence while wedged, so recovery after a power-cycle shows up
 # quickly (the box stays wedged until power-cycled, so frequent probing is safe).
 _WEDGE_RECOVERY_INTERVAL_S = 30.0
@@ -258,6 +263,12 @@ _BACKEND_CONFIG_PATH = os.path.join(
 # Which backend is live in this process (set in main()).
 _active_backend: Optional[str] = None
 
+# UI config mirrored from the Homebridge plugin (POST /config/ui): which
+# circuits the user enabled and any display-label overrides. The web cockpit
+# reads these from /status so it shows the same switches/labels as HomeKit.
+_ui_circuits: list = []
+_ui_circuit_labels: dict = {}
+
 
 def _load_backend_config() -> dict:
     """Read the persisted backend selection, or {} if none/unreadable."""
@@ -275,6 +286,150 @@ def _save_backend_config(cfg: dict) -> None:
     """Persist the backend selection for the next startup."""
     with open(_BACKEND_CONFIG_PATH, 'w') as f:
         json.dump(cfg, f, indent=2)
+
+
+# ── Bus-state persistence ────────────────────────────────────────────────────
+# Cache everything we read off the bus so the cockpit/HomeKit show last-known
+# values immediately on restart (instead of '—' until the menu sweep finishes),
+# and so we can later make the startup sweep conditional (only re-read what
+# differs). A background thread flushes on change; the cache is loaded into
+# `state` at startup before the prefetch runs.
+_STATE_CACHE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'state_cache.json')
+_STATE_CACHE_FLUSH_S = 30.0
+_PERSIST_FIELDS = (
+    'pool_temp', 'air_temp', 'spa_temp', 'salt_level',
+    'chlorinator_percent', 'spa_chlorinator_percent',
+    'pump_speed', 'spa_speed',
+    'pool_setpoint_f', 'spa_setpoint_f',
+    'pool_heater_enabled', 'spa_heater_enabled', 'heater_active',
+    'valve_mode', 'vsp_active_slot',
+    'vsp_slot_pct', 'circuits',   # dicts
+)
+
+
+def _snapshot_state_cache() -> dict:
+    with state_lock:
+        snap = {}
+        for f in _PERSIST_FIELDS:
+            v = getattr(state, f, None)
+            snap[f] = dict(v) if isinstance(v, dict) else v
+    return snap
+
+
+def _load_state_cache() -> None:
+    """Restore persisted bus state into `state` at startup (last-known values)."""
+    global _cache_saved_at
+    try:
+        with open(_STATE_CACHE_PATH) as fh:
+            snap = json.load(fh)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        log.warning('State cache load failed: %s', e)
+        return
+    _cache_saved_at = snap.get('_saved_at')
+    n = 0
+    with state_lock:
+        for f in _PERSIST_FIELDS:
+            if snap.get(f) is None:
+                continue
+            cur = getattr(state, f, None)
+            if isinstance(cur, dict) and isinstance(snap[f], dict):
+                incoming = snap[f]
+                # JSON forces dict keys to strings; vsp_slot_pct is keyed by int
+                # slot number in the live code, so restore int keys — otherwise
+                # the dict ends up with both "1" and 1 and jsonify can't sort it.
+                if f == 'vsp_slot_pct':
+                    incoming = {(int(k) if str(k).isdigit() else k): v
+                                for k, v in incoming.items()}
+                cur.update(incoming)
+            else:
+                setattr(state, f, snap[f])
+            n += 1
+    log.info('Restored %d persisted state fields from %s', n, _STATE_CACHE_PATH)
+
+
+def _state_cache_thread() -> None:
+    """Flush the bus-state cache to disk when it changes, plus a ~60s heartbeat
+    so `_saved_at` reflects how recently the sidecar was alive — startup uses
+    that to decide whether the persisted values are fresh enough to skip the
+    menu sweep."""
+    last = None
+    last_write = 0.0
+    while True:
+        time.sleep(_STATE_CACHE_FLUSH_S)
+        snap = _snapshot_state_cache()
+        now = time.time()
+        if snap == last and (now - last_write) < 60:
+            continue
+        payload = dict(snap)
+        payload['_saved_at'] = round(now)
+        try:
+            tmp = _STATE_CACHE_PATH + '.tmp'
+            with open(tmp, 'w') as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, _STATE_CACHE_PATH)   # atomic
+            last = snap
+            last_write = now
+        except Exception as e:
+            log.debug('State cache save failed: %s', e)
+
+
+# ── Temperature history ──────────────────────────────────────────────────────
+# A rolling time-series of pool/spa/air temps for the cockpit chart. Sampled
+# every _TEMP_SAMPLE_INTERVAL_S, capped at _TEMP_HISTORY_MAX points, persisted to
+# disk so history survives restarts. Each sample is [epoch_s, pool, spa, air]
+# (any of the temps may be null if not currently known).
+_TEMP_HISTORY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'temp_history.json')
+_TEMP_SAMPLE_INTERVAL_S = 300.0     # 5 min
+_TEMP_HISTORY_MAX = 576             # 48h at 5-min resolution
+_temp_history: list = []
+_temp_history_lock = threading.Lock()
+
+# When the state cache was last flushed (epoch), read back on load so startup
+# can decide whether the persisted values are fresh enough to skip the sweep.
+_cache_saved_at: Optional[float] = None
+
+
+def _load_temp_history() -> None:
+    global _temp_history
+    try:
+        with open(_TEMP_HISTORY_PATH) as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            with _temp_history_lock:
+                _temp_history = data[-_TEMP_HISTORY_MAX:]
+            log.info('Restored %d temperature history samples', len(_temp_history))
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        log.warning('Temp history load failed: %s', e)
+
+
+def _temp_history_thread(now_fn=time.time) -> None:
+    """Append a temp sample every interval and persist. Skips samples where all
+    three temps are unknown (nothing to plot)."""
+    while True:
+        time.sleep(_TEMP_SAMPLE_INTERVAL_S)
+        with state_lock:
+            pool, spa, air = state.pool_temp, state.spa_temp, state.air_temp
+        if pool is None and spa is None and air is None:
+            continue
+        sample = [round(now_fn()), pool, spa, air]
+        with _temp_history_lock:
+            _temp_history.append(sample)
+            if len(_temp_history) > _TEMP_HISTORY_MAX:
+                del _temp_history[:-_TEMP_HISTORY_MAX]
+            snapshot = list(_temp_history)
+        try:
+            tmp = _TEMP_HISTORY_PATH + '.tmp'
+            with open(tmp, 'w') as fh:
+                json.dump(snapshot, fh)
+            os.replace(tmp, _TEMP_HISTORY_PATH)
+        except Exception as e:
+            log.debug('Temp history save failed: %s', e)
 
 
 panel = None
@@ -1078,9 +1233,111 @@ _AC_SCROLL_PATTERNS = (
 _AC_HEATER_STATE_RE = re.compile(
     r'(Pool |Spa )?Heater1\s+(Auto Control|Manual Off)', re.I)
 
+# Passive capture of MENU-only values whenever the panel displays them — whether
+# from our own nav OR the owner changing them by hand at the panel (the physical
+# LCD shows the menu, and our poll reads it). The setpoint °F only appears when
+# the heater is enabled, so seeing it also confirms Auto. Slot label is
+# 'Filter Speed1 90%' (digit adjacent, so it never collides with the scroll's
+# 'Filter Speed 50%' pump-speed reading).
+_AC_HEATER_SETPOINT_RE = re.compile(r'(Pool|Spa) Heater1[^0-9]*(\d{2,3})\s*\xb0?\s*F', re.I)
+_AC_VSP_SLOT_RE = re.compile(r'Filter Speed([1-4])[^0-9]+(\d{1,3})\s*%', re.I)
+
+# Fault/alert phrases the panel interleaves into the status scroll. Matched
+# case-insensitively as substrings. Each match records a last-seen time; a fault
+# is considered active until it stops appearing for _FAULT_TTL_S (it resolves by
+# ceasing to scroll). Surfaced in /status['faults'] for the cockpit banner (not
+# HomeKit). Curated for this AquaLogic/ProLogic panel; extend as new alerts show.
+_FAULT_PHRASES = (
+    'Check System', 'Inspect Cell', 'No Flow', 'Check Flow', 'Low Salt',
+    'High Salt', 'Very Low Salt', 'Check PCB', 'Cold Water', 'Sensor Error',
+    'Service Mode', 'Check AC', 'Comm Error', 'Low Temp',
+)
+_FAULT_TTL_S = 300.0
+_active_faults: dict = {}          # phrase -> last_seen epoch
+_faults_lock = threading.Lock()
+
+# Discovery: frames that LOOK like an alert (contain one of these words) but are
+# not a known reading or known fault get logged + persisted so we can learn this
+# panel's exact alert wording and promote real ones into _FAULT_PHRASES.
+_FAULT_HINT_RE = re.compile(
+    r'\b(check|inspect|error|fault|fail|alarm|alert|service|warning|replace|'
+    r'freeze|sensor|no flow|clean|low|high)\b', re.I)
+_FAULT_CANDIDATES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'fault_candidates.json')
+_fault_candidates: dict = {}       # frame text -> {first, last, count}
+_fault_cand_lock = threading.Lock()
+
+
+def _is_known_reading(lcd: str) -> bool:
+    """True if the frame is a recognized status reading or heater-state screen."""
+    if _AC_HEATER_STATE_RE.search(lcd):
+        return True
+    return any(pat.search(lcd) for _f, pat in _AC_SCROLL_PATTERNS)
+
+
+def _load_fault_candidates() -> None:
+    global _fault_candidates
+    try:
+        with open(_FAULT_CANDIDATES_PATH) as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            _fault_candidates = data
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        log.warning('Fault candidates load failed: %s', e)
+
+
+def _record_fault_candidate(frame: str, now: float) -> None:
+    if not frame:
+        return
+    is_new = False
+    with _fault_cand_lock:
+        e = _fault_candidates.get(frame)
+        if e is None:
+            _fault_candidates[frame] = {'first': now, 'last': now, 'count': 1}
+            is_new = True
+        else:
+            e['last'] = now
+            e['count'] = e.get('count', 0) + 1
+        snapshot = dict(_fault_candidates)
+    if is_new:
+        log.warning('FAULT-CANDIDATE (unknown alert-like frame): %r', frame)
+        try:
+            tmp = _FAULT_CANDIDATES_PATH + '.tmp'
+            with open(tmp, 'w') as fh:
+                json.dump(snapshot, fh, indent=2)
+            os.replace(tmp, _FAULT_CANDIDATES_PATH)
+        except Exception as e:
+            log.debug('Fault candidates save failed: %s', e)
+
+
+def _check_faults(lcd: str) -> None:
+    """Record any known fault phrase with a timestamp; log unknown alert-like
+    frames as candidates for the discovery backlog."""
+    low = lcd.lower()
+    now = time.time()
+    hits = [p for p in _FAULT_PHRASES if p.lower() in low]
+    if hits:
+        with _faults_lock:
+            for p in hits:
+                _active_faults[p] = now
+        return  # known fault — no need to flag as a candidate
+    # Discovery: alert-looking but unrecognized frame → log for review.
+    if _FAULT_HINT_RE.search(lcd) and not _is_known_reading(lcd):
+        _record_fault_candidate(lcd.strip(), now)
+
+
+def _current_faults() -> list:
+    """Faults seen within the TTL window (i.e. still scrolling = still active)."""
+    cutoff = time.time() - _FAULT_TTL_S
+    with _faults_lock:
+        return sorted(p for p, ts in _active_faults.items() if ts >= cutoff)
+
 
 def _apply_ac_scroll_to_state(lcd: str) -> None:
     """Pull numeric readings + heater enable out of a scroll/menu LCD screen."""
+    _check_faults(lcd)
     with state_lock:
         for field, pat in _AC_SCROLL_PATTERNS:
             m = pat.search(lcd)
@@ -1097,6 +1354,24 @@ def _apply_ac_scroll_to_state(lcd: str) -> None:
             else:
                 state.pool_heater_enabled = enabled
             state.last_update = time.time()
+        # Menu-only values captured passively when their frame is on screen.
+        sm = _AC_HEATER_SETPOINT_RE.search(lcd)
+        if sm:
+            sp = int(sm.group(2))
+            if 40 <= sp <= 110:   # sanity-bound a real setpoint
+                if sm.group(1).lower() == 'spa':
+                    state.spa_setpoint_f = sp
+                    state.spa_heater_enabled = True
+                else:
+                    state.pool_setpoint_f = sp
+                    state.pool_heater_enabled = True
+                state.last_update = time.time()
+        vm = _AC_VSP_SLOT_RE.search(lcd)
+        if vm:
+            pct = int(vm.group(2))
+            if 0 <= pct <= 100:
+                state.vsp_slot_pct[int(vm.group(1))] = pct
+                state.last_update = time.time()
 
 
 def _apply_ac_led_to_state(led: dict) -> None:
@@ -2061,8 +2336,10 @@ class MenuNavigator:
         time.sleep(self._POST_MENU_SETTLE_S)
 
     # Status-cycle prefixes — any of these means we're back in the default display.
-    _STATUS_PREFIXES = ('Thursday', 'Pool Temp', 'Air Temp', 'Pool Chlorinator',
-                        'Salt Level', 'Heater1', 'Filter Speed', 'Spa Temp')
+    _STATUS_PREFIXES = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+                        'Saturday', 'Sunday', 'Pool Temp', 'Air Temp', 'Spa Temp',
+                        'Pool Chlorinator', 'Spa Chlorinator', 'Salt Level',
+                        'Heater1', 'Filter Speed', 'Filter On')
 
     def _is_status(self, norm: str) -> bool:
         return any(norm.startswith(p) for p in self._STATUS_PREFIXES)
@@ -2179,6 +2456,43 @@ class MenuNavigator:
         finally:
             self.fast_exit()
 
+    def _read_heater_in_menu(self, read_which: str, direction: str) -> Optional[dict]:
+        """Passively read a heater item while ALREADY in the Settings menu
+        (caller holds _nav_lock and is anchored). Navigates `direction` to the
+        item and captures its setpoint if enabled — never toggles. Used to grab
+        the OTHER body's target opportunistically whenever we're in the menu for
+        an explicit heater action, so both setpoints populate from one trip.
+        Best-effort: returns None on failure.
+        """
+        label = self._HEATER_LABEL[read_which]
+        try:
+            txt = self._press_until(direction, lambda t: label in t,
+                                    self._NAV_MAX, label)
+            enabled = 'Manual Off' not in txt
+            setpoint_f = self._degf(txt) if enabled else None
+            with state_lock:
+                if read_which == 'pool':
+                    state.pool_heater_enabled = enabled
+                    if setpoint_f is not None:
+                        state.pool_setpoint_f = setpoint_f
+                else:
+                    state.spa_heater_enabled = enabled
+                    if setpoint_f is not None:
+                        state.spa_setpoint_f = setpoint_f
+            return {'which': read_which, 'enabled': enabled, 'setpoint_f': setpoint_f}
+        except Exception as e:
+            log.debug('opportunistic %s-heater read failed: %s', read_which, e)
+            return None
+
+    def _read_other_heater(self, primary: str) -> None:
+        """Grab the non-primary body's heater item in the same menu session.
+        Spa Heater1 and Pool Heater1 are adjacent (Spa then Pool), so the other
+        item is one step away: from Pool go LEFT to Spa, from Spa go RIGHT to
+        Pool."""
+        other = 'spa' if primary == 'pool' else 'pool'
+        direction = 'LEFT' if primary == 'pool' else 'RIGHT'
+        self._read_heater_in_menu(other, direction)
+
     def set_heater_enabled(self, which: str, on: bool) -> dict:
         """Enable/disable a heater using the HEATER_1 switch ONLY — never +/-.
 
@@ -2214,6 +2528,8 @@ class MenuNavigator:
                         state.spa_heater_enabled = end_enabled
                         if setpoint_f is not None:
                             state.spa_setpoint_f = setpoint_f
+                # Already in the menu — passively grab the other body's target too.
+                self._read_other_heater(which)
                 return {'which': which, 'enabled': end_enabled, 'was_off': was_off,
                         'setpoint_f': setpoint_f}
         finally:
@@ -2248,6 +2564,8 @@ class MenuNavigator:
                     else:
                         state.spa_setpoint_f = target_f
                         state.spa_heater_enabled = True
+                # Already in the menu — passively grab the other body's target too.
+                self._read_other_heater(which)
                 return {'which': which, 'target_f': target_f}
         finally:
             self.fast_exit()
@@ -2600,6 +2918,37 @@ class MenuNavigator:
             self.fast_exit()
         return out
 
+    def sweep_scroll(self, max_presses: int = 24) -> dict:
+        """Actively advance the idle status scroll with RIGHT to capture every
+        reading at normal key timing, instead of waiting ~6s per item for the
+        natural cycle. Each frame is applied to state via the scroll parser.
+        Stops on a full cycle (a frame repeats) or the press budget. Stays in
+        the status display; if a press drifts into a menu, exits cleanly.
+
+        Returns the frames seen + total elapsed, so a caller/tester can tell
+        whether RIGHT is actually advancing the scroll (fast) vs the press doing
+        nothing and us just riding the ~6s natural cycle (slow).
+        """
+        seen = set()
+        frames = []
+        t0 = time.time()
+        drifted = False
+        with _nav_lock:
+            txt = self._lcd.text()
+            for _ in range(max(1, max_presses)):
+                if txt and txt in seen:
+                    break  # wrapped — full cycle captured
+                if txt:
+                    _apply_ac_scroll_to_state(txt)
+                    frames.append({'frame': txt, 'status': self._is_status(txt)})
+                    seen.add(txt)
+                txt = self._send('RIGHT')
+            drifted = bool(txt) and not self._is_status(txt)
+        if drifted:
+            self.fast_exit()   # re-acquires _nav_lock; call outside the block
+        return {'frames': frames, 'count': len(frames),
+                'elapsed_s': round(time.time() - t0, 1)}
+
 
 def _get_panel():
     with panel_lock:
@@ -2620,6 +2969,50 @@ def _get_navigator() -> Optional[MenuNavigator]:
 
 app = Flask(__name__)
 app.logger.setLevel(logging.WARNING)
+# Don't sort JSON keys: sorting a dict with mixed int/str keys raises TypeError
+# and 500s /status (which takes the whole plugin + cockpit offline). Insertion
+# order is fine for our consumers.
+try:
+    app.json.sort_keys = False        # Flask 2.3+
+except AttributeError:
+    app.config['JSON_SORT_KEYS'] = False  # older Flask
+
+
+@app.route('/faults/candidates', methods=['GET', 'POST'])
+def fault_candidates() -> Response:
+    """Discovery log of alert-looking frames we don't yet recognize, for building
+    the fault backlog. GET returns them (frame -> {first,last,count}); once a
+    real one is triaged into _FAULT_PHRASES, POST {"clear": true} to reset."""
+    if request.method == 'POST':
+        body = request.get_json(silent=True) or {}
+        if body.get('clear'):
+            with _fault_cand_lock:
+                _fault_candidates.clear()
+            try:
+                with open(_FAULT_CANDIDATES_PATH, 'w') as fh:
+                    json.dump({}, fh)
+            except Exception:
+                pass
+            return jsonify({'ok': True, 'cleared': True})
+    with _fault_cand_lock:
+        return jsonify({'candidates': dict(_fault_candidates)})
+
+
+@app.route('/history')
+def get_history() -> Response:
+    """Rolling pool/spa/air temperature history for the cockpit chart.
+    Optional ?hours=N trims to the last N hours. Returns
+    {"samples": [[epoch_s, pool, spa, air], ...]}."""
+    with _temp_history_lock:
+        samples = list(_temp_history)
+    try:
+        hours = float(request.args.get('hours', 0))
+    except (TypeError, ValueError):
+        hours = 0
+    if hours > 0 and samples:
+        cutoff = time.time() - hours * 3600
+        samples = [s for s in samples if s and s[0] >= cutoff]
+    return jsonify({'samples': samples})
 
 
 @app.route('/status')
@@ -2654,6 +3047,9 @@ def get_status() -> Response:
             'bridge_wedged':       state.bridge_wedged,
             'wedge_cooldown_remaining_s': round(cooldown) if cooldown else 0,
             'backend':             _active_backend,
+            'ui_circuits':         list(_ui_circuits),
+            'circuit_labels':      dict(_ui_circuit_labels),
+            'faults':              _current_faults(),
         })
 
 
@@ -3556,6 +3952,11 @@ def _ac_canary_probe() -> dict:
             if not already:
                 with state_lock:
                     state.bridge_wedged = True
+                    # Also stamp wedge_detected_at so the 120s power-cycle
+                    # cooldown engages (the "2 unconfirmed writes" path does this
+                    # too). Without it the sidecar keeps probing every 30s during
+                    # the box's reboot window and a fast "recovery" races the plug.
+                    state.wedge_detected_at = time.time()
                 log.warning('Bridge command path wedged (active canary probe). '
                             'Power-cycle the AquaConnect box to recover.')
         return result
@@ -3586,15 +3987,55 @@ def _canary_probe_loop() -> None:
                     log.info('Wedge cooldown elapsed — probing for recovery')
                     _ac_canary_probe()
                 continue
-            # Defer to any real action that is running OR queued so the probe's
-            # canary presses never stomp on a user command (busy() covers both).
-            if _ac_backend is not None and not _nav_lock.busy():
+            with state_lock:
+                wedged = state.bridge_wedged
+            # Probe when wedged (to detect recovery) always; when healthy, only
+            # if the proactive probe is enabled (interval > 0). Reactive-only
+            # mode (interval 0) skips idle probing — a wedge is then caught when
+            # a real command fails. Defer to any real action running OR queued so
+            # the canary presses never stomp on a user command.
+            proactive = _WEDGE_PROBE_INTERVAL_S > 0
+            if _ac_backend is not None and not _nav_lock.busy() and (wedged or proactive):
                 _ac_canary_probe()
         except Exception as e:
             log.error('Canary probe loop error: %s', e)
         with state_lock:
             wedged = state.bridge_wedged
-        time.sleep(_WEDGE_RECOVERY_INTERVAL_S if wedged else _WEDGE_PROBE_INTERVAL_S)
+        if wedged:
+            time.sleep(_WEDGE_RECOVERY_INTERVAL_S)
+        elif _WEDGE_PROBE_INTERVAL_S > 0:
+            time.sleep(_WEDGE_PROBE_INTERVAL_S)
+        else:
+            time.sleep(60)   # reactive-only idle tick; reactive failures set the flag
+
+
+@app.route('/config/ui', methods=['POST'])
+def set_ui_config() -> Response:
+    """
+    Mirror the Homebridge plugin's UI config so the web cockpit shows the same
+    switches and labels as HomeKit.  Body:
+        {"circuits": ["LIGHTS", "AUX_1", ...], "labels": {"AUX_1": "Waterfall"}}
+    Best-effort: stored in-memory and surfaced via /status.
+    """
+    global _ui_circuits, _ui_circuit_labels
+    body = request.get_json(force=True) or {}
+    circuits = body.get('circuits')
+    labels = body.get('labels')
+    if isinstance(circuits, list):
+        _ui_circuits = [str(c).upper() for c in circuits]
+    if isinstance(labels, dict):
+        _ui_circuit_labels = {str(k).upper(): str(v) for k, v in labels.items()}
+    # Persist so the config survives a sidecar restart (the plugin only re-pushes
+    # on a Homebridge restart). Otherwise the cockpit falls back to panel-reported
+    # circuits, which include the AUX2 canary.
+    try:
+        cfg = _load_backend_config()
+        cfg['ui_circuits'] = _ui_circuits
+        cfg['ui_circuit_labels'] = _ui_circuit_labels
+        _save_backend_config(cfg)
+    except Exception as e:
+        log.warning('Could not persist UI config: %s', e)
+    return jsonify({'ok': True, 'circuits': _ui_circuits, 'labels': _ui_circuit_labels})
 
 
 @app.route('/mode', methods=['POST'])
@@ -3889,12 +4330,15 @@ def debug_rawkey() -> Response:
     """Send one key under a chosen RS-485 frame type, bypassing send_key.
 
     Body: {"key": "RIGHT", "frametype": "remote"}
-      frametype: "local"  -> 00 02 LOCAL_WIRED_KEY_EVENT (what send_key uses)
-                 "remote" -> 00 03 REMOTE_WIRED_KEY_EVENT (what a wired remote
-                              like the AquaConnect box emits)
+      frametype: "local"    -> 00 02 LOCAL_WIRED_KEY_EVENT (what send_key uses
+                                for keys <= 0xffff)
+                 "remote"   -> 00 03 REMOTE_WIRED_KEY_EVENT (what a wired remote
+                                like the AquaConnect box emits)
+                 "wireless" -> 00 83 WIRELESS_KEY_EVENT (what send_key uses for
+                                keys > 0xffff, e.g. HEATER_1; 4-byte key layout)
     Builds the frame exactly like aqualogic._get_key_event_frame but lets us
-    pick the frame type, so we can prove whether menu-scroll keys need the
-    remote event type. Returns the hex frame queued.
+    pick the frame type, so we can prove whether menu-scroll keys (or the
+    heater key) need a different event type. Returns the hex frame queued.
     """
     p = _get_panel()
     if p is None:
@@ -3902,20 +4346,32 @@ def debug_rawkey() -> Response:
     body = request.get_json(force=True) or {}
     name = body.get('key', '')
     ftype = body.get('frametype', 'remote').lower()
+    if ftype not in ('local', 'remote', 'wireless'):
+        return jsonify({'error': f'frametype must be local|remote|wireless, got {ftype!r}'}), 400
     try:
         aq = p._aq
         Keys = p._Keys
         k = getattr(Keys, name, None)
         if k is None:
             return jsonify({'error': f'Unknown key {name!r}'}), 400
-        type_bytes = aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT if ftype == 'remote' \
-            else aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT
         frame = bytearray()
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_STX)
-        aq._append_data(frame, type_bytes)
-        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
-        aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+        if ftype == 'wireless':
+            # Wireless layout differs: 01 marker, then the key value as 4 bytes
+            # twice, then a trailing 00 (mirrors _get_key_event_frame's >0xffff
+            # branch). Lets us test HEATER_1 and the like as wireless events.
+            aq._append_data(frame, aq.FRAME_TYPE_WIRELESS_KEY_EVENT)
+            aq._append_data(frame, b'\x01')
+            aq._append_data(frame, int(k.value).to_bytes(4, byteorder='little'))
+            aq._append_data(frame, int(k.value).to_bytes(4, byteorder='little'))
+            aq._append_data(frame, b'\x00')
+        else:
+            type_bytes = aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT if ftype == 'remote' \
+                else aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT
+            aq._append_data(frame, type_bytes)
+            aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
+            aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
         crc = sum(frame)
         aq._append_data(frame, crc.to_bytes(2, byteorder='big'))
         frame.append(aq.FRAME_DLE)
@@ -3980,6 +4436,70 @@ def debug_keyburst() -> Response:
     out = _current_key_timing()
     out['persisted'] = persisted
     return jsonify(out)
+
+
+@app.route('/debug/scroll-sweep', methods=['POST'])
+def debug_scroll_sweep() -> Response:
+    """Test: actively advance the idle status scroll with RIGHT and capture each
+    reading, instead of waiting ~6s per item. Body (optional): {"max_presses":24}.
+    Returns the frames seen + elapsed_s — if elapsed is ~1s/frame, RIGHT advances
+    the scroll (fast); if ~6s/frame, the press is a no-op and we're just riding
+    the natural cycle."""
+    nav = _get_navigator()
+    if nav is None:
+        return jsonify({'error': 'Not connected'}), 503
+    body = request.get_json(silent=True) or {}
+    try:
+        n = int(body.get('max_presses', 24))
+    except (TypeError, ValueError):
+        n = 24
+    try:
+        return jsonify(nav.sweep_scroll(max_presses=n))
+    except Exception as e:
+        log.error(f'scroll-sweep: {e}')
+        if _ac_backend is not None:
+            _immediate_wedge_probe()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/wedge-probe', methods=['GET', 'POST'])
+def wedge_probe_config() -> Response:
+    """Get/set the proactive wedge-probe interval without a restart.
+
+    POST JSON: {"interval_s": 1800}   (0 = reactive-only, no idle probing)
+    Pass "persist": true to save it to backend.json so it survives restarts.
+
+    The reactive on-failure probe and the 30s re-probe-while-wedged are always
+    active regardless of this setting; this only controls the idle/proactive
+    canary cadence.
+    """
+    global _WEDGE_PROBE_INTERVAL_S
+    persisted = False
+    if request.method == 'POST':
+        body = request.get_json(force=True) or {}
+        if 'interval_s' in body:
+            try:
+                _WEDGE_PROBE_INTERVAL_S = max(0.0, float(body['interval_s']))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'interval_s must be a number >= 0'}), 400
+            log.info('Wedge probe interval set to %.0fs%s', _WEDGE_PROBE_INTERVAL_S,
+                     ' (reactive-only)' if _WEDGE_PROBE_INTERVAL_S == 0 else '')
+        if body.get('persist'):
+            try:
+                cfg = _load_backend_config()
+                cfg['wedge_probe_interval_s'] = _WEDGE_PROBE_INTERVAL_S
+                _save_backend_config(cfg)
+                persisted = True
+                log.info('Wedge probe interval persisted to backend.json')
+            except Exception as e:
+                log.error('Could not persist wedge probe interval: %s', e)
+                return jsonify({'error': f'persist failed: {e}'}), 500
+    return jsonify({
+        'interval_s': _WEDGE_PROBE_INTERVAL_S,
+        'reactive_only': _WEDGE_PROBE_INTERVAL_S == 0,
+        'recovery_interval_s': _WEDGE_RECOVERY_INTERVAL_S,
+        'persisted': persisted,
+    })
 
 
 @app.route('/debug/aquaconnect', methods=['GET', 'POST'])
@@ -4328,10 +4848,22 @@ def prefetch_all() -> Response:
     nav = _get_navigator()
     if nav is None:
         return jsonify({'error': 'Not connected'}), 503
+    # First sweep the status scroll for the live readings (fast), then the menu
+    # for the deep values (setpoints, slot speeds). Scroll sweep is best-effort.
+    try:
+        nav.sweep_scroll()
+    except Exception as e:
+        log.warning(f'prefetch scroll sweep: {e}')
     try:
         return jsonify(nav.read_all_settings())
     except Exception as e:
         log.error(f'prefetch: {e}')
+        # A failure to even reach the Settings menu almost always means the
+        # command path is wedged. Trigger an immediate wedge probe so the
+        # HomeKit sensor/plug can power-cycle the box, instead of it sitting
+        # wedged until the next (now 30-min) proactive canary.
+        if _ac_backend is not None:
+            _immediate_wedge_probe()
         return jsonify({'error': str(e)}), 500
 
 
@@ -4659,6 +5191,10 @@ def refresher_thread(interval: float) -> None:
 # Seconds to let the backend settle (link up + first frames) before the
 # one-shot startup pre-fetch navigates the menu.
 _STARTUP_PREFETCH_SETTLE_S = 10.0
+# Skip the startup menu sweep if the persisted state cache was flushed within
+# this window — the menu-only values (setpoints, slot speeds) can't have gone
+# stale in that time, so we avoid the menu-nav load/wedge risk on a quick restart.
+_STARTUP_SKIP_SWEEP_S = 180.0
 
 
 def startup_prefetch_thread() -> None:
@@ -4678,12 +5214,34 @@ def startup_prefetch_thread() -> None:
         log.warning('Startup pre-fetch skipped: navigator unavailable')
         return
     time.sleep(_STARTUP_PREFETCH_SETTLE_S)
+    # Fast: actively advance the status scroll to grab the live readings (temps,
+    # salt, chlorinator, pump speed, heater auto/off, active slot) at ~1s/item
+    # instead of waiting out the ~6s natural cycle.
+    try:
+        sweep = nav.sweep_scroll()
+        log.info('Startup scroll sweep: %d frames in %.1fs',
+                 sweep.get('count', 0), sweep.get('elapsed_s', 0))
+    except Exception as e:
+        log.warning('Startup scroll sweep failed: %s', e)
+    # Conditional: skip the (expensive, wedge-prone) menu sweep when the persisted
+    # cache is fresh — the menu-only values can't have changed in <3 min, and any
+    # panel-side change is captured passively anyway (setpoint/slot parsers).
+    if _cache_saved_at is not None:
+        age = time.time() - _cache_saved_at
+        if age < _STARTUP_SKIP_SWEEP_S:
+            log.info('Startup menu sweep skipped — state cache is %.0fs old (<%.0fs)',
+                     age, _STARTUP_SKIP_SWEEP_S)
+            return
     try:
         result = nav.read_all_settings()
         got = {k: v for k, v in result.items() if v}
         log.info('Startup pre-fetch complete: %s', got)
     except Exception as e:
         log.warning('Startup pre-fetch failed: %s', e)
+        # Couldn't navigate the menu at startup — probe so a wedged box is
+        # flagged (sensor/plug) rather than waiting for the proactive canary.
+        if _ac_backend is not None:
+            _immediate_wedge_probe()
 
 
 def setpoint_backfill_thread() -> None:
@@ -4794,11 +5352,48 @@ def main() -> None:
     if kt:
         log.info('Loaded persisted key timing: %s', kt)
 
+    # Proactive wedge-probe interval (seconds; 0 = reactive-only). Persisted
+    # value overrides the default.
+    global _WEDGE_PROBE_INTERVAL_S
+    if 'wedge_probe_interval_s' in cfg:
+        try:
+            _WEDGE_PROBE_INTERVAL_S = max(0.0, float(cfg['wedge_probe_interval_s']))
+            log.info('Loaded persisted wedge probe interval: %.0fs%s',
+                     _WEDGE_PROBE_INTERVAL_S,
+                     ' (reactive-only)' if _WEDGE_PROBE_INTERVAL_S == 0 else '')
+        except (TypeError, ValueError):
+            log.warning('Bad wedge_probe_interval_s in backend.json: %r', cfg['wedge_probe_interval_s'])
+
+    # Persisted cockpit UI config (enabled circuits + label overrides). The
+    # plugin re-pushes on Homebridge start, but loading here means a sidecar-only
+    # restart keeps the right switches instead of falling back to panel circuits.
+    global _ui_circuits, _ui_circuit_labels
+    if isinstance(cfg.get('ui_circuits'), list):
+        _ui_circuits = [str(c).upper() for c in cfg['ui_circuits']]
+    if isinstance(cfg.get('ui_circuit_labels'), dict):
+        _ui_circuit_labels = {str(k).upper(): str(v) for k, v in cfg['ui_circuit_labels'].items()}
+    if _ui_circuits:
+        log.info('Loaded persisted UI circuits: %s', _ui_circuits)
+
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend
     # Coalesce bursts of HomeKit setpoint writes; apply only the final value.
     _setpoint_debouncer = WriteDebouncer(
         lambda which, temp_f: _apply_setpoint(which, temp_f))
+
+    # Restore last-known bus state so the cockpit/HomeKit show real values
+    # immediately on restart, then keep the cache flushed as state changes.
+    _load_state_cache()
+    threading.Thread(target=_state_cache_thread, daemon=True,
+                     name='state-cache').start()
+
+    # Temperature history for the cockpit chart (persisted across restarts).
+    _load_temp_history()
+    threading.Thread(target=_temp_history_thread, daemon=True,
+                     name='temp-history').start()
+
+    # Fault-discovery candidates persist across restarts so the backlog accrues.
+    _load_fault_candidates()
 
     if backend == 'aquaconnect':
         _ac_backend = AquaConnectBackend(host=aquaconnect_host)

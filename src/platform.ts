@@ -76,6 +76,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
     this.api.on('didFinishLaunching', () => {
       this.reconcileBackend();
+      this.pushUiConfig();
       this.discoverAccessories();
       this.startPolling();
     });
@@ -91,6 +92,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
   private discoverAccessories(): void {
     const toRegister: PlatformAccessory[] = [];
+    const toUpdate: PlatformAccessory[] = [];
     const toKeep = new Set<string>();
 
     const register = (label: string, uuid: string): PlatformAccessory => {
@@ -100,6 +102,14 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         acc = new this.api.platformAccessory(label, uuid);
         toRegister.push(acc);
         this.log.info(`Registering new accessory: ${label}`);
+      } else if (acc.displayName !== label) {
+        // The config label changed (e.g. a circuitLabels rename). The UUID is
+        // stable, so the accessory persists — but its displayName is only set
+        // at creation. Update it here (before the service handler reads it) and
+        // persist, otherwise the rename is silently ignored.
+        this.log.info(`Renaming accessory: ${acc.displayName} -> ${label}`);
+        acc.displayName = label;
+        toUpdate.push(acc);
       }
       return acc;
     };
@@ -226,6 +236,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     if (toRegister.length > 0) {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, toRegister);
     }
+    if (toUpdate.length > 0) {
+      this.api.updatePlatformAccessories(toUpdate);
+    }
   }
 
   /**
@@ -254,10 +267,32 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  /**
+   * Mirror the enabled circuits + label overrides to the sidecar so the web
+   * cockpit shows the same switches and names as HomeKit. Best-effort.
+   */
+  private async pushUiConfig(): Promise<void> {
+    try {
+      await this.sidecar.setUiConfig(this.cfg.circuits, this.cfg.circuitLabels);
+      this.log.debug('Pushed UI config (circuits + labels) to sidecar.');
+    } catch (err) {
+      this.log.debug('Push UI config failed (sidecar may be unreachable):',
+        (err as Error).message);
+    }
+  }
+
   private startPolling(): void {
     const poll = async () => {
       try {
         const status = await this.sidecar.getStatus();
+
+        // Self-heal: if the sidecar restarted on its own it loses the pushed UI
+        // config until the next Homebridge restart, leaving the cockpit to fall
+        // back to panel-reported circuits (which include the AUX2 canary).
+        // Re-push whenever we see it empty.
+        if (!status.ui_circuits || status.ui_circuits.length === 0) {
+          this.pushUiConfig();
+        }
 
         this.currentValveMode = status.valve_mode;
 
