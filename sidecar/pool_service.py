@@ -60,6 +60,47 @@ logging.basicConfig(
 log = logging.getLogger('pool_sidecar')
 log.setLevel(logging.INFO)
 
+
+class _AlertBuffer(logging.Handler):
+    """Captures WARNING+ log records into a bounded ring so the cockpit can
+    surface every sidecar error/warning (heater-not-confirmed, wedge, unconfirmed
+    writes, prefetch failures, …) without instrumenting each call site."""
+
+    def __init__(self, maxlen: int = 60):
+        super().__init__(level=logging.WARNING)
+        self._buf = []
+        self._maxlen = maxlen
+        self._lock = threading.Lock()
+
+    def emit(self, record):
+        try:
+            with self._lock:
+                self._buf.append({'t': record.created,
+                                  'level': record.levelname,
+                                  'msg': record.getMessage()})
+                if len(self._buf) > self._maxlen:
+                    del self._buf[:-self._maxlen]
+        except Exception:
+            pass
+
+    def recent(self, window_s=None, limit=None):
+        with self._lock:
+            items = list(self._buf)
+        if window_s:
+            cutoff = time.time() - window_s
+            items = [a for a in items if a['t'] >= cutoff]
+        if limit:
+            items = items[-limit:]
+        return items
+
+    def clear(self):
+        with self._lock:
+            self._buf.clear()
+
+
+_alert_buffer = _AlertBuffer()
+log.addHandler(_alert_buffer)
+
 # ---------------------------------------------------------------------------
 # Rotating debug log — /tmp/pool_sidecar_debug.log, replaced every hour.
 # Keeps 1 backup so the previous hour is still readable while the new one grows.
@@ -169,11 +210,18 @@ _WEDGE_RECOVERY_INTERVAL_S = 30.0
 # Block all write commands for this window so we don't hammer the box while it
 # is booting, then immediately probe to confirm recovery.
 _WEDGE_POWERCYCLE_COOLDOWN_S = 120.0
+# Edge-triggered HomeKit automations only fire on the sensor going Off->On, so a
+# single stuck-On won't retry if the first power-cycle doesn't take. When still
+# wedged after the reboot window, cycle the sensor Off->On (long enough for the
+# 5s poll to see the edge) to re-fire the automation — up to _WEDGE_MAX_REARMS.
+_WEDGE_MAX_REARMS = 3
+_WEDGE_REARM_PULSE_S = 12.0
+_wedge_rearm_count = 0
 
 
 def _record_command_success() -> None:
     """Call after any confirmed write. Clears the wedge flag immediately."""
-    global _wedge_fail_streak
+    global _wedge_fail_streak, _wedge_rearm_count
     with _wedge_lock:
         _wedge_fail_streak = 0
         changed = state.bridge_wedged
@@ -181,7 +229,26 @@ def _record_command_success() -> None:
         with state_lock:
             state.bridge_wedged = False
             state.wedge_detected_at = None
+        _wedge_rearm_count = 0   # fresh retry budget for the next wedge
         log.info('Bridge command path recovered — clearing wedge flag')
+
+
+def _rearm_wedge() -> bool:
+    """Re-fire the power-cycle automation by cycling the sensor Off->On, up to
+    _WEDGE_MAX_REARMS times. Returns True if it re-armed, False if exhausted."""
+    global _wedge_rearm_count
+    if _wedge_rearm_count >= _WEDGE_MAX_REARMS:
+        return False
+    _wedge_rearm_count += 1
+    log.warning('Wedge persists after power-cycle — re-arming automation '
+                '(attempt %d/%d)', _wedge_rearm_count, _WEDGE_MAX_REARMS)
+    with state_lock:
+        state.bridge_wedged = False           # Off edge for the poll to catch
+    time.sleep(_WEDGE_REARM_PULSE_S)
+    with state_lock:
+        state.bridge_wedged = True            # On edge re-fires the automation
+        state.wedge_detected_at = time.time()  # restart the reboot cooldown
+    return True
 
 
 def _record_command_failure() -> None:
@@ -377,16 +444,41 @@ def _state_cache_thread() -> None:
 
 
 # ── Temperature history ──────────────────────────────────────────────────────
-# A rolling time-series of pool/spa/air temps for the cockpit chart. Sampled
-# every _TEMP_SAMPLE_INTERVAL_S, capped at _TEMP_HISTORY_MAX points, persisted to
-# disk so history survives restarts. Each sample is [epoch_s, pool, spa, air]
-# (any of the temps may be null if not currently known).
+# A rolling time-series of pool/spa/air temps for the cockpit chart. Two-tier
+# retention: full 5-min detail for the last day, thinned to 15-min buckets
+# beyond that, dropped after 90 days. Persisted so it survives restarts. Each
+# sample is [epoch_s, pool, spa, air] (any temp may be null if not known).
 _TEMP_HISTORY_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'temp_history.json')
-_TEMP_SAMPLE_INTERVAL_S = 300.0     # 5 min
-_TEMP_HISTORY_MAX = 576             # 48h at 5-min resolution
+_TEMP_SAMPLE_INTERVAL_S = 300.0        # 5 min live sampling
+_TEMP_FINE_WINDOW_S = 86400            # keep full 5-min detail for the last day
+_TEMP_COARSE_BUCKET_S = 900            # 15-min buckets beyond the fine window
+_TEMP_RETENTION_S = 90 * 86400         # drop samples older than 90 days
+_TEMP_HISTORY_MAX = 15000              # hard backstop (~8.8k expected at steady state)
 _temp_history: list = []
 _temp_history_lock = threading.Lock()
+
+
+def _compact_history(hist: list, now: float) -> list:
+    """Apply two-tier retention: keep every sample within the last day, thin to
+    one-per-15-min beyond that, drop older than 90 days. Order-preserving and
+    idempotent, so it can run on every append."""
+    fine_cutoff = now - _TEMP_FINE_WINDOW_S
+    drop_cutoff = now - _TEMP_RETENTION_S
+    out = []
+    last_bucket = None
+    for s in hist:
+        t = s[0]
+        if t < drop_cutoff:
+            continue
+        if t >= fine_cutoff:
+            out.append(s)                       # recent: full 5-min detail
+        else:
+            b = int(t // _TEMP_COARSE_BUCKET_S)  # aged: one per 15-min bucket
+            if b != last_bucket:
+                out.append(s)
+                last_bucket = b
+    return out
 
 # When the state cache was last flushed (epoch), read back on load so startup
 # can decide whether the persisted values are fresh enough to skip the sweep.
@@ -400,7 +492,7 @@ def _load_temp_history() -> None:
             data = json.load(fh)
         if isinstance(data, list):
             with _temp_history_lock:
-                _temp_history = data[-_TEMP_HISTORY_MAX:]
+                _temp_history = _compact_history(data, time.time())[-_TEMP_HISTORY_MAX:]
             log.info('Restored %d temperature history samples', len(_temp_history))
     except FileNotFoundError:
         return
@@ -420,6 +512,7 @@ def _temp_history_thread(now_fn=time.time) -> None:
         sample = [round(now_fn()), pool, spa, air]
         with _temp_history_lock:
             _temp_history.append(sample)
+            _temp_history[:] = _compact_history(_temp_history, sample[0])
             if len(_temp_history) > _TEMP_HISTORY_MAX:
                 del _temp_history[:-_TEMP_HISTORY_MAX]
             snapshot = list(_temp_history)
@@ -2555,18 +2648,29 @@ class MenuNavigator:
                 if 'Manual Off' in txt:
                     # Never +/- while Off — switch it on first, then adjust.
                     self._enable_heater(label)
-                self._step_to(self._degf, target_f,
-                              'PLUS', 'MINUS', self._STEP_MAX, label)
+                # Store the value the panel ACTUALLY confirmed, not the requested
+                # target — if keypresses drop, _step_to returns the unchanged
+                # value (a stall), and recording the target would make the sidecar
+                # believe a write landed when it didn't.
+                final = self._step_to(self._degf, target_f,
+                                      'PLUS', 'MINUS', self._STEP_MAX, label)
+                reached = (final == target_f)
                 with state_lock:
                     if which == 'pool':
-                        state.pool_setpoint_f = target_f
+                        state.pool_setpoint_f = final
                         state.pool_heater_enabled = True
                     else:
-                        state.spa_setpoint_f = target_f
+                        state.spa_setpoint_f = final
                         state.spa_heater_enabled = True
+                if not reached:
+                    log.warning('Heater %s setpoint reached %s°F, requested %s°F '
+                                '— keypresses may be dropping', which, final, target_f)
+                    if _ac_backend is not None:
+                        _immediate_wedge_probe()
                 # Already in the menu — passively grab the other body's target too.
                 self._read_other_heater(which)
-                return {'which': which, 'target_f': target_f}
+                return {'which': which, 'target_f': target_f,
+                        'actual_f': final, 'reached': reached}
         finally:
             self.fast_exit()
 
@@ -2998,6 +3102,18 @@ def fault_candidates() -> Response:
         return jsonify({'candidates': dict(_fault_candidates)})
 
 
+@app.route('/alerts', methods=['GET', 'POST'])
+def alerts_route() -> Response:
+    """Recent sidecar warnings/errors for the cockpit. GET returns them (with
+    timestamps); POST {"clear": true} dismisses the current set."""
+    if request.method == 'POST':
+        body = request.get_json(silent=True) or {}
+        if body.get('clear'):
+            _alert_buffer.clear()
+            return jsonify({'ok': True, 'cleared': True})
+    return jsonify({'alerts': _alert_buffer.recent()})
+
+
 @app.route('/history')
 def get_history() -> Response:
     """Rolling pool/spa/air temperature history for the cockpit chart.
@@ -3050,6 +3166,7 @@ def get_status() -> Response:
             'ui_circuits':         list(_ui_circuits),
             'circuit_labels':      dict(_ui_circuit_labels),
             'faults':              _current_faults(),
+            'alerts':              _alert_buffer.recent(window_s=1800, limit=8),
         })
 
 
@@ -3986,6 +4103,15 @@ def _canary_probe_loop() -> None:
                 if _ac_backend is not None and not _nav_lock.busy():
                     log.info('Wedge cooldown elapsed — probing for recovery')
                     _ac_canary_probe()
+                # Still wedged after the reboot window → re-arm the power-cycle
+                # automation (edge-triggered, so a stuck-On won't retry), up to 3x.
+                with state_lock:
+                    still_wedged = state.bridge_wedged
+                if still_wedged:
+                    if not _rearm_wedge():
+                        log.error('Wedge persists after %d power-cycle attempts — '
+                                  'manual intervention needed; commands stay blocked.',
+                                  _WEDGE_MAX_REARMS)
                 continue
             with state_lock:
                 wedged = state.bridge_wedged
@@ -4247,6 +4373,7 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
     with _nav_lock:
         with state_lock:
             cur = state.circuits.get(key)
+            heater_was_active = state.heater_active
         if cur == on:
             return jsonify({'ok': True, 'already': True})
         _ac_backend.send_nav_key(keypad)   # press + settle + re-read (updates state)
@@ -4256,6 +4383,15 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
         _record_command_success()
         log.info('Circuit %s -> %s (AquaConnect)', key, 'ON' if on else 'OFF')
         return jsonify({'ok': True})
+    # Expected non-confirm: turning FILTER off while a heater is running. The
+    # control unit's cooldown keeps the pump running (the first FILTER press
+    # stops only the heater; a second press after cooldown stops the pump). This
+    # is the unit protecting itself, NOT a wedge — do not cry wolf.
+    if key == 'FILTER' and not on and heater_was_active:
+        log.info('Filter off deferred by heater cooldown — pump keeps running (expected, not wedged)')
+        return jsonify({'ok': True, 'deferred': 'heater_cooldown',
+                        'note': 'Filter stays on during heater cooldown; the unit '
+                                'stops the pump after cooldown or on a second off press'})
     log.warning('HomeKit action: circuit %s -> %s NOT CONFIRMED (now=%s) — probing bridge',
                 key, 'ON' if on else 'OFF', new)
     _record_command_failure()
