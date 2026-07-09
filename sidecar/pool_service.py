@@ -2581,18 +2581,29 @@ class MenuNavigator:
                 if 'Manual Off' in txt:
                     # Never +/- while Off — switch it on first, then adjust.
                     self._enable_heater(label)
-                self._step_to(self._degf, target_f,
-                              'PLUS', 'MINUS', self._STEP_MAX, label)
+                # Store the value the panel ACTUALLY confirmed, not the requested
+                # target — if keypresses drop, _step_to returns the unchanged
+                # value (a stall), and recording the target would make the sidecar
+                # believe a write landed when it didn't.
+                final = self._step_to(self._degf, target_f,
+                                      'PLUS', 'MINUS', self._STEP_MAX, label)
+                reached = (final == target_f)
                 with state_lock:
                     if which == 'pool':
-                        state.pool_setpoint_f = target_f
+                        state.pool_setpoint_f = final
                         state.pool_heater_enabled = True
                     else:
-                        state.spa_setpoint_f = target_f
+                        state.spa_setpoint_f = final
                         state.spa_heater_enabled = True
+                if not reached:
+                    log.warning('Heater %s setpoint reached %s°F, requested %s°F '
+                                '— keypresses may be dropping', which, final, target_f)
+                    if _ac_backend is not None:
+                        _immediate_wedge_probe()
                 # Already in the menu — passively grab the other body's target too.
                 self._read_other_heater(which)
-                return {'which': which, 'target_f': target_f}
+                return {'which': which, 'target_f': target_f,
+                        'actual_f': final, 'reached': reached}
         finally:
             self.fast_exit()
 
