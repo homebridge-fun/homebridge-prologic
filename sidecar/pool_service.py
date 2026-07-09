@@ -210,11 +210,18 @@ _WEDGE_RECOVERY_INTERVAL_S = 30.0
 # Block all write commands for this window so we don't hammer the box while it
 # is booting, then immediately probe to confirm recovery.
 _WEDGE_POWERCYCLE_COOLDOWN_S = 120.0
+# Edge-triggered HomeKit automations only fire on the sensor going Off->On, so a
+# single stuck-On won't retry if the first power-cycle doesn't take. When still
+# wedged after the reboot window, cycle the sensor Off->On (long enough for the
+# 5s poll to see the edge) to re-fire the automation — up to _WEDGE_MAX_REARMS.
+_WEDGE_MAX_REARMS = 3
+_WEDGE_REARM_PULSE_S = 12.0
+_wedge_rearm_count = 0
 
 
 def _record_command_success() -> None:
     """Call after any confirmed write. Clears the wedge flag immediately."""
-    global _wedge_fail_streak
+    global _wedge_fail_streak, _wedge_rearm_count
     with _wedge_lock:
         _wedge_fail_streak = 0
         changed = state.bridge_wedged
@@ -222,7 +229,26 @@ def _record_command_success() -> None:
         with state_lock:
             state.bridge_wedged = False
             state.wedge_detected_at = None
+        _wedge_rearm_count = 0   # fresh retry budget for the next wedge
         log.info('Bridge command path recovered — clearing wedge flag')
+
+
+def _rearm_wedge() -> bool:
+    """Re-fire the power-cycle automation by cycling the sensor Off->On, up to
+    _WEDGE_MAX_REARMS times. Returns True if it re-armed, False if exhausted."""
+    global _wedge_rearm_count
+    if _wedge_rearm_count >= _WEDGE_MAX_REARMS:
+        return False
+    _wedge_rearm_count += 1
+    log.warning('Wedge persists after power-cycle — re-arming automation '
+                '(attempt %d/%d)', _wedge_rearm_count, _WEDGE_MAX_REARMS)
+    with state_lock:
+        state.bridge_wedged = False           # Off edge for the poll to catch
+    time.sleep(_WEDGE_REARM_PULSE_S)
+    with state_lock:
+        state.bridge_wedged = True            # On edge re-fires the automation
+        state.wedge_detected_at = time.time()  # restart the reboot cooldown
+    return True
 
 
 def _record_command_failure() -> None:
@@ -4077,6 +4103,15 @@ def _canary_probe_loop() -> None:
                 if _ac_backend is not None and not _nav_lock.busy():
                     log.info('Wedge cooldown elapsed — probing for recovery')
                     _ac_canary_probe()
+                # Still wedged after the reboot window → re-arm the power-cycle
+                # automation (edge-triggered, so a stuck-On won't retry), up to 3x.
+                with state_lock:
+                    still_wedged = state.bridge_wedged
+                if still_wedged:
+                    if not _rearm_wedge():
+                        log.error('Wedge persists after %d power-cycle attempts — '
+                                  'manual intervention needed; commands stay blocked.',
+                                  _WEDGE_MAX_REARMS)
                 continue
             with state_lock:
                 wedged = state.bridge_wedged
