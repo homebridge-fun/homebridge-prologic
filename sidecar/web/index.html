@@ -771,7 +771,7 @@
       const row = document.createElement('div');
       row.className = 'row';
       const cls = 'pill ctl' + (eff ? ' on' : ' off') + ((key in staged) ? ' staged' : '');
-      row.innerHTML = `<span class="label">${labels[name] || dflt}</span><span class="${cls}">${eff ? 'On' : 'Off'}</span>`;
+      row.innerHTML = `<span class="label">${esc(labels[name] || dflt)}</span><span class="${cls}">${eff ? 'On' : 'Off'}</span>`;
       row.querySelector('.pill').onclick = () => { setEditing(null); stageCircuit(name); };
       sw.appendChild(row);
     });
@@ -783,7 +783,7 @@
     if (faults.length) {
       fx.className = 'faults show';
       fx.innerHTML = '<div class="fh">⚠ System fault' + (faults.length > 1 ? 's' : '') + '</div>'
-        + '<ul>' + faults.map(f => `<li>${f}</li>`).join('') + '</ul>';
+        + '<ul>' + faults.map(f => `<li>${esc(f)}</li>`).join('') + '</ul>';
     } else { fx.className = 'faults'; fx.innerHTML = ''; }
 
     // Sidecar alerts (warnings/errors from the logger)
