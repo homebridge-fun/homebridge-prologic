@@ -229,8 +229,22 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.bridgeHealth = new BridgeHealthAccessory(this, acc);
     }
 
+    // Catch-all: strip any legacy ContactSensor service (the old wedge-sensor
+    // form) from every KEPT accessory and persist it, so a stale contact-sensor
+    // tile can't linger even if the per-accessory self-heal didn't catch it.
+    for (const acc of this.cachedAccessories) {
+      if (!toKeep.has(acc.UUID)) continue;
+      const cs = acc.getService(this.api.hap.Service.ContactSensor);
+      if (cs) {
+        acc.removeService(cs);
+        this.log.info(`Removed legacy ContactSensor service from "${acc.displayName}"`);
+        if (!toRegister.includes(acc) && !toUpdate.includes(acc)) toUpdate.push(acc);
+      }
+    }
+
     const stale = this.cachedAccessories.filter(a => !toKeep.has(a.UUID));
     if (stale.length > 0) {
+      this.log.info(`Removing ${stale.length} stale accessory(ies): ${stale.map(a => a.displayName).join(', ')}`);
       this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
     }
     if (toRegister.length > 0) {
