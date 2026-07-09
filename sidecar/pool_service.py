@@ -4373,6 +4373,7 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
     with _nav_lock:
         with state_lock:
             cur = state.circuits.get(key)
+            heater_was_active = state.heater_active
         if cur == on:
             return jsonify({'ok': True, 'already': True})
         _ac_backend.send_nav_key(keypad)   # press + settle + re-read (updates state)
@@ -4382,6 +4383,15 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
         _record_command_success()
         log.info('Circuit %s -> %s (AquaConnect)', key, 'ON' if on else 'OFF')
         return jsonify({'ok': True})
+    # Expected non-confirm: turning FILTER off while a heater is running. The
+    # control unit's cooldown keeps the pump running (the first FILTER press
+    # stops only the heater; a second press after cooldown stops the pump). This
+    # is the unit protecting itself, NOT a wedge — do not cry wolf.
+    if key == 'FILTER' and not on and heater_was_active:
+        log.info('Filter off deferred by heater cooldown — pump keeps running (expected, not wedged)')
+        return jsonify({'ok': True, 'deferred': 'heater_cooldown',
+                        'note': 'Filter stays on during heater cooldown; the unit '
+                                'stops the pump after cooldown or on a second off press'})
     log.warning('HomeKit action: circuit %s -> %s NOT CONFIRMED (now=%s) — probing bridge',
                 key, 'ON' if on else 'OFF', new)
     _record_command_failure()
