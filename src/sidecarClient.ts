@@ -1,18 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { PoolStatus } from './settings';
 
-export interface HeaterState {
-  which: 'pool' | 'spa';
-  enabled: boolean;
-  setpoint_f: number | null;
-  raw: string;
-}
-
-export interface VspSlot4 {
-  slot: number;
-  speed_pct: number;
-}
-
 export class SidecarClient {
   private readonly http: AxiosInstance;
 
@@ -27,20 +15,6 @@ export class SidecarClient {
   async getStatus(): Promise<PoolStatus> {
     const res = await this.http.get<PoolStatus>('/status');
     return res.data;
-  }
-
-  /**
-   * Read every menu-navigable value (heater setpoints, chlorinator %, VSP slot
-   * speeds, spa speed) in a single menu session. Used once at startup instead
-   * of several separate read calls. The sidecar caches the results into its
-   * state, which the regular poll then flows to the accessories.
-   */
-  async prefetchAll(): Promise<void> {
-    // The single-pass menu sweep is ~25-30 keypresses at ~1.3s each on the
-    // AquaConnect backend (~40s total), well over the client's default 30s
-    // timeout. Give it a generous window so the call doesn't spuriously time
-    // out while the sidecar is still (successfully) navigating.
-    await this.http.post('/prefetch', undefined, { timeout: 120000 });
   }
 
   async setCircuit(name: string, on: boolean): Promise<void> {
@@ -90,78 +64,17 @@ export class SidecarClient {
     await this.http.post('/backend', opts);
   }
 
-  // ── Heater setpoints (menu navigation) ────────────────────────────────────
-
-  async getHeaterState(which: 'pool' | 'spa'): Promise<HeaterState> {
-    const res = await this.http.get<HeaterState>(`/heater/${which}/state`);
-    return res.data;
-  }
+  // ── Heater setpoint (menu navigation) ─────────────────────────────────────
 
   /**
-   * Write a heater setpoint via menu navigation (§13.3 restore-to-prior-state).
-   * tempF is clamped to [65, 104] by the sidecar.
+   * Write a heater setpoint via menu navigation. tempF is clamped to [65, 104]
+   * by the sidecar. (Heater enable/disable goes through setCircuit('HEATER_1').)
    */
   async setHeaterSetpoint(which: 'pool' | 'spa', tempF: number): Promise<void> {
     await this.http.post(`/heater/${which}/setpoint`, { temp_f: Math.round(tempF) });
   }
 
-  /** Enable/disable a heater (Auto vs Manual Off) via menu navigation. */
-  async setHeaterEnabled(which: 'pool' | 'spa', on: boolean): Promise<void> {
-    await this.http.post(`/heater/${which}/enable`, { on });
-  }
-
-  // ── VSP slots 1–4 (menu navigation + FILTER activation) ─────────────────
-
-  async getAllVspSlots(): Promise<{ slots: Record<string, number> }> {
-    const res = await this.http.get('/vsp/slots');
-    return res.data;
-  }
-
-  async getVspSlot(slot: number): Promise<{ slot: number; speed_pct: number }> {
-    const res = await this.http.get(`/vsp/slot/${slot}`);
-    return res.data;
-  }
-
-  async setVspSlot(slot: number, speedPct: number): Promise<void> {
-    await this.http.post(`/vsp/slot/${slot}`, { speed_pct: Math.round(speedPct) });
-  }
-
-  async activateVspSlot(slot: number): Promise<void> {
-    await this.http.post(`/vsp/slot/${slot}/activate`);
-  }
-
-  // Legacy slot-4 wrappers used by FanAccessory.
-  async getVspSlot4(): Promise<VspSlot4> {
-    const res = await this.http.get<VspSlot4>('/vsp/slot4');
-    return res.data;
-  }
-
-  async setVspSlot4(speedPct: number): Promise<void> {
-    await this.http.post('/vsp/slot4', { speed_pct: Math.round(speedPct) });
-  }
-
-  /** Cycle FILTER off→on to open slot-selection window and select slot 4 (§6.2). */
-  async activateVspSlot4(): Promise<void> {
-    await this.http.post('/vsp/slot4/activate');
-  }
-
-  // ── VSP Spa Speed ─────────────────────────────────────────────────────────
-
-  async getSpaSpeed(): Promise<{ spa_speed: number }> {
-    const res = await this.http.get('/vsp/spa');
-    return res.data;
-  }
-
-  async setSpaSpeed(speedPct: number): Promise<void> {
-    await this.http.post('/vsp/spa', { speed_pct: Math.round(speedPct) });
-  }
-
   // ── Chlorinator (menu navigation) ────────────────────────────────────────
-
-  async getChlorinatorPercent(which: 'pool' | 'spa'): Promise<{ which: string; percent: number }> {
-    const res = await this.http.get(`/chlorinator/${which}`);
-    return res.data;
-  }
 
   async setChlorinatorPercent(which: 'pool' | 'spa', percent: number): Promise<void> {
     await this.http.post(`/chlorinator/${which}`, { percent: Math.round(percent) });

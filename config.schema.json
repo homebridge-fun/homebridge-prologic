@@ -112,48 +112,11 @@
         "default": true,
         "description": "Expose pool chlorinator output % as a Fan accessory (speed ring = output %). Read/write via Settings menu navigation."
       },
-      "enablePumpSpeedFan": {
-        "title": "Filter Speed Fan",
-        "type": "boolean",
-        "default": true,
-        "description": "Expose current running filter speed as a Fan accessory. Setting the speed activates VSP slot 4 at that speed."
-      },
       "enableSaltSensor": {
         "title": "Salt Level Sensor",
         "type": "boolean",
         "default": true,
         "description": "Expose salt level (PPM) as an Air Quality sensor tile."
-      },
-      "enableSpaSpeedTile": {
-        "title": "Spa Speed Tile",
-        "type": "boolean",
-        "default": true,
-        "description": "Expose a Fan tile showing the VSP's dedicated Spa Speed setting %. Setting the speed writes that value to the panel's Spa Speed slot."
-      },
-      "spaSpeedMinPct": {
-        "title": "Spa Speed Minimum %",
-        "type": "integer",
-        "default": 35,
-        "minimum": 0,
-        "maximum": 100,
-        "description": "Hardware floor for the Spa Speed slider. The slider runs 0–100%, but a value set below this floor snaps up to it (the panel silently clamps lower speeds)."
-      },
-      "enableVspSlotTiles": {
-        "title": "VSP Speed Slot Tiles",
-        "type": "boolean",
-        "default": false,
-        "description": "Expose four Fan tiles (Speed 1–4) showing each VSP slot's configured speed %. Setting a tile's speed writes that slot and activates it. Not shown on the home tab."
-      },
-      "vspSlotMinPct": {
-        "title": "VSP Slot Minimum Speed %",
-        "type": "object",
-        "description": "Per-slot hardware floor for the VSP speed tiles and the Filter Speed fan. The slider runs 0–100%, but a value set below this floor snaps up to it (the panel silently clamps lower speeds). All slots default to 35%.",
-        "properties": {
-          "1": { "title": "Slot 1 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
-          "2": { "title": "Slot 2 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
-          "3": { "title": "Slot 3 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 },
-          "4": { "title": "Slot 4 minimum %", "type": "integer", "default": 35, "minimum": 0, "maximum": 100 }
-        }
       },
       "circuitLabels": {
         "title": "Circuit Label Overrides",

@@ -56,12 +56,7 @@ export interface PlatformConfig {
   enableSpaHeaterThermostat: boolean;
   enableTemperatureSensors: boolean;
   enableChlorinatorFan: boolean;
-  enablePumpSpeedFan: boolean;
   enableSaltSensor: boolean;
-  enableVspSlotTiles: boolean;
-  enableSpaSpeedTile: boolean;
-  spaSpeedMinPct: number;
-  vspSlotMinPct: Record<string, number>;  // keys "1"–"4" → panel floor %
   circuitLabels: Partial<Record<Circuit, string>>;
 }
 

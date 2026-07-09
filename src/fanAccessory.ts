@@ -1,33 +1,25 @@
 import type { PlatformAccessory, Service, CharacteristicValue } from 'homebridge';
 import type { ProLogicPlatform } from './platform';
 
-export type FanRole = 'chlorinator' | 'pump';
-
 /**
- * Fan accessory for percentage-based controls: pool chlorinator output % and
- * VSP pump speed %. Active is always 1 so the speed ring stays visible at 0%.
+ * Fan accessory for the pool/spa chlorinator output %. Active is always 1 so the
+ * speed ring stays visible at 0%. (Pump/VSP speeds are cockpit-only, not HomeKit.)
  */
 export class FanAccessory {
   private readonly service: Service;
   private currentPct = 0;
   private running = false;
-  private activeSlot: number | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
-    private readonly role: FanRole,
-    private readonly minPct: number = 0,
+    private readonly role: 'chlorinator' = 'chlorinator',
   ) {
-    const serials: Record<FanRole, string> = {
-      chlorinator: 'fan-chlorinator',
-      pump: 'fan-pump',
-    };
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Hayward')
       .setCharacteristic(this.platform.Characteristic.Model, 'ProLogic/AquaPlus')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, serials[role]);
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, 'fan-chlorinator');
 
     this.service = this.accessory.getService(this.platform.Service.Fanv2)
       ?? this.accessory.addService(this.platform.Service.Fanv2);
@@ -49,12 +41,8 @@ export class FanAccessory {
         : C.CurrentFanState.IDLE);
     this.service.updateCharacteristic(C.CurrentFanState, C.CurrentFanState.IDLE);
 
-    // minValue stays 0: a non-zero RotationSpeed minimum makes the Home app
-    // render the slider across the (max - min) span starting at 0 (e.g. a 35
-    // floor shows as "0–65%"). We keep an honest 0–100 slider and enforce the
-    // hardware floor by snapping up to minPct on commit instead.
     this.service.getCharacteristic(C.RotationSpeed)
-      .setProps({ minValue: 0, maxValue: 100, minStep: role === 'chlorinator' ? 1 : 5 })
+      .setProps({ minValue: 0, maxValue: 100, minStep: 1 })
       .onGet(() => this.currentPct)
       .onSet(this.handleSetSpeed.bind(this));
   }
@@ -62,9 +50,9 @@ export class FanAccessory {
   private handleSetSpeed(value: CharacteristicValue): void {
     const pct = Math.round(value as number);
     // HomeKit fires onSet repeatedly while the user drags the speed ring. Each
-    // commit is a full menu navigation (and for chlorinator, minStep is 1), so
-    // writing every intermediate value would flood the panel and risk a wedge.
-    // Debounce: commit only the final value after 600ms of silence.
+    // commit is a full menu navigation, so writing every intermediate value
+    // would flood the panel and risk a wedge. Debounce: commit only the final
+    // value after 600ms of silence.
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
@@ -83,33 +71,17 @@ export class FanAccessory {
   }
 
   private async commitSpeed(rawPct: number): Promise<void> {
-    // Resolve the raw slider value to a position the panel actually accepts,
-    // then push it back to the tile immediately so the user sees the real
-    // value with no flicker (rather than waiting for the next status poll to
-    // correct it).
-    //  - pump: VSP slot 4 silently clamps below its hardware floor.
-    //  - chlorinator: valid positions are 0–9 (1% steps) then 10,15,…100 (5%).
-    let pct: number;
-    if (this.role === 'pump') {
-      pct = Math.max(rawPct, this.minPct);
-    } else {
-      pct = FanAccessory.snapChlorinator(rawPct);
-    }
+    const pct = FanAccessory.snapChlorinator(rawPct);
     if (pct !== rawPct) {
       this.service.updateCharacteristic(
         this.platform.Characteristic.RotationSpeed, pct);
     }
     this.platform.log.info(`[Fan ${this.role}] speed → ${pct}%`);
     try {
-      if (this.role === 'chlorinator') {
-        // Write whichever body's chlorinator matches the current valve mode;
-        // default to pool until the first poll resolves the mode.
-        const which = this.platform.currentValveMode === 'spa' ? 'spa' : 'pool';
-        await this.platform.sidecar.setChlorinatorPercent(which, pct);
-      } else {
-        await this.platform.sidecar.setVspSlot(4, pct);
-        await this.platform.sidecar.activateVspSlot(4);
-      }
+      // Write whichever body's chlorinator matches the current valve mode;
+      // default to pool until the first poll resolves the mode.
+      const which = this.platform.currentValveMode === 'spa' ? 'spa' : 'pool';
+      await this.platform.sidecar.setChlorinatorPercent(which, pct);
       this.currentPct = pct;
     } catch (err) {
       this.platform.log.error(`[Fan ${this.role}] set speed failed:`, err);
@@ -134,21 +106,10 @@ export class FanAccessory {
 
   updateSpeed(pct: number | null): void {
     if (pct === null) return;
-    // Slider is 0–100, so a reported 0 (filter off) is valid and shown as-is.
     const rounded = Math.round(pct);
     if (this.currentPct !== rounded) {
       this.currentPct = rounded;
       this.service.updateCharacteristic(this.platform.Characteristic.RotationSpeed, rounded);
     }
-  }
-
-  updateActiveSlot(slot: number | null): void {
-    if (this.role !== 'pump') return;
-    if (this.activeSlot === slot) return;
-    this.activeSlot = slot;
-    const label = slot !== null
-      ? `${this.accessory.displayName} · Speed ${slot}`
-      : this.accessory.displayName;
-    this.service.updateCharacteristic(this.platform.Characteristic.Name, label);
   }
 }
