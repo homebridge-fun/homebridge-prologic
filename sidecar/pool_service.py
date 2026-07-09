@@ -60,6 +60,47 @@ logging.basicConfig(
 log = logging.getLogger('pool_sidecar')
 log.setLevel(logging.INFO)
 
+
+class _AlertBuffer(logging.Handler):
+    """Captures WARNING+ log records into a bounded ring so the cockpit can
+    surface every sidecar error/warning (heater-not-confirmed, wedge, unconfirmed
+    writes, prefetch failures, …) without instrumenting each call site."""
+
+    def __init__(self, maxlen: int = 60):
+        super().__init__(level=logging.WARNING)
+        self._buf = []
+        self._maxlen = maxlen
+        self._lock = threading.Lock()
+
+    def emit(self, record):
+        try:
+            with self._lock:
+                self._buf.append({'t': record.created,
+                                  'level': record.levelname,
+                                  'msg': record.getMessage()})
+                if len(self._buf) > self._maxlen:
+                    del self._buf[:-self._maxlen]
+        except Exception:
+            pass
+
+    def recent(self, window_s=None, limit=None):
+        with self._lock:
+            items = list(self._buf)
+        if window_s:
+            cutoff = time.time() - window_s
+            items = [a for a in items if a['t'] >= cutoff]
+        if limit:
+            items = items[-limit:]
+        return items
+
+    def clear(self):
+        with self._lock:
+            self._buf.clear()
+
+
+_alert_buffer = _AlertBuffer()
+log.addHandler(_alert_buffer)
+
 # ---------------------------------------------------------------------------
 # Rotating debug log — /tmp/pool_sidecar_debug.log, replaced every hour.
 # Keeps 1 backup so the previous hour is still readable while the new one grows.
@@ -3035,6 +3076,18 @@ def fault_candidates() -> Response:
         return jsonify({'candidates': dict(_fault_candidates)})
 
 
+@app.route('/alerts', methods=['GET', 'POST'])
+def alerts_route() -> Response:
+    """Recent sidecar warnings/errors for the cockpit. GET returns them (with
+    timestamps); POST {"clear": true} dismisses the current set."""
+    if request.method == 'POST':
+        body = request.get_json(silent=True) or {}
+        if body.get('clear'):
+            _alert_buffer.clear()
+            return jsonify({'ok': True, 'cleared': True})
+    return jsonify({'alerts': _alert_buffer.recent()})
+
+
 @app.route('/history')
 def get_history() -> Response:
     """Rolling pool/spa/air temperature history for the cockpit chart.
@@ -3087,6 +3140,7 @@ def get_status() -> Response:
             'ui_circuits':         list(_ui_circuits),
             'circuit_labels':      dict(_ui_circuit_labels),
             'faults':              _current_faults(),
+            'alerts':              _alert_buffer.recent(window_s=1800, limit=8),
         })
 
 
