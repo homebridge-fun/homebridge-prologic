@@ -57,6 +57,18 @@ if len(sys.argv) != 2:
 port = sys.argv[1]
 frame_count = 0
 
+# aqualogic 3.4's _write_to_serial() calls self._serial.send(data), but
+# pyserial's Serial object has no .send() — only .write(). This is a bug in
+# the installed library (confirmed via `pip3 show aqualogic` -> Version: 3.4),
+# not our hardware: 7 clean frames were read successfully before hitting this
+# on the first write attempt. Patch it at the class level before use.
+def _write_to_serial_fixed(self, data):
+    self._serial.write(data)
+    self._serial.flush()
+
+
+AquaLogic._write_to_serial = _write_to_serial_fixed
+
 
 class _WebStub:
     """No-op stand-in for aqualogic's built-in WebServer. aqualogic >=3.x's
