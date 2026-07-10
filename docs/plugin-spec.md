@@ -131,7 +131,7 @@ State detection must match `>\s*On\s*<` with regex — plain `'on'` substring fa
 | LIGHTS | 09 |
 | AUX_1 | 0A |
 | AUX_2 | 0B |
-| HEATER_1 | 0D |
+| HEATER_1 | 13 |
 
 ### 3.6 Scroll Patterns
 
@@ -421,29 +421,31 @@ muddies measurements and doesn't reflect the swapped end-state.
   "aquaconnectHost": "192.168.50.100",
   "rs485Host": "192.168.68.101",
   "rs485Port": 8899,
-  "circuits": ["FILTER", "LIGHTS", "HEATER_1", "AUX_1", "AUX_2", "SUPER_CHLORINATE"],
+  "circuits": ["SPA", "FILTER", "LIGHTS", "HEATER_1", "AUX_1", "AUX_2", "SUPER_CHLORINATE"],
   "activeBodies": ["pool", "spa"],
   "enableActiveHeaterThermostat": true,
   "enablePoolHeaterThermostat": true,
   "enableSpaHeaterThermostat": true,
   "enableTemperatureSensors": true,
-  "enableSpaModeSwitch": true,
   "enableChlorinatorFan": true,
-  "enablePumpSpeedFan": true,
   "enableSaltSensor": true,
-  "enableVspSlotTiles": false,
-  "vspSlotMinPct": { "1": 35 },
   "circuitLabels": {
+    "SPA": "Spa Mode",
     "AUX_1": "Spa Light"
   }
 }
 ```
 
+Spa mode is just the **SPA circuit switch** (On=spa, Off=pool). Include `SPA` in `circuits`
+and optionally rename it via `circuitLabels` (e.g. `"SPA": "Spa Mode"`) — there is no separate
+spa-mode accessory. Pump/VSP speeds are **not** exposed to HomeKit; they live in the web
+cockpit, which reads/writes the sidecar directly.
+
 ### 7.2 HomeKit Accessories
 
 | HomeKit type | Name | Enabled by |
 |---|---|---|
-| Switch | Spa | `enableSpaModeSwitch` — On=spa, Off=pool |
+| Switch | Spa (renamable to "Spa Mode") | `circuits` includes SPA — On=spa, Off=pool |
 | Switch | Filter | `circuits` includes FILTER |
 | Switch | Lights | `circuits` includes LIGHTS |
 | Switch | Heater Auto | `circuits` includes HEATER_1 — armed/Auto-mode, tappable |
@@ -458,9 +460,10 @@ muddies measurements and doesn't reflect the swapped end-state.
 | TemperatureSensor | Air Temperature | `enableTemperatureSensors` |
 | AirQualitySensor | Salt Level | `enableSaltSensor` — VOCDensity = raw PPM, quality pinned to Excellent |
 | Fan | Chlorinator | `enableChlorinatorFan` — spins when filter on AND chlorinator % > 0 |
-| Fan | Filter Speed | `enablePumpSpeedFan` — live `pump_speed` from scroll; spins when filter on |
-| Fan | Speed 1–4 | `enableVspSlotTiles` — spins when filter on AND that slot is active |
 | Switch | Bridge Needs Rebooting | Always registered |
+
+Pump/VSP speed fan tiles were removed from HomeKit — those speeds are managed in the web
+cockpit. The chlorinator is the only fan accessory.
 
 ### 7.3 Circuit Label Overrides
 
@@ -499,9 +502,18 @@ could not be shown reliably. The two-switch split is unambiguous. The thermostat
 **Accessory B — "Pool Heat"**: always pool setpoint, regardless of mode.
 **Accessory C — "Spa Heat"**: always spa setpoint.
 
-`TargetHeatingCoolingState` pinned to Heat (1) so the temperature dial stays visible even
-when not actively heating. Real enabled/disabled state conveyed by `CurrentHeatingCoolingState`
-and dynamic tile name.
+`TargetHeatingCoolingState` is **driven from the armed state** (`heater_enabled` for the
+body this tile reflects, falling back to the `HEATER_1` LED circuit when the sidecar hasn't
+scrolled the Auto/Manual field yet): Heat (1) when armed, Off (0) when not. Tapping the
+Heat/Off dial toggles `HEATER_1` (`handleSetMode` → `setCircuit('HEATER_1', …)`); the mode
+is limited to Off/Heat (`validValues: [0, 1]`). `CurrentHeatingCoolingState` reflects whether
+the heater is *actually firing right now* (the `HEATER_1` relay LED for the active body).
+
+All tiles map to the **single physical** `HEATER_1` enable, so a toggle from any one of them —
+a thermostat dial or the "Heater Auto" switch — is mirrored optimistically to the others via
+`platform.pushHeaterEnabled()` (`setModeOptimistic` on the thermostats, `updateState` on the
+switch), so they stay in step immediately instead of lagging until the next poll. The dynamic
+tile name still conveys Heating/Standby/Off.
 
 Setpoint range: 65–104°F. Display units: Fahrenheit.
 
@@ -518,40 +530,18 @@ animation rather than picking randomly:
 
 | Tile | `CurrentFanState = BLOWING_AIR` when |
 |---|---|
-| Filter Speed | `circuits['FILTER'] == true` |
 | Chlorinator | filter on **AND** `chlorinator_percent > 0` |
-| Speed 1–4 | filter on **AND** `vsp_active_slot == this slot` |
 
-`Active` is always 1 (tile stays visible even when not spinning).
+`Active` is always 1 (tile stays visible even when not spinning). The chlorinator is the
+**only** fan tile — pump/VSP speeds are controlled in the web cockpit (which reads/writes the
+sidecar directly), not exposed to HomeKit.
 
-**Writable tiles**: setting `RotationSpeed` on the Chlorinator tile writes the current
-body's chlorinator output % (`/chlorinator/{pool|spa}`, chosen by valve mode). Setting the
-Filter Speed tile writes VSP slot 4 and activates it. Both writes are debounced 600ms so a
-slider drag commits once (each commit is a menu navigation), and the ring reverts to the
-last known value on failure.
+**Writable tile**: setting `RotationSpeed` on the Chlorinator tile writes the current body's
+chlorinator output % (`/chlorinator/{pool|spa}`, chosen by valve mode). The write is debounced
+600ms so a slider drag commits once (each commit is a menu navigation), and the ring reverts to
+the last known value on failure.
 
-### 7.7 VSP Slot Tiles
-
-When `enableVspSlotTiles: true`, four Fan tiles are registered (Speed 1–Speed 4). Each
-shows that slot's configured speed % from `vsp_slot_pct`. Setting the speed writes the
-new value to that slot and immediately activates it (FILTER off→on).
-
-Robustness behaviors (added 2026-06-20):
-
-- **Startup pre-fetch**: the plugin calls `GET /vsp/slots` once on launch and populates the
-  tiles, so they show real values instead of a blank 0% before any interaction. (Previously
-  `vsp_slot_pct` was null until a manual menu read.)
-- **Debounced writes**: HomeKit fires `onSet` repeatedly while the user drags the speed
-  ring. The accessory debounces 600 ms and commits only the final value, so a drag from
-  90→40 is **one** menu navigation, not one per intermediate step.
-- **Zero guard**: `onSet(0)` (sent when the user taps a tile without dragging) is a no-op
-  that reverts to the current value — it must not write 0% and stop the pump.
-- **Per-slot floor** (`vspSlotMinPct`): sets the `RotationSpeed` `minValue` so the slider
-  can't target below the panel's hardware floor. Slot 1 defaults to 35%. The sidecar's
-  `_step_to` independently stops once a value stalls against a floor/ceiling instead of
-  burning the full press budget.
-
-### 7.8 Salt Level Sensor
+### 7.7 Salt Level Sensor
 
 `SaltSensorAccessory` uses `AirQualitySensor` service, `AirQuality` pinned to Excellent
 (no warning colours), `VOCDensity` showing raw PPM. `VOCDensity` defaults to a HAP `maxValue`
@@ -565,26 +555,24 @@ Enabled by `enableSaltSensor` (default true).
 > be hidden. A Light Sensor (lux) would drop the label but still not show "ppm"; kept on
 > Air Quality by preference.
 
-### 7.9 BridgeHealthAccessory
+### 7.8 BridgeHealthAccessory
 
 Switch tile: Off = healthy, On = wedged. Tapping runs a live canary probe and snaps tile
 to true result. Updated passively on every poll.
 
-### 7.10 Polling
+### 7.9 Polling
 
 On each poll cycle:
-1. Valve mode → Spa Mode switch
+1. Valve mode cached (`currentValveMode`); the SPA circuit switch reflects it via the LED bit
 2. Circuit switches (HEATER_1 "Heater Auto" uses enabled state; all others use LED bit)
 3. "Heater Running" switch ← `heater_active`
 4. Thermostat state → all three thermostat accessories
 5. Pool + air temp sensors
 6. Chlorinator fan speed + running state (filter on AND % > 0)
-7. Filter Speed fan speed + running state (filter on AND `pump_speed` > 0)
-8. VSP slot tiles speed + running state (filter on AND slot matches)
-9. Salt level sensor
-10. Bridge health wedge state
+7. Salt level sensor
+8. Bridge health wedge state
 
-### 7.11 Backend Reconciliation
+### 7.10 Backend Reconciliation
 
 On `didFinishLaunching`, plugin checks active sidecar backend and switches if it differs
 from config. Sidecar restarts via systemd; plugin tolerates a few failed polls during restart.
@@ -609,13 +597,11 @@ homebridge-prologic/
 └── src/
     ├── index.ts
     ├── platform.ts                 ← accessory registration, reconcileBackend, poll loop
-    ├── switchAccessory.ts          ← generic circuit switch (SUPER_CHLORINATE special-cased)
-    ├── spaModeAccessory.ts         ← Spa Mode switch (On=spa, Off=pool)
+    ├── switchAccessory.ts          ← generic circuit switch (SUPER_CHLORINATE special-cased). Spa mode is just the renamed SPA circuit switch (On=spa) — no dedicated accessory.
     ├── thermostatAccessory.ts      ← three-body thermostat model
     ├── heaterRunningAccessory.ts   ← read-only "Heater Running" relay-firing switch
     ├── temperatureAccessory.ts     ← read-only temperature sensor
-    ├── fanAccessory.ts             ← chlorinator % / filter speed fan tiles + CurrentFanState
-    ├── vspSlotAccessory.ts         ← VSP slot 1–4 fan tiles
+    ├── fanAccessory.ts             ← chlorinator % fan tile + CurrentFanState (VSP speeds are cockpit-only, not in HomeKit)
     ├── saltSensorAccessory.ts      ← AirQualitySensor/VOCDensity for salt PPM
     ├── bridgeHealthAccessory.ts    ← wedge indicator + live test button
     ├── sidecarClient.ts            ← HTTP client for sidecar REST API
@@ -761,10 +747,10 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 
 | Item | Priority | Notes |
 |---|---|---|
-| **Code-review follow-ups (in progress, paused 2026-06-30)** | High | Full 3-way code review done (sidecar/plugin/cockpit). **DONE:** HTML-escaping of fault/label innerHTML; FILTER-off-during-heater-cooldown cry-wolf guard; #1 removed pump/VSP speeds from HomeKit (plugin side — commit `366d259`). **STILL TODO** below. |
-| ↳ Sidecar dead-code cleanup | Med | Now that HomeKit VSP tiles are gone, these are orphaned in `pool_service.py`: `activate_vsp_slot` + the `/vsp/slot4*` compat routes + `read_vsp_slot4`/`set_vsp_slot4`/`activate_vsp_slot4` aliases (the FILTER-cycling activation path — no caller now); plus `keypad_press` (no `@app.route`, unreachable), `_wait_key_sent` (unused), `_AC_SETTLE_S` (unused const). Rename module-level `_pct` → `_percentile` (collides with `MenuNavigator._pct`). KEEP `/vsp/slot/<n>` set + `/vsp/spa` (cockpit uses them). |
-| ↳ Spec fixes | Med | (#3) Document spa mode = the **SPA circuit switch** (renameable via `circuitLabels`); remove stale `spaModeAccessory.ts` / `enableSpaModeSwitch` references — the review wrongly thought spa mode was gone; it works via the renamed SPA switch. (#4) Update thermostat section to match live behavior (`TargetHeatingCoolingState` driven from `heater_enabled`, not "pinned to Heat"). Fix `HEATER_1` keycode `0D`→`13`. automation-spec §15.4 (3s settle + `KeyId=00` reread) is stale (frame-reader replaced it). |
-| ↳ Heater switch ⇄ thermostat sync (#4) | Med | The "Heater Auto" switch and the Pool/Spa Heat thermostats' off/heat should stay in sync — both map to `heater_enabled`; currently up to 3 tiles drive `HEATER_1` with independent optimistic state that only reconciles on poll. |
+| **Code-review follow-ups (COMPLETE 2026-07-10)** | Done | Full 3-way code review done (sidecar/plugin/cockpit). HTML-escaping of fault/label innerHTML; FILTER-off-during-heater-cooldown cry-wolf guard; #1 removed pump/VSP speeds from HomeKit (plugin side — commit `366d259`); sidecar + cockpit dead-code cleanup; spec fixes; heater switch ⇄ thermostat sync — all done (sub-rows below). |
+| ↳ Sidecar dead-code cleanup | Done | Removed `activate_vsp_slot` + `/vsp/slot4*` compat routes + `read_vsp_slot4`/`set_vsp_slot4`/`activate_vsp_slot4` aliases; `keypad_press` (unreachable), `_wait_key_sent` (unused), `_AC_SETTLE_S` (unused const). Renamed module-level `_pct` → `_percentile`. Kept `/vsp/slot/<n>` set + `/vsp/spa` (cockpit uses them). |
+| ↳ Spec fixes | Done | (#3) Spa mode documented as the **SPA circuit switch** (renameable via `circuitLabels`); stale `spaModeAccessory.ts` / `enableSpaModeSwitch` references removed. (#4) Thermostat section now matches live behavior (`TargetHeatingCoolingState` driven from armed `heater_enabled`, not pinned to Heat). `HEATER_1` keycode corrected `0D`→`13`. automation-spec §15.4 rewritten for the frame-reader (retired the 3 s settle + `KeyId=00` reread). |
+| ↳ Heater switch ⇄ thermostat sync (#4) | Done | A toggle from any HEATER_1 tile (Heater Auto switch or a Pool/Spa/Active thermostat dial) is mirrored optimistically to the others via `platform.pushHeaterEnabled()` — no longer waits for the next poll to reconcile the up-to-3 tiles that share the one physical enable. |
 | ↳ Cockpit dead code | Low | Remove unused `num()` helper and the never-applied `.pill.ctl` CSS rule (overridden by `.card .condlist .pill`). |
 | ↳ Optional hardening | Low | Pin `aqualogic` version in requirements + make `_install_key_burst` source-string monkeypatch fail loudly if upstream changes (currently degrades to silent write-blindness). Hoist magic numbers (600ms debounce, 35% floor, timers) to named constants. Body-aware heater enable. Normalize `chlorinator_percent` int/float. |
 | **Dedicated LCD frame-watcher** | Done (in-process) | Exists: `_poll_loop` continuously reads the LCD (single shared reader), `_frame_cond` is the in-process pub/sub, and external consumers already get change-notification + last-known-per-field via `/stream` (SSE), `/status`, `/display`, `/display/history`. The originally-scoped *separate standalone process* offers no functional gain — the sidecar is already the always-on watcher and exposes the pub/sub API — so it's not planned unless a concrete external need appears. Cannot speed navigation (0.6s/request box limit) |

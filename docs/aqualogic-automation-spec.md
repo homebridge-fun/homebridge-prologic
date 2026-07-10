@@ -507,14 +507,16 @@ This is the source for the cached state model (§13.2): valve mode, filter,
 lights, heater, aux on/off — without waiting for the Default screen to cycle.
 
 ### 15.4 Timing & concurrency
-- The box mirrors the panel over the **same slow RS-485 bus**, so the immediate
-  POST response can still show the pre-keypress screen. After each key the
-  backend waits `_AC_SETTLE_S` (default **3 s**) and re-reads (`KeyId=00`).
-- All HTTP is serialized through one lock; a key-send holds it across
-  post→settle→reread so the background state poller never issues an overlapping
-  POST (concurrent POSTs confuse the box).
-- A background poller (`KeyId=00`, default every 5 s) keeps the cached state
-  fresh when idle.
+- **Frame-reader model (current).** The fixed 3 s settle + `KeyId=00` reread has
+  been retired. Each key POST wakes a background **frame reader** (`_frame_cond`)
+  that reads the box back immediately and applies the decoded frame to cached
+  state — confirmation is driven by the returned frame, not a fixed wait, so a
+  dropped press is detected and re-pressed rather than blindly slept through.
+- Status reads use the body **`Update Local Server&`** (the native UI's refresh
+  body), **not** `KeyId=00&` — the latter carries a keypad-event side effect and
+  is avoided for pure reads.
+- All HTTP is serialized through one lock so the background reader never issues
+  a POST overlapping a key-send (concurrent POSTs confuse the box).
 
 ### 15.5 Calibration & debug
 - `GET /debug/aquaconnect` — one no-op read; returns parsed LCD, decoded LED

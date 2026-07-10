@@ -126,6 +126,9 @@ export class ThermostatAccessory {
     this.heaterEnabled = on;
     try {
       await this.platform.sidecar.setCircuit('HEATER_1', on);
+      // Keep the Heater Auto switch + the other heater thermostats in step
+      // immediately, rather than letting them lag until the next poll.
+      this.platform.pushHeaterEnabled(on);
     } catch (err) {
       this.heaterEnabled = !on;
       this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);
@@ -133,6 +136,18 @@ export class ThermostatAccessory {
         this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
       );
     }
+  }
+
+  /**
+   * Reflect a heater enable/disable that happened via another tile (the Heater
+   * Auto switch or another thermostat), without triggering a write. Keeps the
+   * Heat/Off dial in sync immediately instead of waiting for the next poll.
+   */
+  setModeOptimistic(enabled: boolean): void {
+    if (this.heaterEnabled === enabled) return;
+    this.heaterEnabled = enabled;
+    this.service.updateCharacteristic(
+      this.platform.Characteristic.TargetHeatingCoolingState, enabled ? 1 : 0);
   }
 
   /** Compose the role-clear dynamic name (§10.1 / §10.2). */

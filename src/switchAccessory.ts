@@ -49,6 +49,10 @@ export class SwitchAccessory {
       } else {
         await this.platform.sidecar.setCircuit(this.circuit, on);
       }
+      // Keep the heater thermostats' Heat/Off dials in step immediately when
+      // the enable was toggled from the Heater Auto switch, rather than letting
+      // them lag until the next poll.
+      if (this.circuit === 'HEATER_1') this.platform.pushHeaterEnabled(on);
     } catch (err) {
       this.currentState = !on; // revert on failure
       this.platform.log.error(`[${this.circuit}] set failed:`, err);

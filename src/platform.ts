@@ -88,6 +88,20 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     this.cachedAccessories.push(accessory);
   }
 
+  /**
+   * Propagate a heater enable/disable that originated from one tile (a
+   * thermostat's Heat/Off dial or the Heater Auto switch) to every other tile
+   * that mirrors the same single physical HEATER_1 enable, so they don't lag
+   * until the next poll. Optimistic only — no write is issued here; the tile
+   * that called this already committed the write.
+   */
+  public pushHeaterEnabled(enabled: boolean): void {
+    this.switches.get('HEATER_1')?.updateState(enabled);
+    this.thermostatAuto?.setModeOptimistic(enabled);
+    if (this.currentValveMode === 'spa') this.thermostatSpa?.setModeOptimistic(enabled);
+    else if (this.currentValveMode === 'pool') this.thermostatPool?.setModeOptimistic(enabled);
+  }
+
   private discoverAccessories(): void {
     const toRegister: PlatformAccessory[] = [];
     const toUpdate: PlatformAccessory[] = [];
