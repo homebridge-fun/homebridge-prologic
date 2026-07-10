@@ -13,7 +13,10 @@ User=greg
 # Token + bind address + serial device live here (created by install-pad.sh,
 # NOT committed — it holds the shared secret).
 EnvironmentFile=/etc/pool-bridge.env
-ExecStart=/usr/bin/python3 %h/homebridge-prologic/sidecar/rs485_bridge.py \
+# RS485_BRIDGE_SCRIPT is an absolute path written by install-pad.sh — %h is NOT
+# used because systemd resolves it to /root for system services regardless of
+# User=, which points at the wrong checkout.
+ExecStart=/usr/bin/python3 ${RS485_BRIDGE_SCRIPT} \
     --port ${RS485_BRIDGE_PORT} --listen ${RS485_BRIDGE_LISTEN}
 Restart=on-failure
 RestartSec=5
