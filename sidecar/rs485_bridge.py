@@ -67,6 +67,53 @@ def _write_to_serial_fixed(self, data):
 AquaLogic._write_to_serial = _write_to_serial_fixed
 
 
+# --- menu-navigation LCD frames --------------------------------------------
+# aqualogic's process() drops LONG_DISPLAY_UPDATE (0x04 0x0a) frames as
+# "Not currently parsed". Those are the frames the panel sends DURING MENU
+# NAVIGATION (full 2x16 LCD); the short DISPLAY_UPDATE (0x01 0x03) frames only
+# appear on the idle scroll. Without this, _web.text_updated() never fires while
+# a menu is open, so the sidecar navigator would be blind and every keypress
+# would look dropped. Mirror pool_service.py's proven source-patch exactly.
+def _install_long_display_patch():
+    import inspect
+    import textwrap
+    import aqualogic.core as _aq_core
+
+    src = inspect.getsource(AquaLogic.process)
+    old_stub = (
+        'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
+        '                    # Not currently parsed\n'
+        '                    pass'
+    )
+    new_body = (
+        'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
+        '                    # LONG frame: variable-length header + 40 LCD bytes\n'
+        '                    # (20-char line 1 + 20-char line 2) + 0x00 null.\n'
+        '                    # Short frames (len<41) are cursor/blink control\n'
+        '                    # packets, not text updates — skip them.\n'
+        '                    if len(frame) >= 41:\n'
+        '                        lcd = frame[-41:-1]  # drop header + null\n'
+        '                        raw = bytes(b if b == 0xdf else (b & 0x7f) for b in lcd)\n'
+        '                        text = raw.replace(b\'\\xdf\', b\'\\xc2\\xb0\').decode(\'utf-8\', errors=\'replace\')\n'
+        '                        self._web.text_updated(text)'
+    )
+    if old_stub not in src:
+        print('WARNING: LONG_DISPLAY_UPDATE stub not found in aqualogic '
+              'process() — menu-nav LCD will not update. Check aqualogic==3.4.',
+              flush=True)
+        return
+    globs = vars(_aq_core).copy()
+    globs['__name__'] = _aq_core.__name__
+    exec(compile(textwrap.dedent(src.replace(old_stub, new_body)),
+                 inspect.getfile(AquaLogic), 'exec'), globs)
+    AquaLogic.process = globs['process']
+    print('LONG_DISPLAY_UPDATE patch applied: menu-nav LCD frames captured.',
+          flush=True)
+
+
+_install_long_display_patch()
+
+
 # --- write-window timing ---------------------------------------------------
 # aqualogic's default _send_frame() transmits a queued key the instant process()
 # hands it over, which only coincides with the panel's wired-remote accept slot
