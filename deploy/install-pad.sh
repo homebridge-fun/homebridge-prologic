@@ -50,28 +50,41 @@ if [ -e "/sys/bus/usb-serial/devices/$(basename "$PORT")/latency_timer" ]; then
   cat "/sys/bus/usb-serial/devices/$(basename "$PORT")/latency_timer"
 fi
 
-# 4. Environment file (token + bind address) ------------------------------
+# 4. Environment file (bind address + optional token) ---------------------
 # Tailnet IP is stable across networks; discover it so a re-image picks up the
 # node's current address automatically.
 TAILNET_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
 LISTEN="${TAILNET_IP:-0.0.0.0}:8899"
 
-if sudo test -f "$ENV_FILE"; then
-  echo "==> keeping existing $ENV_FILE (token preserved)"
-  # Refresh the bind/port lines in case the tailnet IP changed, keep the token.
-  TOKEN="$(sudo grep -oP '^RS485_BRIDGE_TOKEN=\K.*' "$ENV_FILE" || true)"
-else
-  echo "==> generating new token + writing $ENV_FILE"
-  TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+# Auth model, in order of preference:
+#   1. Tailscale ACL (recommended default): restrict src->pool:8899 in the
+#      Tailscale admin console. NO shared secret — nothing to store, echo, or
+#      copy on re-image. Leave the token empty here.
+#   2. Bearer token (optional defense-in-depth): pre-seed it yourself by
+#      exporting RS485_BRIDGE_TOKEN before running this script, or by keeping
+#      the existing value in $ENV_FILE. This script NEVER generates or prints a
+#      token — secrets are yours to manage (e.g. a password manager).
+TOKEN="${RS485_BRIDGE_TOKEN:-}"
+if [ -z "$TOKEN" ] && sudo test -f "$ENV_FILE"; then
+  # Preserve an existing token across re-runs without ever echoing it.
+  TOKEN="$(sudo grep -oP '^RS485_BRIDGE_TOKEN=\K.*' "$ENV_FILE" 2>/dev/null || true)"
 fi
 
 sudo tee "$ENV_FILE" >/dev/null <<EOF
-# RS-485 pad bridge config. Holds the shared secret — do NOT commit.
+# RS-485 pad bridge config. If RS485_BRIDGE_TOKEN is set it is a secret — do
+# NOT commit this file (it lives only here, root-only 0600).
 RS485_BRIDGE_TOKEN=$TOKEN
 RS485_BRIDGE_LISTEN=$LISTEN
 RS485_BRIDGE_PORT=$PORT
 EOF
 sudo chmod 600 "$ENV_FILE"
+
+if [ -n "$TOKEN" ]; then
+  echo "==> $ENV_FILE written WITH a bearer token (value not shown)"
+else
+  echo "==> $ENV_FILE written token-less — relying on a Tailscale ACL for auth"
+  echo "    (restrict src -> pool:8899 in the Tailscale admin console; see README-PAD.md)"
+fi
 
 if [ -z "$TAILNET_IP" ]; then
   echo "    WARNING: no tailnet IP found (is tailscaled up?). Bound $LISTEN —"
@@ -90,7 +103,12 @@ sudo systemctl --no-pager --lines=15 status pool-bridge.service || true
 echo
 echo "==================================================================="
 echo " Pad bridge installed. Bound: $LISTEN"
-echo " TOKEN (put this in the Homebridge plugin / sidecar config):"
-echo "     $TOKEN"
+if [ -n "$TOKEN" ]; then
+  echo " Auth: bearer token (already in $ENV_FILE — not shown here)."
+  echo "       Ensure the SAME token is set in the hop-side sidecar config."
+else
+  echo " Auth: Tailscale ACL (no shared secret). Restrict src -> pool:8899"
+  echo "       in the Tailscale admin console — see deploy/README-PAD.md."
+fi
 echo " Health: curl -s http://${TAILNET_IP:-<tailnet-ip>}:8899/health"
 echo "==================================================================="

@@ -56,11 +56,45 @@ curl -s http://$(tailscale ip -4 | head -1):8899/health
 ## Security posture
 
 - Daemon binds the **tailnet IP only** — nothing on the local Wi-Fi/LAN can open
-  the socket. (The Pi runs on the **main** network; no guest-VLAN isolation is
-  needed because the tailnet bind + token already remove the local attack
-  surface.)
-- **Bearer token** required on `/state` and `/key`; `/health` is open for
-  liveness. Token lives in `/etc/pool-bridge.env` (0600) and is echoed to the
-  sidecar config side.
+  the socket. The Pi runs on the **main** network; no guest-VLAN isolation is
+  needed because the tailnet bind removes the local attack surface.
 - Tailnet IP is stable across network changes, so moving the Pi between Wi-Fi
   networks needs no reconfig.
+
+### Auth: Tailscale ACL (recommended default — no secrets)
+
+Restrict who on the tailnet may reach the bridge, in the Tailscale admin console
+(**Access controls**). This needs **no shared secret** — auth rides on the
+WireGuard identities Tailscale already manages, the policy lives in the admin
+console (not this repo, not the Pi), and it **survives any Pi re-image with
+nothing to copy**:
+
+```jsonc
+"acls": [
+  // only the homebridge hop may reach the pad bridge
+  { "action": "accept", "src": ["<hop-tailnet-name-or-tag>"], "dst": ["pool:8899"] }
+]
+```
+
+With an ACL in place, run the bridge **token-less** — `install-pad.sh` leaves
+`RS485_BRIDGE_TOKEN` empty by default and the daemon serves `/state` + `/key`
+open (reachable only by the hop the ACL allows). No secret to store or leak.
+
+### Optional: bearer token (defense-in-depth)
+
+If you want app-level auth *in addition to* the ACL, pre-seed a token yourself —
+the installer never generates or prints one:
+
+```bash
+# keep the value in a password manager; pass it at install time
+RS485_BRIDGE_TOKEN='<your-secret>' bash deploy/install-pad.sh
+```
+
+It's written to `/etc/pool-bridge.env` (root-only, 0600) and required on `/state`
+and `/key` (`/health` stays open). Put the **same** value in the hop-side sidecar
+config. Nothing secret is ever committed or echoed. To rotate, edit the env file
+directly and `sudo systemctl restart pool-bridge` (don't echo it to the terminal).
+
+**No secrets belong in git.** The repo contains only variable *names*
+(`${RS485_BRIDGE_TOKEN}`); values live solely in `/etc/pool-bridge.env` on the
+pad and the sidecar config on the hop.
