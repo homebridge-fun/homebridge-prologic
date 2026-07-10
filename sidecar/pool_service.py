@@ -39,6 +39,7 @@ import re
 import socket
 import threading
 import time
+import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
@@ -1283,6 +1284,152 @@ class AquaConnectBackend:
                 with self._frame_cond:
                     self._frame_cond.notify_all()
             # Sleep for poll_s, but wake early if send_nav_key signals us.
+            self._read_wake.wait(timeout=self._poll_s)
+            self._read_wake.clear()
+
+    def stop(self) -> None:
+        self._poll_stop.set()
+
+
+# Sidecar key names -> aqualogic Keys enum names the pad daemon feeds to
+# getattr(Keys, name). The sidecar uses compact names ('AUX2', 'HEATER1') and
+# per-body mode names ('POOL'/'SPA'/'SPILLOVER') that all map to the single
+# mode-cycle key. Anything not listed passes through upper-cased (MENU, RIGHT,
+# LEFT, PLUS, MINUS, FILTER, LIGHTS already match the enum).
+_BRIDGE_KEY_ALIASES = {
+    'AUX1': 'AUX_1', 'AUX2': 'AUX_2', 'AUX3': 'AUX_3',
+    'AUX4': 'AUX_4', 'AUX5': 'AUX_5', 'AUX6': 'AUX_6',
+    'HEATER1': 'HEATER_1', 'HEATER2': 'HEATER_2',
+    'VALVE3': 'VALVE_3', 'VALVE4': 'VALVE_4',
+    'POOL': 'POOL_SPA', 'SPA': 'POOL_SPA', 'SPILLOVER': 'POOL_SPA',
+}
+
+
+def _bridge_key_name(name: str) -> str:
+    """Normalize a sidecar key name to the aqualogic Keys enum name the daemon
+    expects. Verified against the daemon's /keys endpoint."""
+    n = name.upper()
+    return _BRIDGE_KEY_ALIASES.get(n.replace('_', ''), n)
+
+
+class RS485BridgeBackend:
+    """Navigation backend that drives the panel through the pad-Pi RS-485 smart
+    bridge (sidecar/rs485_bridge.py) over HTTP/Tailscale.
+
+    Exposes the same surface the MenuNavigator and _ac_set_circuit already use
+    for AquaConnect — an `lcd` LcdCapture the navigator reads, and
+    `send_nav_key()` — plus a background poll that maps the daemon's decoded
+    /state snapshot straight into the global PoolState. The daemon owns serial
+    timing and does the aqualogic decode (100% keypress landing, no box to
+    wedge), so this class is a thin, stateless HTTP client.
+    """
+
+    def __init__(self, host: str, port: int = 8899, token: Optional[str] = None,
+                 poll_s: float = 0.5):
+        self._base = f'http://{host}:{port}'
+        self._token = token or None
+        self.lcd = LcdCapture(hub=_get_hub('rs485'))
+        self._http_lock = threading.Lock()   # parity: nav-sweep/debug serialize here
+        self._req_count = 0
+        self._last_led: dict = {}
+        self._last_raw = None
+        self._poll_s = poll_s
+        self._poll_stop = threading.Event()
+        self._frame_cond = threading.Condition()
+        self._read_wake = threading.Event()
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name='rs485bridge-poll')
+        self._poll_thread.start()
+
+    # ── HTTP ──────────────────────────────────────────────────────────────────
+    def _headers(self, extra=None) -> dict:
+        h = dict(extra or {})
+        if self._token:
+            h['Authorization'] = f'Bearer {self._token}'
+        return h
+
+    def _get_state(self) -> Optional[dict]:
+        self._req_count += 1
+        req = urllib.request.Request(self._base + '/state', headers=self._headers())
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            log.debug('rs485bridge /state error: %s', e)
+            return None
+
+    def _post_key(self, key_name: str, settle: float = 0.35) -> Optional[dict]:
+        self._req_count += 1
+        body = json.dumps({'key': key_name, 'settle': settle}).encode()
+        req = urllib.request.Request(
+            self._base + '/key', data=body,
+            headers=self._headers({'Content-Type': 'application/json'}))
+        try:
+            with urllib.request.urlopen(req, timeout=8) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            log.warning('rs485bridge /key(%s) error: %s', key_name, e)
+            return None
+
+    # ── State mapping ─────────────────────────────────────────────────────────
+    def _apply(self, snap: Optional[dict]) -> None:
+        """Map a daemon /state snapshot into self.lcd + the global PoolState.
+
+        Only the broadcast fields the daemon decodes (temps, salt, chlorinator,
+        pump, circuits, valve mode, heater relay) are written here; menu-only
+        values (setpoints, VSP slot speeds) are read by the prefetch navigating
+        menus, exactly as in AquaConnect mode."""
+        if not snap:
+            return
+        self._last_raw = snap
+        lcd = snap.get('lcd')
+        if lcd:
+            self.lcd.text_updated(lcd)
+        with state_lock:
+            state.connected = bool(snap.get('connected'))
+            state.last_update = time.time()
+            for f in ('pool_temp', 'air_temp', 'spa_temp', 'salt_level',
+                      'pump_speed', 'chlorinator_percent'):
+                v = snap.get(f)
+                if v is not None:
+                    setattr(state, f, v)
+            for name, val in (snap.get('circuits') or {}).items():
+                state.circuits[name] = bool(val)
+            if snap.get('heater_active') is not None:
+                state.heater_active = bool(snap['heater_active'])
+            vm = snap.get('valve_mode')
+            if vm is not None:               # None = current frame isn't a mode
+                state.valve_mode = vm        # screen; keep last-known otherwise
+
+    # ── Public navigator surface ──────────────────────────────────────────────
+    def send_nav_key(self, key_name: str) -> None:
+        """Send one key through the daemon and wait for a settled confirmation.
+
+        Mirrors AquaConnectBackend.send_nav_key: land the key, apply the daemon's
+        post-press snapshot (so self.lcd + state reflect it), then wake the poll
+        loop and wait one frame for a settled re-read — the layer above
+        (MenuNavigator._send / _ac_set_circuit) decides whether the change was
+        meaningful and re-presses if not."""
+        self._apply(self._post_key(_bridge_key_name(key_name)))
+        self._read_wake.set()
+        with self._frame_cond:
+            self._frame_cond.wait(timeout=3.0)
+
+    def probe_wedge(self, retries: int = 3, gap_s: float = 1.0) -> dict:
+        """Direct serial has no AquaConnect box to wedge; the daemon's own
+        connectivity is the liveness signal. Kept for API parity with the wedge
+        machinery so shared control paths work unchanged."""
+        snap = self._get_state()
+        return {'alive': bool(snap and snap.get('connected')), 'attempts': 1}
+
+    # ── Background state poll ──────────────────────────────────────────────────
+    def _poll_loop(self) -> None:
+        while not self._poll_stop.is_set():
+            snap = self._get_state()
+            if snap:
+                self._apply(snap)
+                with self._frame_cond:
+                    self._frame_cond.notify_all()
             self._read_wake.wait(timeout=self._poll_s)
             self._read_wake.clear()
 
@@ -3125,16 +3272,18 @@ def set_backend() -> Response:
     """
     body = request.get_json(force=True)
     backend = body.get('backend')
-    if backend not in ('aquaconnect', 'rs485'):
-        return jsonify({'error': "backend must be 'aquaconnect' or 'rs485'"}), 400
+    if backend not in ('aquaconnect', 'rs485', 'rs485bridge'):
+        return jsonify({'error': "backend must be 'aquaconnect', 'rs485', or 'rs485bridge'"}), 400
 
     cfg = _load_backend_config()
     cfg['backend'] = backend
-    for k in ('aquaconnect_host', 'rs485_host', 'observe_rs485_host'):
+    for k in ('aquaconnect_host', 'rs485_host', 'observe_rs485_host', 'rs485bridge_host'):
         if body.get(k):
             cfg[k] = body[k]
     if body.get('rs485_port'):
         cfg['rs485_port'] = int(body['rs485_port'])
+    if body.get('rs485bridge_port'):
+        cfg['rs485bridge_port'] = int(body['rs485bridge_port'])
     if body.get('observe_rs485_port'):
         cfg['observe_rs485_port'] = int(body['observe_rs485_port'])
     if 'observe_rs485' in body:
@@ -5309,10 +5458,20 @@ def main() -> None:
     parser.add_argument('--key-gap-ms', type=float, default=KEY_GAP_MS,
                         help='Gap between writes when --key-burst > 1 (ms, '
                              'diagnostics only). Default 10.')
-    parser.add_argument('--backend', choices=['rs485', 'aquaconnect'], default='rs485',
-                        help='Navigation backend: rs485 (default) or aquaconnect (HTTP).')
+    parser.add_argument('--backend', choices=['rs485', 'aquaconnect', 'rs485bridge'],
+                        default='rs485',
+                        help='Navigation backend: rs485 (default), aquaconnect (HTTP), '
+                             'or rs485bridge (pad-Pi smart bridge over HTTP/Tailscale).')
     parser.add_argument('--aquaconnect-host', default='192.168.50.100',
                         help='AquaConnect box IP for --backend aquaconnect. Default 192.168.50.100.')
+    parser.add_argument('--rs485bridge-host', default=None,
+                        help='Pad-Pi bridge host for --backend rs485bridge (e.g. its '
+                             'tailnet IP or "pool").')
+    parser.add_argument('--rs485bridge-port', type=int, default=8899,
+                        help='Pad-Pi bridge port. Default 8899.')
+    parser.add_argument('--rs485bridge-token', default=os.environ.get('RS485_BRIDGE_TOKEN'),
+                        help='Bearer token if the bridge requires auth (default: '
+                             'RS485_BRIDGE_TOKEN env var).')
     parser.add_argument('--observe-rs485', action='store_true',
                         help='In aquaconnect mode, also run an observe-only RS-485 '
                              'listener in parallel (streams to /stream/rs485, '
@@ -5333,6 +5492,11 @@ def main() -> None:
     aquaconnect_host = cfg.get('aquaconnect_host', args.aquaconnect_host)
     rs485_host = cfg.get('rs485_host', args.host)
     rs485_port = cfg.get('rs485_port', args.port)
+    rs485bridge_host = cfg.get('rs485bridge_host', args.rs485bridge_host)
+    rs485bridge_port = cfg.get('rs485bridge_port', args.rs485bridge_port)
+    # Token is a secret — accept it from the env/CLI only, never persisted to
+    # backend.json (which the plugin reads/writes).
+    rs485bridge_token = args.rs485bridge_token
     # The CLI flag force-enables the observer even if backend.json persisted
     # observe_rs485=false (e.g. from a prior /backend/toggle single-transport
     # run). Persisted true also enables it. Otherwise off.
@@ -5427,6 +5591,25 @@ def main() -> None:
         threading.Thread(target=setpoint_backfill_thread, daemon=True,
                          name='setpoint-backfill').start()
         # AquaConnect mode: no RS-485 panel thread needed
+        app.run(host=args.api_host, port=args.api_port, threaded=True)
+        return
+
+    if backend == 'rs485bridge':
+        if not rs485bridge_host:
+            parser.error('--rs485bridge-host is required for --backend rs485bridge')
+        _ac_backend = RS485BridgeBackend(
+            host=rs485bridge_host, port=rs485bridge_port, token=rs485bridge_token)
+        log.info('RS-485 bridge backend: http://%s:%s (token=%s)',
+                 rs485bridge_host, rs485bridge_port,
+                 'yes' if rs485bridge_token else 'no')
+        # Same menu-value prefetch + heater-setpoint backfill as AquaConnect —
+        # both drive menu navigation through _ac_backend.send_nav_key, which now
+        # routes to the pad bridge. No AquaConnect-box canary (nothing to wedge;
+        # the daemon auto-reconnects and reports liveness via probe_wedge).
+        threading.Thread(target=startup_prefetch_thread, daemon=True,
+                         name='startup-prefetch').start()
+        threading.Thread(target=setpoint_backfill_thread, daemon=True,
+                         name='setpoint-backfill').start()
         app.run(host=args.api_host, port=args.api_port, threaded=True)
         return
 

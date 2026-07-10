@@ -300,6 +300,12 @@ class Bridge:
         k = getattr(Keys, key_name, None)
         if k is None:
             raise ValueError(f'unknown key: {key_name}')
+        if int(k.value) > 0xffff:
+            # >0xffff keys (e.g. HEATER_1) are WIRELESS-frame keys in aqualogic;
+            # they don't fit the 2-byte REMOTE_WIRED key field. Fail cleanly
+            # rather than OverflowError. (Heater enable via bridge is TODO.)
+            raise ValueError(f'{key_name} is a wireless key (value>0xffff); '
+                             'REMOTE_WIRED framing not supported')
         frame = bytearray()
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_STX)
@@ -345,6 +351,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/health':
             self._send_json(200, {'ok': True, 'connected': self.bridge._connected})
+        elif self.path == '/keys':
+            # Valid aqualogic Keys enum names, so the sidecar backend can send
+            # exact names (getattr(Keys, name)) instead of guessing. Open like
+            # /health — it's static, non-sensitive reference data.
+            self._send_json(200, {'keys': sorted(k.name for k in Keys)})
         elif self.path == '/state':
             if not self._authed():
                 return
