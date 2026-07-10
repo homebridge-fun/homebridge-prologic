@@ -30,20 +30,32 @@ docs/plugin-spec.md (~40% drop rate, 15-27s per nav-sweep lap).
 """
 import argparse
 import json
+import os
 import statistics
 import time
 import urllib.request
 
+TOKEN = None  # set from --token / env in main()
+
+
+def _auth_headers(extra=None):
+    h = dict(extra or {})
+    if TOKEN:
+        h['Authorization'] = f'Bearer {TOKEN}'
+    return h
+
 
 def _get(url, path, timeout=10):
-    with urllib.request.urlopen(url + path, timeout=timeout) as r:
+    req = urllib.request.Request(url + path, headers=_auth_headers())
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
 def _post(url, path, body, timeout=10):
     data = json.dumps(body).encode()
-    req = urllib.request.Request(url + path, data=data,
-                                 headers={'Content-Type': 'application/json'})
+    req = urllib.request.Request(
+        url + path, data=data,
+        headers=_auth_headers({'Content-Type': 'application/json'}))
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -78,7 +90,13 @@ def main():
                     help='delay between presses (matches sidecar min-gap)')
     ap.add_argument('--confirm-timeout', type=float, default=2.5,
                     help='max seconds to wait for the relay to reflect the press')
+    ap.add_argument('--token', default=os.environ.get('RS485_BRIDGE_TOKEN'),
+                    help='bearer token if the bridge requires auth '
+                         '(defaults to RS485_BRIDGE_TOKEN env var)')
     args = ap.parse_args()
+
+    global TOKEN
+    TOKEN = args.token or None
 
     print(f'Bench target: {args.url}  key={args.key}  laps={args.laps}')
     health = _get(args.url, '/health')

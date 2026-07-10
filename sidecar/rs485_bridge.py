@@ -30,7 +30,9 @@ Run it under systemd on the pad (see deploy/ for the unit). Point the sidecar's
 rs485bridge backend at http://<pad-tailscale-ip>:8899.
 """
 import argparse
+import hmac
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -139,7 +141,6 @@ class Bridge:
         It resets on reboot/replug — deploy/99-ftdi-low-latency.rules makes it
         stick. Read it here (sysfs is world-readable) and warn LOUDLY if wrong,
         so a silent regression back to 16ms is caught immediately."""
-        import os
         dev = os.path.basename(self._port)
         path = f'/sys/bus/usb-serial/devices/{dev}/latency_timer'
         try:
@@ -269,6 +270,7 @@ class Bridge:
 
 class Handler(BaseHTTPRequestHandler):
     bridge = None  # set on the class before serving
+    token = None   # optional shared secret; None = auth disabled
 
     def _send_json(self, code, payload):
         body = json.dumps(payload).encode()
@@ -278,10 +280,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authed(self):
+        """Constant-time bearer-token check. Defense-in-depth behind the
+        tailnet: even if something on the local L2 can open the socket, it
+        can't drive the panel without the shared secret. /health is exempt so
+        liveness probes need no secret. No token configured = open (dev only)."""
+        if self.token is None:
+            return True
+        header = self.headers.get('Authorization', '')
+        prefix = 'Bearer '
+        got = header[len(prefix):] if header.startswith(prefix) else ''
+        if hmac.compare_digest(got, self.token):
+            return True
+        self._send_json(401, {'error': 'unauthorized'})
+        return False
+
     def do_GET(self):
         if self.path == '/health':
             self._send_json(200, {'ok': True, 'connected': self.bridge._connected})
         elif self.path == '/state':
+            if not self._authed():
+                return
             self._send_json(200, self.bridge.snapshot())
         else:
             self._send_json(404, {'error': 'not found'})
@@ -289,6 +308,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path != '/key':
             self._send_json(404, {'error': 'not found'})
+            return
+        if not self._authed():
             return
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -313,7 +334,16 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser(description='RS-485 smart-bridge daemon')
     ap.add_argument('--port', default='/dev/ttyUSB0', help='serial device')
-    ap.add_argument('--listen', default='0.0.0.0:8899', help='host:port to bind')
+    ap.add_argument('--listen', default='0.0.0.0:8899',
+                    help='host:port to bind. Prefer the tailnet IP (e.g. '
+                         '100.x.y.z:8899) so only authenticated tailnet peers '
+                         'can reach the API; 0.0.0.0 also exposes it to the '
+                         'local Wi-Fi/LAN (mitigated by --token).')
+    ap.add_argument('--token', default=os.environ.get('RS485_BRIDGE_TOKEN'),
+                    help='shared secret required on /state and /key as '
+                         '"Authorization: Bearer <token>". Defaults to the '
+                         'RS485_BRIDGE_TOKEN env var. Omit to disable auth '
+                         '(dev only). /health is always open.')
     ap.add_argument('--predelay-ms', type=float, default=0.0,
                     help='DIAGNOSTIC ONLY. ms to wait after the keep-alive '
                          'before writing a key. Proven 0 is optimal on direct '
@@ -330,6 +360,11 @@ def main():
     threading.Thread(target=bridge.run_forever, daemon=True).start()
 
     Handler.bridge = bridge
+    Handler.token = args.token or None
+    if Handler.token:
+        print('Auth: bearer token REQUIRED on /state and /key.', flush=True)
+    else:
+        print('Auth: DISABLED (no --token / RS485_BRIDGE_TOKEN) — dev mode.', flush=True)
     server = ThreadingHTTPServer((host, int(port)), Handler)
     print(f'HTTP API listening on {args.listen}', flush=True)
     try:
