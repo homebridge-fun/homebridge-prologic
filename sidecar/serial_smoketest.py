@@ -125,21 +125,59 @@ if frame_count == 0:
 print(f"\n{frame_count} frames received. READ path confirmed working "
       f"(pool_temp={aq.pool_temp}, air_temp={aq.air_temp}).")
 
-before = get_state_safe(aq, States.AUX_2)
-print(f"\nAUX_2 currently: {before}. Sending AUX_2 keypress to test WRITE path...")
-aq.send_key(Keys.AUX_2)
-time.sleep(3)   # give process() time to dequeue + send + read back the frame
-after = get_state_safe(aq, States.AUX_2)
+def send_key_remote_wired(aq, key):
+    """Build + queue a REMOTE_WIRED key-event frame — bypasses aq.send_key(),
+    which only ever builds LOCAL_WIRED (<=0xffff) or WIRELESS (>0xffff) frames.
+    Mirrors pool_service.py's MenuNavigator._send_key_remote exactly: our own
+    sidecar already found (via the TCP-bridge testing) that nav keys are DEAD
+    with LOCAL frames and only work as REMOTE_WIRED — the hypothesis this test
+    checks for AUX_2 too."""
+    frame = bytearray()
+    frame.append(aq.FRAME_DLE)
+    frame.append(aq.FRAME_STX)
+    aq._append_data(frame, aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT)
+    aq._append_data(frame, int(key.value).to_bytes(2, byteorder='little'))
+    aq._append_data(frame, int(key.value).to_bytes(2, byteorder='little'))
+    crc = sum(frame)
+    aq._append_data(frame, crc.to_bytes(2, byteorder='big'))
+    frame.append(aq.FRAME_DLE)
+    frame.append(aq.FRAME_ETX)
+    aq._send_queue.put({'frame': frame})
 
-if after is not None and after != before:
-    print(f"\n*** WRITE CONFIRMED. AUX_2 changed: {before} -> {after} ***")
+
+before = get_state_safe(aq, States.AUX_2)
+print(f"\nAUX_2 currently: {before}. Sending AUX_2 as LOCAL_WIRED (aq.send_key default)...")
+aq.send_key(Keys.AUX_2)
+time.sleep(3)
+after_local = get_state_safe(aq, States.AUX_2)
+print(f"After LOCAL_WIRED: {after_local}")
+
+if after_local is not None and after_local != before:
+    print(f"\n*** WRITE CONFIRMED (LOCAL_WIRED). AUX_2 changed: {before} -> {after_local} ***")
     print("Direct serial writes are working. Safe to proceed to sidecar integration.")
     print("Restoring AUX_2 to original state...")
     aq.send_key(Keys.AUX_2)
     time.sleep(3)
     print(f"AUX_2 now: {get_state_safe(aq, States.AUX_2)}")
+    sys.exit(0)
+
+print("\nLOCAL_WIRED didn't register. Trying REMOTE_WIRED (our sidecar's proven "
+      "frame type for nav keys over this protocol)...")
+send_key_remote_wired(aq, Keys.AUX_2)
+time.sleep(3)
+after_remote = get_state_safe(aq, States.AUX_2)
+print(f"After REMOTE_WIRED: {after_remote}")
+
+if after_remote is not None and after_remote != before:
+    print(f"\n*** WRITE CONFIRMED (REMOTE_WIRED). AUX_2 changed: {before} -> {after_remote} ***")
+    print("Direct serial writes work — this panel needs REMOTE_WIRED frames, matching")
+    print("what pool_service.py's RS-485 navigator already assumed. Restoring AUX_2...")
+    send_key_remote_wired(aq, Keys.AUX_2)
+    time.sleep(3)
+    print(f"AUX_2 now: {get_state_safe(aq, States.AUX_2)}")
 else:
-    print(f"\n*** WRITE DID NOT REGISTER. AUX_2: before={before} after={after} ***")
-    print("Read path is fine but the keypress didn't land. This is the scenario")
+    print(f"\n*** WRITE DID NOT REGISTER under either frame type. "
+          f"before={before} after_local={after_local} after_remote={after_remote} ***")
+    print("Neither LOCAL_WIRED nor REMOTE_WIRED landed. This is the scenario")
     print("the frame-type sweep (local/remote/wireless) was built to diagnose —")
     print("see docs/aqualogic-automation-spec.md, key-event FRAME TYPE section.")
