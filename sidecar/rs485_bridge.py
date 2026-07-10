@@ -65,6 +65,34 @@ def _write_to_serial_fixed(self, data):
 AquaLogic._write_to_serial = _write_to_serial_fixed
 
 
+# --- write-window timing ---------------------------------------------------
+# aqualogic's default _send_frame() transmits a queued key the instant process()
+# hands it over, which only coincides with the panel's wired-remote accept slot
+# ~1-in-3 keep-alive cycles (observed as a deterministic period-3 drop pattern
+# on the bench). pool_service.py fixes this by waiting KEY_PREDELAY_MS into the
+# panel's post-keep-alive accept window before writing once. We port just that
+# timing here (the daemon owns serial, so no network jitter competes with it).
+# The default 70ms is the WiFi-bridge center; direct serial may want re-tuning,
+# so it's a CLI knob (--predelay-ms) swept via rs485_bench.py.
+_PREDELAY_S = 0.070
+
+
+def _install_write_timing(predelay_s):
+    global _PREDELAY_S
+    _PREDELAY_S = predelay_s
+
+    def _send_frame_timed(self):
+        if self._send_queue.empty():
+            return
+        data = self._send_queue.get(block=False)
+        frame = data['frame']
+        # Wait for the panel's post-keep-alive accept window, then write once.
+        time.sleep(_PREDELAY_S)
+        self._write(frame)
+
+    AquaLogic._send_frame = _send_frame_timed
+
+
 class _LcdStub:
     """Captures every LCD frame aqualogic decodes. aqualogic >=3.x calls
     self._web.text_updated(text) on every frame even with web_port=0, so a
@@ -258,7 +286,13 @@ def main():
     ap = argparse.ArgumentParser(description='RS-485 smart-bridge daemon')
     ap.add_argument('--port', default='/dev/ttyUSB0', help='serial device')
     ap.add_argument('--listen', default='0.0.0.0:8899', help='host:port to bind')
+    ap.add_argument('--predelay-ms', type=float, default=70.0,
+                    help='ms to wait into the panel post-keep-alive accept '
+                         'window before writing a key (sweep with rs485_bench)')
     args = ap.parse_args()
+
+    _install_write_timing(args.predelay_ms / 1000.0)
+    print(f'Write timing: predelay={args.predelay_ms:.0f}ms', flush=True)
 
     host, _, port = args.listen.partition(':')
     bridge = Bridge(args.port)
