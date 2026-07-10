@@ -126,10 +126,38 @@ class _LcdStub:
 class Bridge:
     def __init__(self, port):
         self._port = port
+        self._check_latency_timer()
         self._lcd = _LcdStub()
         self._aq = None
         self._connected = False
         self._smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
+
+    def _check_latency_timer(self):
+        """The FTDI USB-serial latency timer defaults to 16ms, which buffers
+        both reads and writes and makes ~2/3 of keypresses miss the panel's
+        post-keep-alive accept window (33% landing). At 1ms landing is 100%.
+        It resets on reboot/replug — deploy/99-ftdi-low-latency.rules makes it
+        stick. Read it here (sysfs is world-readable) and warn LOUDLY if wrong,
+        so a silent regression back to 16ms is caught immediately."""
+        import os
+        dev = os.path.basename(self._port)
+        path = f'/sys/bus/usb-serial/devices/{dev}/latency_timer'
+        try:
+            with open(path) as f:
+                val = int(f.read().strip())
+        except Exception as e:  # noqa: BLE001 — non-FTDI or missing sysfs
+            print(f'WARNING: could not read {path}: {e}', flush=True)
+            return
+        if val <= 1:
+            print(f'FTDI latency_timer = {val}ms (good).', flush=True)
+        else:
+            print('*' * 68, flush=True)
+            print(f'WARNING: FTDI latency_timer = {val}ms (should be 1). Expect '
+                  '~33% keypress\n         landing until fixed. Run:\n'
+                  f'         echo 1 | sudo tee {path}\n'
+                  '         and install deploy/99-ftdi-low-latency.rules to persist it.',
+                  flush=True)
+            print('*' * 68, flush=True)
 
     # --- connection / read loop -------------------------------------------
     def run_forever(self):
@@ -286,9 +314,12 @@ def main():
     ap = argparse.ArgumentParser(description='RS-485 smart-bridge daemon')
     ap.add_argument('--port', default='/dev/ttyUSB0', help='serial device')
     ap.add_argument('--listen', default='0.0.0.0:8899', help='host:port to bind')
-    ap.add_argument('--predelay-ms', type=float, default=70.0,
-                    help='ms to wait into the panel post-keep-alive accept '
-                         'window before writing a key (sweep with rs485_bench)')
+    ap.add_argument('--predelay-ms', type=float, default=0.0,
+                    help='DIAGNOSTIC ONLY. ms to wait after the keep-alive '
+                         'before writing a key. Proven 0 is optimal on direct '
+                         'serial once the FTDI latency_timer is 1ms (see '
+                         'deploy/99-ftdi-low-latency.rules); >0 only delays the '
+                         'write out of the accept window.')
     args = ap.parse_args()
 
     _install_write_timing(args.predelay_ms / 1000.0)

@@ -1,0 +1,14 @@
+# FTDI USB-serial low-latency for the RS-485 pad bridge.
+#
+# The FT232 latency timer defaults to 16ms, which buffers both reads and
+# writes. On the AquaLogic RS-485 bus that makes ~2/3 of keypresses miss the
+# panel's narrow post-keep-alive accept window (measured: 33% landing at 16ms,
+# 100% at 1ms). The value resets on every reboot/replug, so pin it in udev.
+#
+# Install:
+#   sudo cp deploy/99-ftdi-low-latency.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --attr-match=subsystem=usb-serial
+# Verify:
+#   cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer   # -> 1
+ACTION=="add", SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"
