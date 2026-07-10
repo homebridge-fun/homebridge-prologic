@@ -1,0 +1,22 @@
+[Unit]
+Description=RS-485 smart-bridge daemon (AquaLogic pad Pi)
+Documentation=https://github.com/homebridge-fun/homebridge-prologic
+# The daemon binds the tailnet IP, so tailscaled must be up first. It also
+# needs the network online for the socket bind; if either isn't ready the bind
+# fails, the process exits, and Restart=on-failure retries.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=greg
+# Token + bind address + serial device live here (created by install-pad.sh,
+# NOT committed — it holds the shared secret).
+EnvironmentFile=/etc/pool-bridge.env
+ExecStart=/usr/bin/python3 %h/homebridge-prologic/sidecar/rs485_bridge.py \
+    --port ${RS485_BRIDGE_PORT} --listen ${RS485_BRIDGE_LISTEN}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
