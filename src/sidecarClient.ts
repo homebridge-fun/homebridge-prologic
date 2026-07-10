@@ -1,14 +1,30 @@
 import axios, { AxiosInstance } from 'axios';
 import { PoolStatus } from './settings';
 
+export interface SidecarClientOpts {
+  /** Overrides host:port entirely — e.g. a Cloudflare Tunnel hostname for a
+   * sidecar on a separate/isolated network. */
+  baseUrl?: string;
+  /** Cloudflare Access service-token credentials (CF-Access-Client-Id /
+   * CF-Access-Client-Secret headers), for a baseUrl behind Access. */
+  accessClientId?: string;
+  accessClientSecret?: string;
+}
+
 export class SidecarClient {
   private readonly http: AxiosInstance;
 
-  constructor(host: string, port: number) {
+  constructor(host: string, port: number, opts: SidecarClientOpts = {}) {
+    const headers: Record<string, string> = {};
+    if (opts.accessClientId) headers['CF-Access-Client-Id'] = opts.accessClientId;
+    if (opts.accessClientSecret) headers['CF-Access-Client-Secret'] = opts.accessClientSecret;
     this.http = axios.create({
-      baseURL: `http://${host}:${port}`,
+      baseURL: opts.baseUrl || `http://${host}:${port}`,
       // Menu navigation can take several seconds (multiple RS-485 round-trips).
+      // A Cloudflare-tunneled sidecar adds edge round-trip latency on top of
+      // that, so the same generous timeout comfortably covers both cases.
       timeout: 30000,
+      headers,
     });
   }
 

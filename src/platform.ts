@@ -47,6 +47,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       name: config['name'] ?? 'ProLogic',
       sidecarHost: config['sidecarHost'] ?? '127.0.0.1',
       sidecarPort: config['sidecarPort'] ?? 5757,
+      sidecarBaseUrl: config['sidecarBaseUrl'] || undefined,
+      sidecarAccessClientId: config['sidecarAccessClientId'] || undefined,
+      sidecarAccessClientSecret: config['sidecarAccessClientSecret'] || undefined,
       pollInterval: config['pollInterval'] ?? 5000,
       backend: config['backend'] ?? 'aquaconnect',
       aquaconnectHost: config['aquaconnectHost'] ?? '192.168.50.100',
@@ -63,7 +66,11 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       circuitLabels: config['circuitLabels'] ?? {},
     };
 
-    this.sidecar = new SidecarClient(this.cfg.sidecarHost, this.cfg.sidecarPort);
+    this.sidecar = new SidecarClient(this.cfg.sidecarHost, this.cfg.sidecarPort, {
+      baseUrl: this.cfg.sidecarBaseUrl,
+      accessClientId: this.cfg.sidecarAccessClientId,
+      accessClientSecret: this.cfg.sidecarAccessClientSecret,
+    });
 
     this.api.on('didFinishLaunching', () => {
       this.reconcileBackend();
