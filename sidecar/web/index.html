@@ -62,7 +62,6 @@
     background: var(--panel2); color: var(--dim); }
   .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
   .pill.off { background: rgba(84,112,140,.2); color: var(--off); }
-  .pill.ctl { padding: 6px 14px; font-size: 13px; }
   .mode { display: flex; gap: 6px; }
   .mode .seg { flex: 1; text-align: center; padding: 11px; border-radius: 9px;
     background: var(--panel2); color: var(--dim); font-weight: 600; }
@@ -322,7 +321,6 @@
 (() => {
   const $ = id => document.getElementById(id);
   const txt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
-  const num = v => (v === null || v === undefined) ? '—' : v;
   const deg = v => (v == null ? '—' : v + '°');
   const degF = v => (v === null || v === undefined) ? '—' : v + '<span class="u">°F</span>';
   const ppm = v => (v === null || v === undefined) ? '—' : v + '<span class="u">ppm</span>';

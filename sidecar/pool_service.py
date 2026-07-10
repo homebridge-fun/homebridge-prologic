@@ -940,11 +940,6 @@ _AC_KEY_CODES = {
 # the AquaConnect box itself needs the inter-request spacing, not just the panel.
 _AC_MIN_GAP_S = 0.6
 
-# How long to wait after a key before reading back the settled screen. The box
-# mirrors the panel over the slow RS-485 bus, so the immediate response can
-# still show the pre-keypress screen. 1.0s is well above the ~230ms read RTT.
-_AC_SETTLE_S = 1.0
-
 # LED nibble decode (each equipment LED is one 4-bit nibble in the state line).
 #   3 = absent / no key on this panel
 #   4 = off
@@ -2182,27 +2177,6 @@ class MenuNavigator:
         _trace_key(key, before, after, time.time() - t0, expect_change)
         return after
 
-    def _wait_key_sent(self, timeout: float = 2.5) -> None:
-        """Block until a queued keypress has been transmitted on the bus.
-
-        The real panel queues frames and writes them on the next keep-alive;
-        we wait for the send queue to drain, then a short settle so the write
-        (which the burst does ~predelay after dequeue) has completed. The
-        simulator is synchronous and has no queue, so this is a no-op there.
-        """
-        aq = getattr(self._panel, '_aq', None)
-        q = getattr(aq, '_send_queue', None) if aq is not None else None
-        if q is None:
-            return
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if q.empty():
-                break
-            time.sleep(0.05)
-        # Burst sleeps KEY_PREDELAY_MS after dequeue before the actual write;
-        # add that plus a small margin so the press has truly landed.
-        time.sleep(KEY_PREDELAY_MS / 1000.0 + 0.05)
-
     @staticmethod
     def _same_item(a: str, b: str) -> bool:
         """True if two frames are the same menu item (ignoring a value flash).
@@ -2831,60 +2805,6 @@ class MenuNavigator:
         finally:
             self.fast_exit()
 
-    def activate_vsp_slot(self, slot: int) -> dict:
-        """
-        Make slot {slot} the running VSP slot by cycling FILTER off→on to open
-        the slot-selection window (§6.2), then using +/- to reach the target slot.
-
-        Gate contract (§6.4 / §11): every +/- press verifies 'Filter On:' is
-        still present; if the window closed early an error is raised.
-        Does NOT navigate the Settings menu; holds _nav_lock throughout.
-        """
-        if slot not in (1, 2, 3, 4):
-            raise ValueError(f'VSP slot must be 1–4, got {slot}')
-        target_label = f'Spd{slot}'
-        _SLOT_MAX_STEPS = 8   # 5 slots × up to 1 wrap = 5; 8 is generous
-        with _nav_lock:
-            # Ensure filter is off first so the next FILTER press turns it on.
-            with state_lock:
-                filter_on = state.circuits.get('FILTER', False)
-            if filter_on:
-                txt = self._send('FILTER')   # turn off
-                if 'Filter On:' in txt:
-                    raise RuntimeError(f'FILTER off did not clear window: {txt!r}')
-
-            # Turn filter on → opens slot-selection window
-            txt = self._send('FILTER')
-            if 'Filter On:' not in txt:
-                raise RuntimeError(
-                    f'Expected slot-selection window after FILTER on, got: {txt!r}')
-
-            # Cycle +/- until we see the target slot label.
-            for step in range(_SLOT_MAX_STEPS):
-                if target_label in txt:
-                    break
-                txt = self._send('PLUS')
-                if 'Filter On:' not in txt:
-                    raise RuntimeError(
-                        f'Slot-selection window closed early at step {step}: {txt!r}')
-            else:
-                raise RuntimeError(f'Could not find {target_label} in slot-selection window')
-
-            with state_lock:
-                state.circuits['FILTER'] = True
-                state.vsp_active_slot = slot
-            return {'activated_slot': slot, 'frame': txt}
-
-    # Convenience aliases kept for any callers that used the slot-4 specific names.
-    def read_vsp_slot4(self) -> dict:
-        return self.read_vsp_slot(4)
-
-    def set_vsp_slot4(self, target_pct: int) -> dict:
-        return self.set_vsp_slot(4, target_pct)
-
-    def activate_vsp_slot4(self) -> dict:
-        return self.activate_vsp_slot(4)
-
     def _goto_spa_speed(self) -> str:
         """Anchor, enter the VSP submenu, and land on 'Spa Speed'. Returns frame."""
         self._anchor()
@@ -3421,8 +3341,10 @@ def rs485_sweep() -> Response:
     })
 
 
-def _pct(sorted_vals: list, p: float):
-    """Simple percentile (nearest-rank) of a pre-sorted list."""
+def _percentile(sorted_vals: list, p: float):
+    """Simple percentile (nearest-rank) of a pre-sorted list.
+    (Named _percentile, not _pct, to avoid confusion with MenuNavigator._pct,
+    the LCD value parser.)"""
     if not sorted_vals:
         return None
     k = max(0, min(len(sorted_vals) - 1, int(round(p / 100.0 * (len(sorted_vals) - 1)))))
@@ -3507,8 +3429,8 @@ def rs485_taptest() -> Response:
                        else float(body['predelay_ms']),
         'latency_ms': {
             'min': lat[0] if lat else None,
-            'p50': _pct(lat, 50),
-            'p90': _pct(lat, 90),
+            'p50': _percentile(lat, 50),
+            'p90': _percentile(lat, 90),
             'max': lat[-1] if lat else None,
         },
         'detail': results,
@@ -4847,27 +4769,6 @@ def debug_map_menu() -> Response:
     return jsonify({'count': len(steps), 'steps': steps})
 
 
-def keypad_press(key: str) -> Response:
-    """
-    Send a single raw keypad key.  Intended for diagnostics and manual
-    navigation; do not use this from HomeKit automation paths (use the
-    higher-level navigator endpoints instead).
-    """
-    key = key.upper()
-    p = _get_panel()
-    if p is None:
-        return jsonify({'error': 'Not connected'}), 503
-    try:
-        p.send_key(key)
-        l1, l2 = lcd.lines()
-        return jsonify({'ok': True, 'line1': l1, 'line2': l2})
-    except ValueError as e:
-        return jsonify({'error': str(e)}), 400
-    except Exception as e:
-        log.error(f'keypad {key}: {e}')
-        return jsonify({'error': str(e)}), 500
-
-
 @app.route('/heater/<which>/state')
 def get_heater_state(which: str) -> Response:
     """Read a heater setpoint via menu navigation (non-mutating)."""
@@ -5048,24 +4949,6 @@ def set_vsp_slot(slot: int) -> Response:
         return jsonify({'error': str(e)}), (400 if isinstance(e, ValueError) else 500)
 
 
-@app.route('/vsp/slot/<int:slot>/activate', methods=['POST'])
-def activate_vsp_slot(slot: int) -> Response:
-    """
-    Activate slot {slot} (1-4) as the running VSP slot by cycling FILTER off→on.
-    No body required. Filter is left ON after the call.
-    """
-    nav = _get_navigator()
-    if nav is None:
-        return jsonify({'error': 'Not connected'}), 503
-    try:
-        result = nav.activate_vsp_slot(slot)
-        log.info(f'VSP slot{slot} activated (filter on)')
-        return jsonify(result)
-    except (ValueError, Exception) as e:
-        log.error(f'activate_vsp_slot {slot}: {e}')
-        return jsonify({'error': str(e)}), (400 if isinstance(e, ValueError) else 500)
-
-
 @app.route('/vsp/spa')
 def get_vsp_spa() -> Response:
     """Read the Spa Speed setting from the VSP submenu."""
@@ -5096,20 +4979,6 @@ def set_vsp_spa() -> Response:
     except Exception as e:
         log.error(f'set_spa_speed: {e}')
         return jsonify({'error': str(e)}), 500
-
-
-# Legacy slot-4 aliases — kept for backwards compatibility with existing callers.
-@app.route('/vsp/slot4')
-def get_vsp_slot4_compat() -> Response:
-    return get_vsp_slot(4)
-
-@app.route('/vsp/slot4', methods=['POST'])
-def set_vsp_slot4_compat() -> Response:
-    return set_vsp_slot(4)
-
-@app.route('/vsp/slot4/activate', methods=['POST'])
-def activate_vsp_slot4_compat() -> Response:
-    return activate_vsp_slot(4)
 
 
 @app.route('/chlorinator/<which>')
