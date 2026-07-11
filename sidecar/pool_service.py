@@ -326,7 +326,10 @@ def _immediate_wedge_probe() -> None:
 # file and exits the process so systemd restarts into the new backend. This
 # lets the Homebridge plugin switch backends without sudo or relaunching the
 # service directly. The file lives next to the script (homebridge-owned).
-_BACKEND_CONFIG_PATH = os.path.join(
+# Defaults to backend.json next to this script; override with SIDECAR_CONFIG so
+# a test instance can use an isolated config (and never read/clobber the
+# production one at /opt/pool-sidecar/backend.json).
+_BACKEND_CONFIG_PATH = os.environ.get('SIDECAR_CONFIG') or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'backend.json')
 # Which backend is live in this process (set in main()).
 _active_backend: Optional[str] = None
