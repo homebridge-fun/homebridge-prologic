@@ -324,6 +324,8 @@
         <label>off ms<input id="sc_off" type="number"></label>
         <label>on ms<input id="sc_on" type="number"></label>
         <label>offset<input id="sc_offset" type="number"></label>
+        <label style="flex-direction:row;align-items:center;gap:6px">
+          <input id="sc_local" type="checkbox" style="width:auto">LOCAL frames</label>
         <button id="sc_save">Save</button>
       </div>
       <div class="crow">
@@ -959,9 +961,10 @@
   const el = id => document.getElementById(id);
   const msg = m => { const e = el('scene_msg'); if (e) e.textContent = m; };
   const timing = () => ({
-    reset_ms: +el('sc_reset').value || 4000,
-    off_ms: +el('sc_off').value || 250,
-    on_ms: +el('sc_on').value || 250,
+    reset_ms: +el('sc_reset').value || 2000,
+    off_ms: +el('sc_off').value || 120,
+    on_ms: +el('sc_on').value || 120,
+    local: el('sc_local').checked,
   });
   async function post(obj, note) {
     msg('… ' + note);
@@ -984,7 +987,7 @@
       const r = await fetch('/lights/calibration', { method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ offset: +el('sc_offset').value, reset_ms: +el('sc_reset').value,
-          off_ms: +el('sc_off').value, on_ms: +el('sc_on').value }) });
+          off_ms: +el('sc_off').value, on_ms: +el('sc_on').value, local: el('sc_local').checked }) });
       await r.json(); msg('✓ calibration saved');
     } catch (e) { msg('⚠ save failed: ' + e.message); }
   }
@@ -994,6 +997,7 @@
     el('sc_off').value = c.off_ms ?? 250;
     el('sc_on').value = c.on_ms ?? 250;
     el('sc_offset').value = c.offset ?? 0;
+    el('sc_local').checked = c.local !== false;
     const box = el('scene_btns'); box.innerHTML = '';
     (d.programs || []).forEach(p => {
       const b = document.createElement('button');

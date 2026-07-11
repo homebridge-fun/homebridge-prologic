@@ -410,7 +410,7 @@ class Bridge:
         return presses
 
     def select_program(self, key_name, n, reset_ms=4000, off_ms=120, on_ms=250,
-                       start_on=None):
+                       start_on=None, local=False):
         """Select ColorLogic program `n` (1..17) by the ABSOLUTE reset procedure:
         ensure the light is fully OFF, hold it off `reset_ms` (resets to
         baseline), then do `n` power-restores (end ON) so it lands on program n.
@@ -429,7 +429,9 @@ class Bridge:
         if int(k.value) > 0xffff:
             raise ValueError(f'{key_name} is a wireless key; program-cycle only '
                              'supports wired toggle circuits (LIGHTS, AUX_x)')
-        frame = self._remote_frame(k)
+        # LOCAL_WIRED replicates the physical keypad (what reliably programs the
+        # light by hand); REMOTE_WIRED is the nav-key path. Selectable.
+        frame = self._local_frame(k) if local else self._remote_frame(k)
         st = getattr(States, key_name, None)
         presses = 0
 
@@ -467,7 +469,7 @@ class Bridge:
             aq._send_queue.put({'frame': frame})   # -> ON (advance)
             presses += 1
         return {'presses': presses, 'reset_confirmed_off': confirmed_off,
-                'start_on': start_on}
+                'start_on': start_on, 'frame': 'local' if local else 'remote'}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -585,6 +587,7 @@ class Handler(BaseHTTPRequestHandler):
             off_ms = float(data.get('off_ms', 120))
             on_ms = float(data.get('on_ms', 250))
             start_on = data.get('start_on')  # sidecar's settled LIGHTS state
+            local = bool(data.get('local', False))
         except (ValueError, KeyError, TypeError) as e:
             self._send_json(400, {'error': f'bad request: {e}'})
             return
@@ -600,7 +603,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             t0 = time.monotonic()
             info = self.bridge.select_program(key, n, reset_ms, off_ms, on_ms,
-                                              start_on=start_on)
+                                              start_on=start_on, local=local)
         except (ValueError, RuntimeError) as e:
             self._send_json(400, {'error': str(e)})
             return

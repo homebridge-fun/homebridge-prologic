@@ -699,9 +699,10 @@ LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
 # Defaults; overridden by backend.json 'light_config' at startup.
 LIGHT_CFG = {
     'offset': 0,        # daemon restore-count = program_number + offset
-    'reset_ms': 4000,   # full-off hold that resets the light to baseline
-    'off_ms': 250,      # rapid off pulse between restores
-    'on_ms': 250,       # rapid on dwell between restores
+    'reset_ms': 2000,   # full-off hold that resets the light to baseline (~2s)
+    'off_ms': 120,      # rapid off pulse between restores
+    'on_ms': 120,       # rapid on dwell between restores
+    'local': True,      # LOCAL_WIRED frames (replicate the physical keypad)
 }
 
 CIRCUIT_NAMES = [
@@ -1416,7 +1417,8 @@ class RS485BridgeBackend:
 
     def select_program(self, key: str, n: int, reset_ms: float,
                        off_ms: float, on_ms: float,
-                       start_on: Optional[bool] = None) -> Optional[dict]:
+                       start_on: Optional[bool] = None,
+                       local: bool = False) -> Optional[dict]:
         """Drive the daemon's /program (absolute ColorLogic select) for a light
         circuit. The daemon does the full reset + N-restore power-cycle; this is
         a thin pass-through. `start_on` is our settled poll of the circuit so the
@@ -1424,7 +1426,7 @@ class RS485BridgeBackend:
         since the sequence itself takes several seconds."""
         self._req_count += 1
         payload = {'key': key, 'n': n, 'reset_ms': reset_ms,
-                   'off_ms': off_ms, 'on_ms': on_ms}
+                   'off_ms': off_ms, 'on_ms': on_ms, 'local': bool(local)}
         if start_on is not None:
             payload['start_on'] = bool(start_on)
         body = json.dumps(payload).encode()
@@ -5174,6 +5176,7 @@ def lights_select(body: str) -> Response:
     reset_ms = float(req.get('reset_ms', LIGHT_CFG['reset_ms']))
     off_ms = float(req.get('off_ms', LIGHT_CFG['off_ms']))
     on_ms = float(req.get('on_ms', LIGHT_CFG['on_ms']))
+    local = bool(req['local']) if 'local' in req else bool(LIGHT_CFG['local'])
 
     # The light's settled on/off state (our steady poll, not a racy read) makes
     # the daemon's reset deterministic.
@@ -5186,7 +5189,7 @@ def lights_select(body: str) -> Response:
         raw = _clamp(int(req['count']), 1, 17)
         with _nav_lock:
             res = _ac_backend.select_program(circuit, raw, reset_ms, off_ms, on_ms,
-                                             start_on=start_on)
+                                             start_on=start_on, local=local)
         if res is None:
             return jsonify({'error': 'bridge /program failed'}), 502
         return jsonify({'ok': True, 'body': body, 'raw_count': raw, 'bridge': res})
@@ -5213,7 +5216,7 @@ def lights_select(body: str) -> Response:
     log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
     with _nav_lock:      # serialize against menu nav — both drive the panel
         res = _ac_backend.select_program(circuit, count, reset_ms, off_ms, on_ms,
-                                         start_on=start_on)
+                                         start_on=start_on, local=local)
     if res is None:
         return jsonify({'error': 'bridge /program failed'}), 502
     # Track last-selected scene per body (best-effort, open-loop).
@@ -5234,6 +5237,8 @@ def lights_calibration() -> Response:
                           ('off_ms', 20, 3000), ('on_ms', 20, 3000)):
             if k in body:
                 LIGHT_CFG[k] = _clamp(float(body[k]) if 'ms' in k else int(body[k]), lo, hi)
+        if 'local' in body:
+            LIGHT_CFG['local'] = bool(body['local'])
         try:
             cfg = _load_backend_config()
             cfg['light_config'] = dict(LIGHT_CFG)
