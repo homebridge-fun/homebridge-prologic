@@ -5087,6 +5087,60 @@ def set_heater_setpoint_legacy() -> Response:
     return set_heater_setpoint(which)
 
 
+@app.route('/lights/tester', methods=['GET'])
+def lights_tester() -> Response:
+    """Self-contained scene-tester page (served same-origin so it can call the
+    /lights API without CORS). Buttons for all 17 named scenes, a raw-count
+    calibration tester, timing controls, and a log — so lights can be tested by
+    clicking + watching, no curl."""
+    html = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Pool Light Scenes</title><style>
+body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#111;color:#eee}
+h2{margin:16px 0 8px}.row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+button{padding:12px 14px;font-size:15px;border:0;border-radius:10px;background:#2b6cb0;color:#fff}
+button:active{opacity:.6}.fixed{background:#4a5568}.show{background:#6b46c1}
+.cal button{background:#2f855a}input{width:70px;padding:8px;border-radius:8px;border:1px solid #444;background:#222;color:#eee}
+label{font-size:13px;margin-right:4px}#log{white-space:pre-wrap;background:#000;padding:10px;border-radius:8px;
+font-family:ui-monospace,monospace;font-size:12px;max-height:38vh;overflow:auto;margin-top:8px}
+.pill{font-size:11px;opacity:.7;margin-left:6px}
+</style></head><body>
+<h2>Pool Light Scenes <span class=pill>show=moving · fixed=static</span></h2>
+<div id=scenes class=row>loading…</div>
+<h2>Calibration</h2>
+<div class="row cal">
+<label>reset ms<input id=reset value=4000></label>
+<label>off ms<input id=off value=250></label>
+<label>on ms<input id=on value=250></label>
+<label>offset<input id=offset value=0></label>
+<button onclick=saveCal()>Save calibration</button>
+</div>
+<h2>Raw count (calibration)</h2>
+<div class=row>
+<label>count<input id=rawn value=3></label>
+<button onclick=fireRaw()>Fire raw count → watch light</button>
+</div>
+<h2>Log</h2><div id=log></div>
+<script>
+const B='/lights',body='pool';
+const timing=()=>({reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value});
+function log(m){const l=document.getElementById('log');l.textContent=new Date().toLocaleTimeString()+'  '+m+'\\n'+l.textContent}
+async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
+ try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
+  const j=await r.json();log('← '+JSON.stringify(j));return j}catch(e){log('!! '+e)}}
+function fire(n,name){post(B+'/'+body+'/program',Object.assign({program:n},timing())).then(()=>log('fired scene '+n+' '+name+' — WATCH: moving or static?'))}
+function fireRaw(){post(B+'/'+body+'/program',Object.assign({count:+rawn.value},timing())).then(()=>log('fired RAW count '+rawn.value+' — WATCH: moving or static?'))}
+function saveCal(){post(B+'/calibration',{offset:+offset.value,reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value})}
+fetch(B+'/programs').then(r=>r.json()).then(d=>{
+ const c=d.calibration||{};reset.value=c.reset_ms;off.value=c.off_ms;on.value=c.on_ms;offset.value=c.offset;
+ document.getElementById('scenes').innerHTML='';
+ d.programs.forEach(p=>{const b=document.createElement('button');b.className=p.type;
+  b.textContent=p.n+'. '+p.name;b.onclick=()=>fire(p.n,p.name);document.getElementById('scenes').appendChild(b)})
+}).catch(e=>document.getElementById('scenes').textContent='load failed: '+e)
+</script></body></html>"""
+    return Response(html, mimetype='text/html')
+
+
 @app.route('/lights/programs', methods=['GET'])
 def lights_programs() -> Response:
     """The named ColorLogic scenes (1..17) with type (show=moving, fixed=static),
@@ -5112,6 +5166,20 @@ def lights_select(body: str) -> Response:
         return jsonify({'error': 'light programming needs the rs485bridge backend'}), 501
 
     req = request.get_json(force=True) or {}
+    reset_ms = float(req.get('reset_ms', LIGHT_CFG['reset_ms']))
+    off_ms = float(req.get('off_ms', LIGHT_CFG['off_ms']))
+    on_ms = float(req.get('on_ms', LIGHT_CFG['on_ms']))
+
+    # Calibration mode: fire an explicit daemon restore-count, bypassing the
+    # name/offset mapping, so we can find which count lands on which scene.
+    if req.get('count') is not None:
+        raw = _clamp(int(req['count']), 1, 17)
+        with _nav_lock:
+            res = _ac_backend.select_program(circuit, raw, reset_ms, off_ms, on_ms)
+        if res is None:
+            return jsonify({'error': 'bridge /program failed'}), 502
+        return jsonify({'ok': True, 'body': body, 'raw_count': raw, 'bridge': res})
+
     n = req.get('program')
     if n is None and req.get('name'):
         want = str(req['name']).strip().lower()
@@ -5128,12 +5196,7 @@ def lights_select(body: str) -> Response:
     if not (1 <= n <= 17):
         return jsonify({'error': 'program must be 1..17'}), 400
 
-    # Per-call timing overrides (for calibration); else the persisted defaults.
-    reset_ms = float(req.get('reset_ms', LIGHT_CFG['reset_ms']))
-    off_ms = float(req.get('off_ms', LIGHT_CFG['off_ms']))
-    on_ms = float(req.get('on_ms', LIGHT_CFG['on_ms']))
-    count = n + int(LIGHT_CFG['offset'])
-    count = _clamp(count, 1, 17)
+    count = _clamp(n + int(LIGHT_CFG['offset']), 1, 17)
 
     name = LIGHT_PROGRAMS[n - 1][0]
     log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
