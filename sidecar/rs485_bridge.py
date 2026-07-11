@@ -362,6 +362,47 @@ class Bridge:
                 time.sleep(on_ms / 1000.0)
         return presses
 
+    def select_program(self, key_name, n, reset_ms=4000, off_ms=120, on_ms=250):
+        """Select ColorLogic program `n` (1..17) by the ABSOLUTE reset procedure:
+        ensure the light is fully OFF, hold it off `reset_ms` (resets to
+        baseline), then do `n` power-restores (end ON) so it lands on program n.
+
+        Matches the physical procedure: full off a few seconds, then a rapid
+        on/off sequence counted to the program number, left on. Open-loop and
+        blind — each toggle is a keep-alive-timed REMOTE_WIRED press (~150ms
+        floor), which is exactly what we're calibrating. Returns timing info."""
+        aq = self._aq
+        if aq is None:
+            raise RuntimeError('not connected')
+        k = getattr(Keys, key_name, None)
+        if k is None:
+            raise ValueError(f'unknown key: {key_name}')
+        if int(k.value) > 0xffff:
+            raise ValueError(f'{key_name} is a wireless key; program-cycle only '
+                             'supports wired toggle circuits (LIGHTS, AUX_x)')
+        frame = self._remote_frame(k)
+        presses = 0
+        # 1. Ensure OFF — the reset-to-baseline needs a clean full-off first.
+        st = getattr(States, key_name, None)
+        cur = self._get_state_safe(st) if st is not None else None
+        if cur:  # currently ON -> one press to turn it off
+            aq._send_queue.put({'frame': frame})
+            presses += 1
+            time.sleep(1.0)     # let the OFF register before the reset hold
+        # 2. Hold off for the reset window.
+        time.sleep(reset_ms / 1000.0)
+        # 3. n power-restores, ending ON. First restore = program 1.
+        aq._send_queue.put({'frame': frame})   # -> ON (program 1)
+        presses += 1
+        for _ in range(n - 1):
+            time.sleep(on_ms / 1000.0)
+            aq._send_queue.put({'frame': frame})   # -> OFF
+            presses += 1
+            time.sleep(off_ms / 1000.0)
+            aq._send_queue.put({'frame': frame})   # -> ON (advance)
+            presses += 1
+        return presses
+
 
 class Handler(BaseHTTPRequestHandler):
     bridge = None  # set on the class before serving
@@ -410,13 +451,15 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b'{}')
 
     def do_POST(self):
-        if self.path not in ('/key', '/cycle'):
+        if self.path not in ('/key', '/cycle', '/program'):
             self._send_json(404, {'error': 'not found'})
             return
         if not self._authed():
             return
         if self.path == '/cycle':
             return self._do_cycle()
+        if self.path == '/program':
+            return self._do_program()
         try:
             data = self._read_body()
             key = data['key']
@@ -459,6 +502,39 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {'error': str(e)})
             return
         self._send_json(200, {'ok': True, 'key': key, 'cycles': count,
+                              'presses': presses,
+                              'elapsed_ms': round((time.monotonic() - t0) * 1000)})
+
+    def _do_program(self):
+        """POST /program {key, n, reset_ms, off_ms, on_ms} — select ColorLogic
+        program `n` by the absolute reset procedure (full off -> hold -> n
+        restores -> leave on). Bounded to avoid a runaway relay-mash."""
+        try:
+            data = self._read_body()
+            key = data.get('key', 'LIGHTS')
+            n = int(data['n'])
+            reset_ms = float(data.get('reset_ms', 4000))
+            off_ms = float(data.get('off_ms', 120))
+            on_ms = float(data.get('on_ms', 250))
+        except (ValueError, KeyError, TypeError) as e:
+            self._send_json(400, {'error': f'bad request: {e}'})
+            return
+        if not (1 <= n <= 17):
+            self._send_json(400, {'error': 'n (program) must be 1..17'})
+            return
+        if not (500 <= reset_ms <= 20000):
+            self._send_json(400, {'error': 'reset_ms must be 500..20000'})
+            return
+        if not (20 <= off_ms <= 3000) or not (20 <= on_ms <= 3000):
+            self._send_json(400, {'error': 'off_ms/on_ms must be 20..3000'})
+            return
+        try:
+            t0 = time.monotonic()
+            presses = self.bridge.select_program(key, n, reset_ms, off_ms, on_ms)
+        except (ValueError, RuntimeError) as e:
+            self._send_json(400, {'error': str(e)})
+            return
+        self._send_json(200, {'ok': True, 'key': key, 'program': n,
                               'presses': presses,
                               'elapsed_ms': round((time.monotonic() - t0) * 1000)})
 
