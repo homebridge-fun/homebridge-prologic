@@ -293,23 +293,44 @@
     </div>
   </div>
 
+  <style>
+    #scene_btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .scene-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+      background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
+      border-left: 4px solid var(--off); border-radius: 12px; padding: 12px 14px;
+      font-size: 16px; font-weight: 600; text-align: left; line-height: 1.2; }
+    .scene-btn:active { background: var(--line); }
+    .scene-btn.show { border-left-color: var(--accent); }
+    .scene-btn .tag { font-size: 12px; font-weight: 600; color: var(--dim);
+      text-transform: uppercase; letter-spacing: .05em; }
+    .scene-btn.show .tag { color: var(--accent); }
+    #scene_msg { margin-top: 12px; min-height: 1.3em; font-size: 15px; color: var(--ink); }
+    #scene_cal { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+    #scene_cal .crow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
+    #scene_cal label { color: var(--dim); font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
+    #scene_cal input { width: 72px; padding: 8px 10px; font-size: 15px; color: var(--ink);
+      background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; }
+    #scene_cal button { padding: 10px 16px; font-size: 15px; font-weight: 600; color: #04263a;
+      background: var(--accent); border: 0; border-radius: 10px; align-self: flex-end; }
+    #scene_cal .hint { font-size: 13px; color: var(--dim); }
+  </style>
   <div class="card">
     <h2 class="hrow">Pool Light Scenes <button class="lockbtn" id="scene_cal_toggle">⚙ Calibrate</button></h2>
-    <div id="scene_btns" style="display:flex;flex-wrap:wrap;gap:8px">loading…</div>
-    <div id="scene_msg" class="t" style="margin-top:8px;min-height:1.2em"></div>
-    <div id="scene_cal" style="display:none;margin-top:10px;border-top:1px solid #333;padding-top:10px">
-      <div class="setrow" style="flex-wrap:wrap;gap:6px">
-        <label>reset<input id="sc_reset" type="number" style="width:64px"></label>
-        <label>off<input id="sc_off" type="number" style="width:56px"></label>
-        <label>on<input id="sc_on" type="number" style="width:56px"></label>
-        <label>offset<input id="sc_offset" type="number" style="width:56px"></label>
-        <button class="ctl" id="sc_save">Save</button>
+    <div id="scene_btns">loading…</div>
+    <div id="scene_msg"></div>
+    <div id="scene_cal" style="display:none">
+      <div class="crow">
+        <label>reset ms<input id="sc_reset" type="number"></label>
+        <label>off ms<input id="sc_off" type="number"></label>
+        <label>on ms<input id="sc_on" type="number"></label>
+        <label>offset<input id="sc_offset" type="number"></label>
+        <button id="sc_save">Save</button>
       </div>
-      <div class="setrow" style="gap:6px;margin-top:6px">
-        <label>raw count<input id="sc_rawn" type="number" value="3" style="width:64px"></label>
-        <button class="ctl" id="sc_fireraw">Fire raw → watch</button>
+      <div class="crow">
+        <label>raw count<input id="sc_rawn" type="number" value="3"></label>
+        <button id="sc_fireraw">Fire raw</button>
       </div>
-      <div class="t" style="opacity:.7;margin-top:4px">Calibration: fire a raw count, watch the pool, find where it flips static→moving.</div>
+      <div class="hint">Fire a raw count, watch the pool, and find where it flips static → moving.</div>
     </div>
   </div>
 </main>
@@ -973,9 +994,13 @@
     const box = el('scene_btns'); box.innerHTML = '';
     (d.programs || []).forEach(p => {
       const b = document.createElement('button');
-      b.className = 'ctl';
-      b.style.background = p.type === 'show' ? '#6b46c1' : '#4a5568';
-      b.textContent = p.n + '. ' + p.name;
+      b.className = 'scene-btn' + (p.type === 'show' ? ' show' : '');
+      const name = document.createElement('span');
+      name.textContent = p.name;
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = p.type === 'show' ? '◆ show' : 'static';
+      b.append(name, tag);
       b.onclick = () => fire(p.n, p.name);
       box.appendChild(b);
     });
