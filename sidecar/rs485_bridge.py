@@ -310,6 +310,13 @@ class Bridge:
             aq.send_key(k)
             self._lcd.wait_for_change(settle)
             return
+        aq._send_queue.put({'frame': self._remote_frame(k)})
+        # Give the panel a moment to transmit + reflect the change.
+        self._lcd.wait_for_change(settle)
+
+    def _remote_frame(self, k):
+        """Build a REMOTE_WIRED key-event frame for key `k` (value <= 0xffff)."""
+        aq = self._aq
         frame = bytearray()
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_STX)
@@ -320,9 +327,40 @@ class Bridge:
         aq._append_data(frame, crc.to_bytes(2, byteorder='big'))
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_ETX)
-        aq._send_queue.put({'frame': frame})
-        # Give the panel a moment to transmit + reflect the change.
-        self._lcd.wait_for_change(settle)
+        return bytes(frame)
+
+    def cycle_key(self, key_name, count, off_ms, on_ms):
+        """Blind, precisely-timed power-cycle of a TOGGLE circuit (e.g. LIGHTS)
+        for ColorLogic-style program advancing: press (->off), wait off_ms,
+        press (->on), wait on_ms — `count` times — and leave it ON.
+
+        Open-loop: no per-press confirmation (that's the point — it must be
+        fast). ASSUMES the circuit starts ON. Each press is a REMOTE_WIRED
+        toggle queued to the keep-alive-timed send path, so the *effective*
+        off/on durations are quantized to ~1 keep-alive (~150ms) at minimum —
+        the whole reason we calibrate off_ms/on_ms against the real light.
+
+        Returns the number of presses queued. Only handles <=0xffff keys."""
+        aq = self._aq
+        if aq is None:
+            raise RuntimeError('not connected')
+        k = getattr(Keys, key_name, None)
+        if k is None:
+            raise ValueError(f'unknown key: {key_name}')
+        if int(k.value) > 0xffff:
+            raise ValueError(f'{key_name} is a wireless key; cycle only supports '
+                             'wired toggle circuits (LIGHTS, AUX_x)')
+        frame = self._remote_frame(k)
+        presses = 0
+        for i in range(count):
+            aq._send_queue.put({'frame': frame})   # -> OFF
+            presses += 1
+            time.sleep(off_ms / 1000.0)
+            aq._send_queue.put({'frame': frame})   # -> ON
+            presses += 1
+            if i < count - 1:
+                time.sleep(on_ms / 1000.0)
+        return presses
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -367,15 +405,20 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {'error': 'not found'})
 
+    def _read_body(self):
+        length = int(self.headers.get('Content-Length', 0))
+        return json.loads(self.rfile.read(length) or b'{}')
+
     def do_POST(self):
-        if self.path != '/key':
+        if self.path not in ('/key', '/cycle'):
             self._send_json(404, {'error': 'not found'})
             return
         if not self._authed():
             return
+        if self.path == '/cycle':
+            return self._do_cycle()
         try:
-            length = int(self.headers.get('Content-Length', 0))
-            data = json.loads(self.rfile.read(length) or b'{}')
+            data = self._read_body()
             key = data['key']
             settle = float(data.get('settle', 0.35))
         except (ValueError, KeyError, TypeError) as e:
@@ -388,6 +431,36 @@ class Handler(BaseHTTPRequestHandler):
             return
         # Return a fresh snapshot so the caller sees the post-press frame.
         self._send_json(200, self.bridge.snapshot())
+
+    def _do_cycle(self):
+        """POST /cycle {key, count, off_ms, on_ms} — blind power-cycle a toggle
+        circuit for ColorLogic light-program advancing. Bounded to avoid a
+        runaway relay-mash. The circuit must already be ON."""
+        try:
+            data = self._read_body()
+            key = data.get('key', 'LIGHTS')
+            count = int(data['count'])
+            off_ms = float(data['off_ms'])
+            on_ms = float(data['on_ms'])
+        except (ValueError, KeyError, TypeError) as e:
+            self._send_json(400, {'error': f'bad request: {e}'})
+            return
+        # Safety bounds: cap cycles (17 programs + slack) and pulse widths.
+        if not (1 <= count <= 40):
+            self._send_json(400, {'error': 'count must be 1..40'})
+            return
+        if not (20 <= off_ms <= 5000) or not (20 <= on_ms <= 5000):
+            self._send_json(400, {'error': 'off_ms/on_ms must be 20..5000'})
+            return
+        try:
+            t0 = time.monotonic()
+            presses = self.bridge.cycle_key(key, count, off_ms, on_ms)
+        except (ValueError, RuntimeError) as e:
+            self._send_json(400, {'error': str(e)})
+            return
+        self._send_json(200, {'ok': True, 'key': key, 'cycles': count,
+                              'presses': presses,
+                              'elapsed_ms': round((time.monotonic() - t0) * 1000)})
 
     def log_message(self, fmt, *args):
         pass  # quiet — systemd journal would double-log otherwise
