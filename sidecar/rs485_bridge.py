@@ -301,11 +301,15 @@ class Bridge:
         if k is None:
             raise ValueError(f'unknown key: {key_name}')
         if int(k.value) > 0xffff:
-            # >0xffff keys (e.g. HEATER_1) are WIRELESS-frame keys in aqualogic;
-            # they don't fit the 2-byte REMOTE_WIRED key field. Fail cleanly
-            # rather than OverflowError. (Heater enable via bridge is TODO.)
-            raise ValueError(f'{key_name} is a wireless key (value>0xffff); '
-                             'REMOTE_WIRED framing not supported')
+            # Wireless-frame key (e.g. HEATER_1): the 4-byte key value doesn't
+            # fit the 2-byte REMOTE_WIRED key field. Let aqualogic build the
+            # WIRELESS_KEY_EVENT frame; it queues to the same _send_queue our
+            # keep-alive timing patch drains, so it gets the same accept-window
+            # targeting. NOTE: HEATER_1 over direct serial is UNVERIFIED — the
+            # AquaConnect path uses KeyId=13 instead; test deliberately.
+            aq.send_key(k)
+            self._lcd.wait_for_change(settle)
+            return
         frame = bytearray()
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_STX)
