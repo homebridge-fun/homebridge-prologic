@@ -974,7 +974,11 @@
         body: JSON.stringify(obj) });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      msg('✓ fired ' + note + '. What did you actually see — moving or static?');
+      const b = j.bridge || {};
+      const detail = 'presses=' + (b.presses ?? '?')
+        + ' reset_off=' + (b.reset_confirmed_off ?? '?')
+        + ' start_on=' + (b.start_on ?? '?') + ' frame=' + (b.frame ?? '?');
+      msg('✓ ' + note + '  [' + detail + ']. Saw: moving or static? how many dark→on?');
     } catch (e) { msg('⚠ ' + note + ' failed: ' + e.message); }
   }
   const fire = (n, name, type) => {
