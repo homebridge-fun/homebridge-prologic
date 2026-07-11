@@ -563,9 +563,11 @@ Confirmed by raw sniff (`sidecar/rs485_sniff.py`):
 - `01 02` LEDs, `xx` pump/status frames.
 
 ### 16.4 Key framing
-The daemon sends **REMOTE_WIRED** (`00 03`) key-event frames (mirrors the
-sidecar's `_send_key_remote`). The 2-byte key field means **keys with value
-> 0xffff (wireless-frame keys such as `HEATER_1`) cannot be sent this way** — the
-daemon rejects them with a 400. Heater-enable over the bridge is a follow-up.
-The `_write_to_serial` `.send()`→`.write()` bug in `aqualogic==3.4` is patched in
-the daemon at class level.
+The daemon sends **REMOTE_WIRED** (`00 03`) key-event frames for keys ≤ 0xffff
+(mirrors the sidecar's `_send_key_remote`; nav keys are dead as LOCAL, AUX
+confirmed as REMOTE). Keys with value **> 0xffff** (e.g. `HEATER_1`) don't fit
+the 2-byte REMOTE_WIRED field, so the daemon falls back to aqualogic's own
+**WIRELESS** (`00 83`) frame, queued to the same keep-alive-timed send path.
+**Verified 2026-07-10:** a `HEATER_1` press flips the `HEATER_AUTO_MODE` bit over
+direct serial. The `_write_to_serial` `.send()`→`.write()` bug in `aqualogic==3.4`
+is patched in the daemon at class level.

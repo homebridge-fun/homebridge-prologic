@@ -249,9 +249,10 @@ persisted to `backend.json`).
   *during menu navigation* — without the patch the navigator is blind. Mirrors the sidecar's
   `_install_key_burst` LCD patch.
 
-**Known gap:** `HEATER_1` is a >0xffff wireless-frame key that doesn't fit the 2-byte
-REMOTE_WIRED key field; the daemon rejects it with a clean 400. Heater-enable via the bridge
-is a follow-up.
+**HEATER_1** is a >0xffff key that doesn't fit the 2-byte REMOTE_WIRED field, so the daemon
+sends it via aqualogic's **WIRELESS** frame instead (queued to the same keep-alive-timed send
+path). **Verified on hardware 2026-07-10** — a keypress flips the `HEATER_AUTO_MODE` bit
+False→True→False over direct serial.
 
 ---
 
