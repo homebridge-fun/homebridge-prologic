@@ -33,21 +33,37 @@ automatically via systemd.
 [Hayward ACHN]  │  POST /WNewSt.htm (KeyId=NN&)            ←keypress     │
 [192.168.50.100]└────────────────────────────────────────────────────────┘
        OR                           ↕ TCP/HTTP (picky GoAhead server)
-                ┌─ RS-485 backend ────────────────────────────────────────┐
-[AquaPlus panel]│  RS-485 broadcast frames (status)                       │
-[J2/J4]         │  RS-485 key commands (circuit toggles, menu nav)        │
+                ┌─ rs485bridge backend (CURRENT direction) ──────────────┐
+                │  GET  /state  ← decoded snapshot (poll)                │
+[AquaPlus panel]│  POST /key    ← one REMOTE_WIRED keypress              │
+[J2/J4]         │  GET  /keys   ← valid Keys enum names                  │
+   │            └────────────────────────────────────────────────────────┘
+   │ direct USB-RS485        ↕ HTTP over Tailscale (tailnet IP)
+   │ (19200/8N2, FTDI        │
+   │  latency_timer=1)  [Pi Zero 2 W @ pad: rs485_bridge.py ← pool-bridge]
+       OR                           (owns serial + timing; 100% writes)
+                ┌─ rs485 backend (legacy TCP bridge) ────────────────────┐
+[AquaPlus panel]│  RS-485 broadcast frames (status) / key commands       │
 [USR-W610 bridge└────────────────────────────────────────────────────────┘
-@ 192.168.68.101]           ↕ TCP (raw RS-485 byte stream)
+@ 192.168.68.101]           ↕ TCP (raw RS-485 byte stream — writes unreliable)
 
-                     [Pi 4: pool_service.py  ← systemd: pool-sidecar]
+                     [Pi 4 "hop": pool_service.py ← systemd: pool-sidecar]
                               ↕ localhost:5757 REST
                      [Pi 4: Homebridge + TypeScript plugin]
                               ↕ HAP
                      [HomeKit / iPhone]
 ```
 
-The Python sidecar (`pool_service.py`) runs as a systemd service. The Homebridge TypeScript
-plugin polls the sidecar's `/status` REST endpoint every `pollInterval` ms (default 5000).
+The Python sidecar (`pool_service.py`) runs as a systemd service on the "hop" Pi (venv
+interpreter `/opt/pool-sidecar/venv/bin/python`). The Homebridge TypeScript plugin polls the
+sidecar's `/status` REST endpoint every `pollInterval` ms (default 5000).
+
+**Three navigation backends** (selected by `backend` in `backend.json` / `--backend`):
+`aquaconnect` (HTTP to the AquaConnect box), `rs485` (legacy raw TCP serial bridge — reads
+work, **writes are unreliable** because network latency misses the panel's keypress-accept
+window), and **`rs485bridge`** (the current direction — a thin daemon on a pad-mounted Pi Zero
+2 W owns the serial link and timing, exposing a small HTTP API the hop consumes over Tailscale).
+See §4.1.
 
 ---
 
@@ -196,6 +212,46 @@ AUX1, AUX2, SPILLOVER, HEATER1).
 
 **Not available from broadcasts** (menu navigation required):
 heater setpoints, heater enable/disable state, chlorinator % writes, VSP slot speeds.
+
+### 4.4 RS-485 Smart Bridge (`rs485bridge` backend — current direction)
+
+The legacy `rs485` backend reaches the panel through a TCP serial bridge (USR-W610); reads
+work but **writes are unreliable** — the network round-trip misses the panel's narrow
+post-keep-alive keypress-accept window (see automation-spec §0). The fix is **direct serial**,
+but the panel is at the pad, far from the hop. So a **thin daemon runs on a pad-mounted
+Pi Zero 2 W** (`sidecar/rs485_bridge.py`, systemd `pool-bridge`) that owns the USB-RS485 link
+and all timing, and the hop's sidecar drives it over HTTP/Tailscale via the `rs485bridge`
+backend (`RS485BridgeBackend`). "Smart bridge, thin protocol": the daemon owns serial +
+timing; **all menu semantics stay in the sidecar's `MenuNavigator`.**
+
+**Daemon HTTP API** (bound to the tailnet IP; `/health` open, `/state`+`/key` optionally
+token-gated — see `deploy/README-PAD.md`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | liveness `{ok, connected}` |
+| GET | `/state` | decoded snapshot: `lcd`, `circuits{}`, temps, salt, chlorinator, pump, `valve_mode`, `heater_active` |
+| POST | `/key` | `{"key":"RIGHT"}` — queue one REMOTE_WIRED keypress, settle, return a fresh `/state` |
+| GET | `/keys` | valid aqualogic `Keys` enum names (the sidecar sends exact names) |
+
+**`RS485BridgeBackend`** mirrors `AquaConnectBackend`'s surface (`lcd` + `send_nav_key`): a
+background poll maps `/state` into the global `PoolState`; `send_nav_key` POSTs `/key`, applies
+the post-press snapshot, and waits one frame for a settled re-read. `_bridge_key_name` maps
+sidecar names (`AUX2`, `HEATER1`, `POOL`/`SPA`/`SPILLOVER`) to enum names (`AUX_2`, `HEATER_1`,
+`POOL_SPA`). Config: `--rs485bridge-host/-port/-token` (token from `RS485_BRIDGE_TOKEN`, never
+persisted to `backend.json`).
+
+**Two hard-won requirements on the pad** (both in the daemon / deploy):
+- **FTDI `latency_timer=1`** (`deploy/99-ftdi-low-latency.rules`). At the 16ms default, ~2/3
+  of keypresses miss the accept window (33% landing); at 1ms, **100%**. Persisted via udev;
+  the daemon warns if it finds anything but 1.
+- **`LONG_DISPLAY_UPDATE` (0x04 0x0a) capture.** aqualogic drops these, but they carry the LCD
+  *during menu navigation* — without the patch the navigator is blind. Mirrors the sidecar's
+  `_install_key_burst` LCD patch.
+
+**Known gap:** `HEATER_1` is a >0xffff wireless-frame key that doesn't fit the 2-byte
+REMOTE_WIRED key field; the daemon rejects it with a clean 400. Heater-enable via the bridge
+is a follow-up.
 
 ---
 
@@ -760,8 +816,9 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 | Canary-probe wedge skips power-cycle cooldown | Done | Fixed 2026-06-30: the active-canary-probe wedge path now also sets `wedge_detected_at`, so the 120s `_WEDGE_POWERCYCLE_COOLDOWN_S` engages (matching the "2 unconfirmed writes" path). The sidecar now blocks commands + defers probing for the reboot window instead of re-probing every 30s and racing the auto power-cycle plug |
 | Pool active-slot highlight | Done | Cockpit highlights the running pool speed from `vsp_active_slot`. Parsed from two confirmed panel formats: the idle scroll line `Filter Speed 50% Speed2` and the brief startup slot-selection window `Filter On:Spd2 +/- to change` (the WBON `<span>` is stripped first). Right after a restart the field is `None` until one of those scrolls past |
 | RS-485 backend: reads | Done | Verified on three TCP bridges; live state decodes cleanly (observer-confirmed) |
-| RS-485 backend: writes | **Direct-serial writes CONFIRMED working 2026-07-10** | **Writes do NOT work over a TCP serial bridge** — the bridge's network latency misses the panel's keypress-response window (see automation-spec §0). Reliable writes need **direct serial**. Hardware chosen: a **Pi Zero 2 W** (confirmed `RP3A0-AU`/BCM2710A1, quad-core, WiFi) mounted **at the pad**, powered locally, isolated USB-RS485 adapter, avoiding any long RS-485 run to the house. `aqualogic`'s own `connect_serial()` already supports this (19200/8N2, matches spec) — confirmed via `sidecar/serial_smoketest.py`, a standalone hardware-only test (bypasses the sidecar, uses the vanilla library's `connect_serial`/`get_state`/`send_key`, toggles the AUX_2 canary to confirm writes land) run **before** any sidecar work, to isolate hardware/wiring problems from software ones. **Progress 2026-07-10:** hardware wired at the pad (Pin 2/4 → adapter A+/B+, PE left disconnected per spec's "ground not required on short runs"). `serial_smoketest.py` confirmed the **physical link is fully working** — 7 clean read frames (pool_temp/air_temp/AUX_2 decoded correctly) before hitting a **library bug**: `aqualogic==3.4`'s `_write_to_serial()` calls `self._serial.send(data)`, but `pyserial.Serial` has no `.send()` (only `.write()`) — an untested code path in the library itself, not a hardware issue. Worked around in the smoke test via a runtime monkeypatch (`AquaLogic._write_to_serial = ...` using `.write()`). **This will need the same monkeypatch in `pool_service.py`'s `--serial-device` path** (mirrors the existing `_install_key_burst` monkeypatch pattern) — pin/patch this before relying on `aqualogic>=2.4.0` as installed via `requirements.txt`; consider pinning an exact tested version once direct-serial write confirmation completes. **WRITE CONFIRMED 2026-07-10:** after the `_write_to_serial` fix, `serial_smoketest.py` toggled AUX_2 (`False → True`) using the vanilla library's **default LOCAL_WIRED** frame — no REMOTE_WIRED fallback needed. This is a significant finding: it confirms the original root-cause theory cleanly — the write failure was **always** about the TCP bridge's network round-trip latency blowing the panel's keypress-response window (see automation-spec §0), **not** about key-event frame type. On true direct serial (no bridge, no network hop), even the simplest LOCAL_WIRED frame lands. Derisks the whole migration considerably. **Still open:** (1) implement `--serial-device` in the sidecar (currently only knows TCP bridge host:port) — must include the `_write_to_serial` monkeypatch found here, (2) pin an exact tested `aqualogic` version in `requirements.txt` (currently `>=2.4.0`, floating; confirmed working version is `3.4` with the write-path patch), (3) decide single-sidecar-on-pad vs keep-AquaConnect-as-fallback, (4) set up the Cloudflare Tunnel (`deploy/CLOUDFLARE-PAD.md`, plugin-side support already merged) once the sidecar itself is running on the pad Pi |
-| Pad-Pi network access | **Decided: Tailscale, not Cloudflare Tunnel** | Security goal unchanged: the pad Pi sits on eero's **isolated guest WiFi network** (direct physical pool control; eero has no VLAN/ACL exceptions, so full isolation was the only eero-native option) with no LAN reachability to `homebridge-hop`. **Chosen bridge: Tailscale** (already used elsewhere in this project) — same outbound-only/no-inbound-port property as Cloudflare Tunnel, but (a) no internet-dependency regression for local control (a direct WireGuard peer path, once established, tends to keep working across a WAN outage; Cloudflare Tunnel *always* routes via Cloudflare's edge, no local shortcut), (b) device-identity auth instead of a bearer secret in plugin config, (c) **zero plugin code changes needed** — `sidecarHost` just points at the pad Pi's tailnet IP, the existing plain host:port client path is unchanged. Status: Tailscale installed + authenticated on the pad Pi, tailnet IP obtained. Cloudflare Access support (`sidecarBaseUrl`/`sidecarAccessClientId`/`sidecarAccessClientSecret` in `src/sidecarClient.ts`/`settings.ts`/`config.schema.json`, `deploy/CLOUDFLARE-PAD.md`) stays in the codebase as a option for a different use case (revocable third-party/script access) but is **not** the chosen path for this Homebridge↔sidecar link. Sequencing unchanged: prove Homebridge→sidecar reachability over Tailscale while the pad Pi is still on the main LAN, migrate its WiFi to the guest network last |
+| RS-485 smart bridge (writes) | **DONE — pad daemon: 100% keypress landing 2026-07-10** | Full architecture in §4.4. Direct serial from a pad Pi Zero 2 W solved the write problem the TCP bridge couldn't. Root cause of the residual ~33% landing was the **FTDI USB-serial `latency_timer` (16ms default)**, not the protocol or predelay — pinned to **1ms** via `deploy/99-ftdi-low-latency.rules` → **30/30 & 20/20 presses landed (100%)** vs the TCP bridge's ~60% single-shot. `aqualogic==3.4`'s `_write_to_serial()` `.send()`→`.write()` bug is patched in the daemon; `LONG_DISPLAY_UPDATE` capture added so menu-nav frames are visible. Daemon (`sidecar/rs485_bridge.py`, systemd `pool-bridge`) is autonomous + reboot-hardened; installer + runbook in `deploy/README-PAD.md`. Diagnostics kept: `rs485_bench.py`, `rs485_sniff.py`, `serial_smoketest.py`. **Open:** HEATER_1 (wireless-frame key) not yet sendable over REMOTE_WIRED; pin `aqualogic==3.4` in `requirements.txt`. |
+| rs485bridge backend (sidecar) | **DONE (piece 2b) — testing** | `RS485BridgeBackend` in `pool_service.py` drives the pad daemon over HTTP/Tailscale, mirroring `AquaConnectBackend` (`lcd` + `send_nav_key`) so `MenuNavigator` / `_ac_set_circuit` / prefetch work unchanged. `--backend rs485bridge --rs485bridge-host <tailnet-ip>`; token via `RS485_BRIDGE_TOKEN` (never persisted). §4.4. **Remaining (2c/2d):** plugin `config.schema.json` + `platform.ts` wiring for the bridge backend, HEATER_1 path, inter-press gap retune + measured speedup vs AquaConnect, production cutover. |
+| Pad-Pi network + security | **DONE — main network, tailnet-bound, no secrets** | **Reversed the guest-network plan:** the daemon binds the **tailnet IP only**, so nothing on the local Wi-Fi/LAN can reach it regardless of network — guest isolation added Wi-Fi friction without solving auth. Pad runs on the **main** network (lets Tailscale go direct WireGuard, lower latency than DERP). Auth: token-less by default behind the tailnet bind (a Tailscale ACL is the documented zero-secret option; optional pre-seeded bearer token for defense-in-depth). **No secrets in git** — only the env-var *name* `${RS485_BRIDGE_TOKEN}`; values live in `/etc/pool-bridge.env` (0600) on the pad. Cloudflare Access support stays in the codebase for a different use case but is not this link's path. |
 | Spillover mode | Not tested | Not present on this installation |
 | Valve mode detection lag | ~10–30s | Scroll-dependent; no event-driven update (would benefit from the frame-watcher) |
 | System fault indicator | Done (cockpit) | Fault/alert phrases the panel interleaves into the status scroll (`_FAULT_PHRASES`: Check System, Inspect Cell, No/Check Flow, Low/High Salt, Check PCB, etc.) are tracked with a last-seen time (`_active_faults`, `_FAULT_TTL_S` = 5 min = "still scrolling = still active") and surfaced in `/status['faults']`. Cockpit shows a red banner at the very top listing active faults. **Not** surfaced to HomeKit (owner preference) |

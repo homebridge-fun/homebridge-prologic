@@ -524,3 +524,48 @@ lights, heater, aux on/off — without waiting for the Default screen to cycle.
   (use this to confirm §15.2 offsets against the live box on first connect).
 - `POST /debug/aquaconnect {"keys":["MENU","RIGHT",...]}` — drive a key
   sequence and see the LCD + equipment state after each press.
+
+## 16. Direct-serial RS-485 smart bridge (`rs485bridge`) `[VERIFIED]`
+
+The write problem in §0 (a TCP serial bridge misses the panel's post-keep-alive
+keypress-accept window) is solved by **direct serial from a pad-mounted Pi Zero
+2 W** running `sidecar/rs485_bridge.py` (systemd `pool-bridge`), which the hop's
+sidecar drives over HTTP/Tailscale via `RS485BridgeBackend`. See plugin-spec §4.4
+for the architecture and HTTP API; this section records the protocol-level
+findings from bringing it up on real hardware (2026-07-10).
+
+### 16.1 The keypress-accept window is real, and tiny
+`aqualogic`'s `process()` transmits a queued key **immediately on receiving a
+`FRAME_TYPE_KEEP_ALIVE` (`01 01`)** — already the correct anchor. The keep-alive
+frame is byte-identical every time (`01 01 00 14`), so there is **no device
+address to target**: bus arbitration is timing-only. A single well-timed write
+either lands in the accept window or doesn't.
+
+### 16.2 FTDI `latency_timer` is the whole game
+With the FT232's default **16ms** latency timer, received bytes (incl. the
+keep-alive) are buffered up to 16ms and our write lands ~16–32ms late — **outside
+the window ~2/3 of the time** (measured: a deterministic ~33% landing that
+*oscillates* with any added predelay, i.e. aliasing against the keep-alive, not a
+window we can tune into). Setting **`latency_timer=1`** → **100% landing**
+(30/30, 20/20). This is pinned via `deploy/99-ftdi-low-latency.rules` and
+survives reboot/replug; the daemon warns loudly if it ever reads back ≠ 1.
+**A fixed predelay is the wrong lever** — 0ms (immediate write) is optimal once
+the latency timer is 1ms.
+
+### 16.3 Frame types on this panel
+Confirmed by raw sniff (`sidecar/rs485_sniff.py`):
+- `01 01` keep-alive (~70% of frames) — the send anchor.
+- `01 03` short `DISPLAY_UPDATE` — idle-scroll LCD (temps, salt, %).
+- `04 0a` `LONG_DISPLAY_UPDATE` — **the full 2×16 LCD during menu navigation.**
+  `aqualogic` drops these by default, so the daemon patches `process()` to decode
+  them (last 40 bytes, strip bit-7, `\xdf`→`°`) — otherwise the navigator is blind
+  while any menu is open.
+- `01 02` LEDs, `xx` pump/status frames.
+
+### 16.4 Key framing
+The daemon sends **REMOTE_WIRED** (`00 03`) key-event frames (mirrors the
+sidecar's `_send_key_remote`). The 2-byte key field means **keys with value
+> 0xffff (wireless-frame keys such as `HEATER_1`) cannot be sent this way** — the
+daemon rejects them with a 400. Heater-enable over the bridge is a follow-up.
+The `_write_to_serial` `.send()`→`.write()` bug in `aqualogic==3.4` is patched in
+the daemon at class level.

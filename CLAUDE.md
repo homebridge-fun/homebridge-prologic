@@ -13,9 +13,29 @@
 ## Deploy layout
 - Dev checkout: `/home/greg/development/homebridge-prologic`
 - Sidecar runs from `/opt/pool-sidecar/pool_service.py` (systemd: `pool-sidecar`)
+- **Sidecar interpreter is a venv**: `/opt/pool-sidecar/venv/bin/python`
+  (has Flask + aqualogic; the system `python3` does NOT). Use it to run the
+  sidecar or a test instance by hand.
 - Plugin `dist/` is the same directory as
   `/var/lib/homebridge/node_modules/homebridge-prologic/dist/` (no `cp dist/*`
   needed after `npm run build`).
+
+### Pad-Pi RS-485 smart bridge
+- A separate Pi Zero 2 W at the pad runs the direct-serial bridge daemon
+  (`sidecar/rs485_bridge.py`, systemd: `pool-bridge`), reached from the hop over
+  Tailscale. Setup + re-image runbook: `deploy/README-PAD.md`. The hop sidecar
+  talks to it via the `rs485bridge` backend.
+
+### Running a test sidecar instance (no prod impact)
+Use the venv python, an isolated config, and a spare API port; point it at the
+pad bridge by **tailnet IP** (MagicDNS name `pool` may not resolve on the hop):
+```bash
+SIDECAR_CONFIG=/tmp/bridge-test.json /opt/pool-sidecar/venv/bin/python \
+  sidecar/pool_service.py --backend rs485bridge \
+  --rs485bridge-host 100.107.169.120 --api-port 5758
+```
+`SIDECAR_CONFIG` isolates `backend.json` so the test can't read/clobber the
+production `/opt/pool-sidecar/backend.json`.
 
 ### Standard deploy
 Block 1 — Homebridge terminal:
