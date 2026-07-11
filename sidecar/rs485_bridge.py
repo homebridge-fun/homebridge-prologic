@@ -435,27 +435,19 @@ class Bridge:
         st = getattr(States, key_name, None)
         presses = 0
 
-        def read_on():
-            return self._get_state_safe(st) if st is not None else None
-
-        # 1. Verified ensure-OFF. Seed from the caller's settled state; fall back
-        #    to our own (settled) read. Then toggle+confirm up to 3 times.
+        # 1. Ensure OFF — trust the caller's SETTLED state (the sidecar's steady
+        #    poll), not the daemon's racy per-frame read. At most ONE press: a
+        #    retry loop on unreliable reads was firing extra toggles and
+        #    corrupting the count. If state is unknown, do a single settled read.
         on = start_on
         if on is None:
             time.sleep(0.3)
-            on = read_on()
-        confirmed_off = (on is False)
-        for _ in range(3):
-            if on is False:
-                confirmed_off = True
-                break
-            aq._send_queue.put({'frame': frame})   # toggle (expected -> OFF)
+            on = self._get_state_safe(st) if st is not None else None
+        if on:   # currently ON -> one press to turn it off
+            aq._send_queue.put({'frame': frame})
             presses += 1
-            time.sleep(0.8)
-            on = read_on()
-            if on is None:        # can't confirm; trust the toggle
-                confirmed_off = False
-                break
+            time.sleep(0.8)     # let the OFF register before the reset hold
+        confirmed_off = (on is False) or (on is True)  # we acted; None = unknown
         # 2. Hold off for the reset window.
         time.sleep(reset_ms / 1000.0)
         # 3. n power-restores, ending ON. First restore = baseline program.
