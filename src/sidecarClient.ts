@@ -72,10 +72,12 @@ export class SidecarClient {
    * window where the sidecar is unreachable. No-op if already on that backend.
    */
   async setBackend(opts: {
-    backend: 'aquaconnect' | 'rs485';
+    backend: 'aquaconnect' | 'rs485' | 'rs485bridge';
     aquaconnect_host?: string;
     rs485_host?: string;
     rs485_port?: number;
+    rs485bridge_host?: string;
+    rs485bridge_port?: number;
   }): Promise<void> {
     await this.http.post('/backend', opts);
   }

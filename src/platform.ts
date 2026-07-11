@@ -53,6 +53,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       pollInterval: config['pollInterval'] ?? 5000,
       backend: config['backend'] ?? 'aquaconnect',
       aquaconnectHost: config['aquaconnectHost'] ?? '192.168.50.100',
+      rs485bridgeHost: config['rs485bridgeHost'] || undefined,
+      rs485bridgePort: config['rs485bridgePort'] ?? 8899,
       rs485Host: config['rs485Host'] ?? '192.168.50.101',
       rs485Port: config['rs485Port'] ?? 8899,
       circuits: config['circuits'] ?? ['FILTER', 'LIGHTS', 'HEATER_1'],
@@ -261,6 +263,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       await this.sidecar.setBackend({
         backend: this.cfg.backend,
         aquaconnect_host: this.cfg.aquaconnectHost,
+        rs485bridge_host: this.cfg.rs485bridgeHost,
+        rs485bridge_port: this.cfg.rs485bridgePort,
         rs485_host: this.cfg.rs485Host,
         rs485_port: this.cfg.rs485Port,
       });

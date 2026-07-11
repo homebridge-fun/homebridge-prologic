@@ -59,8 +59,10 @@ export interface PlatformConfig {
   sidecarAccessClientId?: string;
   sidecarAccessClientSecret?: string;
   pollInterval: number;
-  backend: 'aquaconnect' | 'rs485';
+  backend: 'aquaconnect' | 'rs485' | 'rs485bridge';
   aquaconnectHost: string;
+  rs485bridgeHost?: string;
+  rs485bridgePort: number;
   rs485Host: string;
   rs485Port: number;
   circuits: Circuit[];
