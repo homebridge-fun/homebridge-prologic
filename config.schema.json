@@ -37,11 +37,10 @@
         "type": "string",
         "default": "aquaconnect",
         "oneOf": [
-          { "title": "AquaConnect (HTTP web box)", "enum": ["aquaconnect"] },
           { "title": "RS-485 Smart Bridge (pad Pi, direct serial)", "enum": ["rs485bridge"] },
-          { "title": "RS-485 (legacy TCP serial bridge)", "enum": ["rs485"] }
+          { "title": "AquaConnect (HTTP web box)", "enum": ["aquaconnect"] }
         ],
-        "description": "Which navigation backend the sidecar should use. Changing this restarts the sidecar to apply. 'RS-485 Smart Bridge' is the recommended direct-serial path: a small daemon on a pad-mounted Pi owns the serial link (100% reliable keypresses), reached over Tailscale. The legacy 'RS-485 (TCP serial bridge)' reads reliably but writes are unreliable (network latency misses the panel's keypress window)."
+        "description": "Which navigation backend the sidecar should use. Changing this restarts the sidecar to apply. 'RS-485 Smart Bridge' is the recommended direct-serial path: a small daemon on a pad-mounted Pi owns the serial link (100% reliable keypresses), reached over Tailscale. 'AquaConnect' drives the HTTP web box (fallback)."
       },
       "aquaconnectHost": {
         "title": "AquaConnect Host",
@@ -59,18 +58,6 @@
         "type": "integer",
         "default": 8899,
         "description": "HTTP port of the pad-Pi smart bridge daemon (used when backend = rs485bridge)."
-      },
-      "rs485Host": {
-        "title": "RS-485 Bridge Host (legacy)",
-        "type": "string",
-        "default": "192.168.50.101",
-        "description": "IP of the legacy RS-485 TCP serial bridge (used when backend = rs485)."
-      },
-      "rs485Port": {
-        "title": "RS-485 Bridge Port (legacy)",
-        "type": "integer",
-        "default": 8899,
-        "description": "TCP port of the legacy RS-485 serial bridge (used when backend = rs485)."
       },
       "circuits": {
         "title": "Circuit switches to expose",

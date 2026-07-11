@@ -45,12 +45,10 @@ export interface PlatformConfig {
   sidecarHost: string;
   sidecarPort: number;
   pollInterval: number;
-  backend: 'aquaconnect' | 'rs485' | 'rs485bridge';
+  backend: 'aquaconnect' | 'rs485bridge';
   aquaconnectHost: string;
   rs485bridgeHost?: string;
   rs485bridgePort: number;
-  rs485Host: string;
-  rs485Port: number;
   circuits: Circuit[];
   activeBodies: ('pool' | 'spa' | 'spillover')[];
   enableActiveHeaterThermostat: boolean;

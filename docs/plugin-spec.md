@@ -58,12 +58,14 @@ The Python sidecar (`pool_service.py`) runs as a systemd service on the "hop" Pi
 interpreter `/opt/pool-sidecar/venv/bin/python`). The Homebridge TypeScript plugin polls the
 sidecar's `/status` REST endpoint every `pollInterval` ms (default 5000).
 
-**Three navigation backends** (selected by `backend` in `backend.json` / `--backend`):
-`aquaconnect` (HTTP to the AquaConnect box), `rs485` (legacy raw TCP serial bridge — reads
-work, **writes are unreliable** because network latency misses the panel's keypress-accept
-window), and **`rs485bridge`** (the current direction — a thin daemon on a pad-mounted Pi Zero
-2 W owns the serial link and timing, exposing a small HTTP API the hop consumes over Tailscale).
-See §4.1.
+**Navigation backends** (selected by `backend` in `backend.json` / `--backend`):
+**`rs485bridge`** (current/production — a thin daemon on a pad-mounted Pi Zero 2 W owns the
+serial link and timing, exposing a small HTTP API the hop consumes over Tailscale; §4.4) and
+`aquaconnect` (HTTP to the AquaConnect box; fallback). The legacy `rs485` backend (raw TCP
+serial bridge — reads work, **writes unreliable**) is **deprecated**: removed from the plugin
+UI/config 2026-07-10, superseded by `rs485bridge`. Its sidecar-internal code
+(`panel_thread`/`RealPanel`/`_install_key_burst` + the `/benchmark/rs485` & nav-sweep tooling)
+is slated for removal in a focused follow-up (see §10.2).
 
 ---
 
@@ -804,6 +806,7 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 
 | Item | Priority | Notes |
 |---|---|---|
+| **Remove legacy `rs485` backend from the sidecar** | Med | Plugin UI/config already removed it (2026-07-10); production is on `rs485bridge`. Sidecar-internal excision is a ~400-line refactor entangled with key-timing globals (`KEY_BURST`/`KEY_PREDELAY_MS`), the wedge-probe machinery, and the `/benchmark/rs485` + `/debug/nav-sweep`/`nav-benchmark`/`rawkey`/`taptest` + `/keytiming` tooling — and touches the `/status` path. Do it as its OWN pass with a sidecar **boot-test on `rs485bridge` + `aquaconnect` + `--simulate`** before deploy (a `/status` regression takes HomeKit + cockpit offline). Remove: `panel_thread`, `RealPanel`, `rs485_observer_thread`, `_install_key_burst`, the `observe_rs485` args/config, and the rs485 debug/benchmark routes. KEEP: `SimPanel`/`--simulate`, `_get_panel`, `_get_navigator`. |
 | **Code-review follow-ups (COMPLETE 2026-07-10)** | Done | Full 3-way code review done (sidecar/plugin/cockpit). HTML-escaping of fault/label innerHTML; FILTER-off-during-heater-cooldown cry-wolf guard; #1 removed pump/VSP speeds from HomeKit (plugin side — commit `366d259`); sidecar + cockpit dead-code cleanup; spec fixes; heater switch ⇄ thermostat sync — all done (sub-rows below). |
 | ↳ Sidecar dead-code cleanup | Done | Removed `activate_vsp_slot` + `/vsp/slot4*` compat routes + `read_vsp_slot4`/`set_vsp_slot4`/`activate_vsp_slot4` aliases; `keypad_press` (unreachable), `_wait_key_sent` (unused), `_AC_SETTLE_S` (unused const). Renamed module-level `_pct` → `_percentile`. Kept `/vsp/slot/<n>` set + `/vsp/spa` (cockpit uses them). |
 | ↳ Spec fixes | Done | (#3) Spa mode documented as the **SPA circuit switch** (renameable via `circuitLabels`); stale `spaModeAccessory.ts` / `enableSpaModeSwitch` references removed. (#4) Thermostat section now matches live behavior (`TargetHeatingCoolingState` driven from armed `heater_enabled`, not pinned to Heat). `HEATER_1` keycode corrected `0D`→`13`. automation-spec §15.4 rewritten for the frame-reader (retired the 3 s settle + `KeyId=00` reread). |
