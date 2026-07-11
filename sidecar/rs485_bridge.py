@@ -362,15 +362,17 @@ class Bridge:
                 time.sleep(on_ms / 1000.0)
         return presses
 
-    def select_program(self, key_name, n, reset_ms=4000, off_ms=120, on_ms=250):
+    def select_program(self, key_name, n, reset_ms=4000, off_ms=120, on_ms=250,
+                       start_on=None):
         """Select ColorLogic program `n` (1..17) by the ABSOLUTE reset procedure:
         ensure the light is fully OFF, hold it off `reset_ms` (resets to
         baseline), then do `n` power-restores (end ON) so it lands on program n.
 
-        Matches the physical procedure: full off a few seconds, then a rapid
-        on/off sequence counted to the program number, left on. Open-loop and
-        blind — each toggle is a keep-alive-timed REMOTE_WIRED press (~150ms
-        floor), which is exactly what we're calibrating. Returns timing info."""
+        The reset is now VERIFIED, not a single racy read: `start_on` (the
+        sidecar's settled poll of the LIGHTS circuit) seeds the current state,
+        and we confirm the light is actually off (re-reading between presses)
+        before the reset hold — an unreliable reset made every count start from
+        a random program. Returns timing + how the reset resolved."""
         aq = self._aq
         if aq is None:
             raise RuntimeError('not connected')
@@ -381,17 +383,33 @@ class Bridge:
             raise ValueError(f'{key_name} is a wireless key; program-cycle only '
                              'supports wired toggle circuits (LIGHTS, AUX_x)')
         frame = self._remote_frame(k)
-        presses = 0
-        # 1. Ensure OFF — the reset-to-baseline needs a clean full-off first.
         st = getattr(States, key_name, None)
-        cur = self._get_state_safe(st) if st is not None else None
-        if cur:  # currently ON -> one press to turn it off
-            aq._send_queue.put({'frame': frame})
+        presses = 0
+
+        def read_on():
+            return self._get_state_safe(st) if st is not None else None
+
+        # 1. Verified ensure-OFF. Seed from the caller's settled state; fall back
+        #    to our own (settled) read. Then toggle+confirm up to 3 times.
+        on = start_on
+        if on is None:
+            time.sleep(0.3)
+            on = read_on()
+        confirmed_off = (on is False)
+        for _ in range(3):
+            if on is False:
+                confirmed_off = True
+                break
+            aq._send_queue.put({'frame': frame})   # toggle (expected -> OFF)
             presses += 1
-            time.sleep(1.0)     # let the OFF register before the reset hold
+            time.sleep(0.8)
+            on = read_on()
+            if on is None:        # can't confirm; trust the toggle
+                confirmed_off = False
+                break
         # 2. Hold off for the reset window.
         time.sleep(reset_ms / 1000.0)
-        # 3. n power-restores, ending ON. First restore = program 1.
+        # 3. n power-restores, ending ON. First restore = baseline program.
         aq._send_queue.put({'frame': frame})   # -> ON (program 1)
         presses += 1
         for _ in range(n - 1):
@@ -401,7 +419,8 @@ class Bridge:
             time.sleep(off_ms / 1000.0)
             aq._send_queue.put({'frame': frame})   # -> ON (advance)
             presses += 1
-        return presses
+        return {'presses': presses, 'reset_confirmed_off': confirmed_off,
+                'start_on': start_on}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -516,6 +535,7 @@ class Handler(BaseHTTPRequestHandler):
             reset_ms = float(data.get('reset_ms', 4000))
             off_ms = float(data.get('off_ms', 120))
             on_ms = float(data.get('on_ms', 250))
+            start_on = data.get('start_on')  # sidecar's settled LIGHTS state
         except (ValueError, KeyError, TypeError) as e:
             self._send_json(400, {'error': f'bad request: {e}'})
             return
@@ -530,13 +550,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             t0 = time.monotonic()
-            presses = self.bridge.select_program(key, n, reset_ms, off_ms, on_ms)
+            info = self.bridge.select_program(key, n, reset_ms, off_ms, on_ms,
+                                              start_on=start_on)
         except (ValueError, RuntimeError) as e:
             self._send_json(400, {'error': str(e)})
             return
-        self._send_json(200, {'ok': True, 'key': key, 'program': n,
-                              'presses': presses,
-                              'elapsed_ms': round((time.monotonic() - t0) * 1000)})
+        self._send_json(200, dict({'ok': True, 'key': key, 'program': n,
+                                   'elapsed_ms': round((time.monotonic() - t0) * 1000)},
+                                  **info))
 
     def log_message(self, fmt, *args):
         pass  # quiet — systemd journal would double-log otherwise

@@ -315,10 +315,10 @@
     #scene_cal .hint { font-size: 13px; color: var(--dim); }
   </style>
   <div class="card">
-    <h2 class="hrow">Pool Light Scenes <button class="lockbtn" id="scene_cal_toggle">⚙ Calibrate</button></h2>
+    <h2 class="hrow">Pool Light Scenes</h2>
     <div id="scene_btns">loading…</div>
     <div id="scene_msg"></div>
-    <div id="scene_cal" style="display:none">
+    <div id="scene_cal">
       <div class="crow">
         <label>reset ms<input id="sc_reset" type="number"></label>
         <label>off ms<input id="sc_off" type="number"></label>
@@ -1008,9 +1008,6 @@
       box.appendChild(b);
     });
   }).catch(e => { const b = el('scene_btns'); if (b) b.textContent = 'load failed: ' + e.message; });
-  el('scene_cal_toggle').onclick = () => {
-    const c = el('scene_cal'); c.style.display = c.style.display === 'none' ? 'block' : 'none';
-  };
   el('sc_save').onclick = saveCal;
   el('sc_fireraw').onclick = fireRaw;
 })();

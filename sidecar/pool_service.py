@@ -1415,14 +1415,19 @@ class RS485BridgeBackend:
             return None
 
     def select_program(self, key: str, n: int, reset_ms: float,
-                       off_ms: float, on_ms: float) -> Optional[dict]:
+                       off_ms: float, on_ms: float,
+                       start_on: Optional[bool] = None) -> Optional[dict]:
         """Drive the daemon's /program (absolute ColorLogic select) for a light
         circuit. The daemon does the full reset + N-restore power-cycle; this is
-        a thin pass-through. Longer HTTP timeout since the sequence itself takes
-        several seconds (reset hold + rapid restores)."""
+        a thin pass-through. `start_on` is our settled poll of the circuit so the
+        daemon's reset is deterministic (not a racy read). Longer HTTP timeout
+        since the sequence itself takes several seconds."""
         self._req_count += 1
-        body = json.dumps({'key': key, 'n': n, 'reset_ms': reset_ms,
-                           'off_ms': off_ms, 'on_ms': on_ms}).encode()
+        payload = {'key': key, 'n': n, 'reset_ms': reset_ms,
+                   'off_ms': off_ms, 'on_ms': on_ms}
+        if start_on is not None:
+            payload['start_on'] = bool(start_on)
+        body = json.dumps(payload).encode()
         req = urllib.request.Request(
             self._base + '/program', data=body,
             headers=self._headers({'Content-Type': 'application/json'}))
@@ -5170,12 +5175,18 @@ def lights_select(body: str) -> Response:
     off_ms = float(req.get('off_ms', LIGHT_CFG['off_ms']))
     on_ms = float(req.get('on_ms', LIGHT_CFG['on_ms']))
 
+    # The light's settled on/off state (our steady poll, not a racy read) makes
+    # the daemon's reset deterministic.
+    with state_lock:
+        start_on = state.circuits.get(circuit)
+
     # Calibration mode: fire an explicit daemon restore-count, bypassing the
     # name/offset mapping, so we can find which count lands on which scene.
     if req.get('count') is not None:
         raw = _clamp(int(req['count']), 1, 17)
         with _nav_lock:
-            res = _ac_backend.select_program(circuit, raw, reset_ms, off_ms, on_ms)
+            res = _ac_backend.select_program(circuit, raw, reset_ms, off_ms, on_ms,
+                                             start_on=start_on)
         if res is None:
             return jsonify({'error': 'bridge /program failed'}), 502
         return jsonify({'ok': True, 'body': body, 'raw_count': raw, 'bridge': res})
@@ -5201,7 +5212,8 @@ def lights_select(body: str) -> Response:
     name = LIGHT_PROGRAMS[n - 1][0]
     log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
     with _nav_lock:      # serialize against menu nav — both drive the panel
-        res = _ac_backend.select_program(circuit, count, reset_ms, off_ms, on_ms)
+        res = _ac_backend.select_program(circuit, count, reset_ms, off_ms, on_ms,
+                                         start_on=start_on)
     if res is None:
         return jsonify({'error': 'bridge /program failed'}), 502
     # Track last-selected scene per body (best-effort, open-loop).
