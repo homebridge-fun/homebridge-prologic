@@ -168,6 +168,8 @@ class PoolState:
     valve_mode: Optional[str] = None   # 'pool' | 'spa'
     vsp_slot_pct: dict = field(default_factory=dict)  # {1: pct, 2: pct, 3: pct, 4: pct}
     vsp_active_slot: Optional[int] = None  # 1-4; set on activate, None = unknown
+    # Last ColorLogic scene selected per body ({'pool': n, 'spa': n}); open-loop.
+    light_program: dict = field(default_factory=dict)
     connected: bool = False
     last_update: float = 0.0
     # True when the AquaConnect box has entered read-only mode (commands ACKed
@@ -663,6 +665,44 @@ def _install_key_burst(AquaLogic) -> None:
     AquaLogic.get_state = _get_state_safe
     log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms pad=%d',
              KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_PAD_BYTES)
+
+# Hayward Universal ColorLogic (UCL) light programs, in the panel's power-cycle
+# order (1..17). 'show' = color-changing/moving, 'fixed' = static color — the
+# only distinction reliably observable without color vision. Selected by the
+# absolute reset procedure (full off -> N power-restores) via the pad daemon's
+# /program. LIGHT_PROGRAM_OFFSET calibrates the count-to-program mapping if the
+# panel's first-restore isn't program 1 (see /lights/programs + calibration).
+LIGHT_PROGRAMS = [
+    ('Voodoo Lounge', 'show'),
+    ('Deep Blue Sea', 'fixed'),
+    ('Royal Blue', 'fixed'),
+    ('Afternoon Skies', 'fixed'),
+    ('Aqua Green', 'fixed'),
+    ('Emerald', 'fixed'),
+    ('Cloud White', 'fixed'),
+    ('Warm Red', 'fixed'),
+    ('Flamingo', 'fixed'),
+    ('Vivid Violet', 'fixed'),
+    ('Sangria', 'fixed'),
+    ('Twilight', 'show'),
+    ('Tranquility', 'show'),
+    ('Gemstone', 'show'),
+    ('USA', 'show'),
+    ('Mardi Gras', 'show'),
+    ('Cool Cabaret', 'show'),
+]
+
+# Which circuit each body's programmable light is on (pool light = LIGHTS,
+# spa light = AUX_1). Power-cycle timing + count offset are calibratable and
+# persisted in backend.json (key 'light_config').
+LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
+# Defaults; overridden by backend.json 'light_config' at startup.
+LIGHT_CFG = {
+    'offset': 0,        # daemon restore-count = program_number + offset
+    'reset_ms': 4000,   # full-off hold that resets the light to baseline
+    'off_ms': 250,      # rapid off pulse between restores
+    'on_ms': 250,       # rapid on dwell between restores
+}
 
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
@@ -1372,6 +1412,25 @@ class RS485BridgeBackend:
                 return json.loads(r.read())
         except Exception as e:
             log.warning('rs485bridge /key(%s) error: %s', key_name, e)
+            return None
+
+    def select_program(self, key: str, n: int, reset_ms: float,
+                       off_ms: float, on_ms: float) -> Optional[dict]:
+        """Drive the daemon's /program (absolute ColorLogic select) for a light
+        circuit. The daemon does the full reset + N-restore power-cycle; this is
+        a thin pass-through. Longer HTTP timeout since the sequence itself takes
+        several seconds (reset hold + rapid restores)."""
+        self._req_count += 1
+        body = json.dumps({'key': key, 'n': n, 'reset_ms': reset_ms,
+                           'off_ms': off_ms, 'on_ms': on_ms}).encode()
+        req = urllib.request.Request(
+            self._base + '/program', data=body,
+            headers=self._headers({'Content-Type': 'application/json'}))
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            log.warning('rs485bridge /program(%s n=%s) error: %s', key, n, e)
             return None
 
     # ── State mapping ─────────────────────────────────────────────────────────
@@ -5028,6 +5087,88 @@ def set_heater_setpoint_legacy() -> Response:
     return set_heater_setpoint(which)
 
 
+@app.route('/lights/programs', methods=['GET'])
+def lights_programs() -> Response:
+    """The named ColorLogic scenes (1..17) with type (show=moving, fixed=static),
+    plus the current calibration. The plugin/cockpit renders this list."""
+    return jsonify({
+        'programs': [{'n': i + 1, 'name': name, 'type': typ}
+                     for i, (name, typ) in enumerate(LIGHT_PROGRAMS)],
+        'circuits': LIGHT_CIRCUITS,
+        'calibration': dict(LIGHT_CFG),
+    })
+
+
+@app.route('/lights/<body>/program', methods=['POST'])
+def lights_select(body: str) -> Response:
+    """Switch a body's light to a scene by number or name. Body:
+    {"program": 1..17} or {"name": "USA"}. Drives the pad daemon's absolute
+    reset+restore power-cycle. Requires the rs485bridge backend."""
+    body = body.lower()
+    circuit = LIGHT_CIRCUITS.get(body)
+    if circuit is None:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    if _ac_backend is None or not hasattr(_ac_backend, 'select_program'):
+        return jsonify({'error': 'light programming needs the rs485bridge backend'}), 501
+
+    req = request.get_json(force=True) or {}
+    n = req.get('program')
+    if n is None and req.get('name'):
+        want = str(req['name']).strip().lower()
+        for i, (name, _t) in enumerate(LIGHT_PROGRAMS):
+            if name.lower() == want:
+                n = i + 1
+                break
+        if n is None:
+            return jsonify({'error': f'unknown scene name: {req["name"]}'}), 400
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'program must be 1..17 or a valid name'}), 400
+    if not (1 <= n <= 17):
+        return jsonify({'error': 'program must be 1..17'}), 400
+
+    # Per-call timing overrides (for calibration); else the persisted defaults.
+    reset_ms = float(req.get('reset_ms', LIGHT_CFG['reset_ms']))
+    off_ms = float(req.get('off_ms', LIGHT_CFG['off_ms']))
+    on_ms = float(req.get('on_ms', LIGHT_CFG['on_ms']))
+    count = n + int(LIGHT_CFG['offset'])
+    count = _clamp(count, 1, 17)
+
+    name = LIGHT_PROGRAMS[n - 1][0]
+    log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
+    with _nav_lock:      # serialize against menu nav — both drive the panel
+        res = _ac_backend.select_program(circuit, count, reset_ms, off_ms, on_ms)
+    if res is None:
+        return jsonify({'error': 'bridge /program failed'}), 502
+    # Track last-selected scene per body (best-effort, open-loop).
+    with state_lock:
+        state.light_program[body] = n
+    return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                    'daemon_count': count, 'bridge': res})
+
+
+@app.route('/lights/calibration', methods=['GET', 'POST'])
+def lights_calibration() -> Response:
+    """GET returns the current light power-cycle calibration. POST updates any
+    of offset / reset_ms / off_ms / on_ms and persists to backend.json so the
+    dialed-in values survive restarts."""
+    if request.method == 'POST':
+        body = request.get_json(force=True) or {}
+        for k, lo, hi in (('offset', -17, 17), ('reset_ms', 500, 20000),
+                          ('off_ms', 20, 3000), ('on_ms', 20, 3000)):
+            if k in body:
+                LIGHT_CFG[k] = _clamp(float(body[k]) if 'ms' in k else int(body[k]), lo, hi)
+        try:
+            cfg = _load_backend_config()
+            cfg['light_config'] = dict(LIGHT_CFG)
+            _save_backend_config(cfg)
+        except Exception as e:
+            log.warning('persist light_config: %s', e)
+        log.info('Light calibration updated: %s', LIGHT_CFG)
+    return jsonify({'calibration': dict(LIGHT_CFG)})
+
+
 @app.route('/prefetch', methods=['POST'])
 def prefetch_all() -> Response:
     """Read every menu-navigable value (heater setpoints, chlorinator %, VSP
@@ -5546,6 +5687,13 @@ def main() -> None:
         _ui_circuit_labels = {str(k).upper(): str(v) for k, v in cfg['ui_circuit_labels'].items()}
     if _ui_circuits:
         log.info('Loaded persisted UI circuits: %s', _ui_circuits)
+
+    # Persisted ColorLogic light calibration (offset + power-cycle timing).
+    if isinstance(cfg.get('light_config'), dict):
+        for k in ('offset', 'reset_ms', 'off_ms', 'on_ms'):
+            if k in cfg['light_config']:
+                LIGHT_CFG[k] = cfg['light_config'][k]
+        log.info('Loaded persisted light calibration: %s', LIGHT_CFG)
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend
