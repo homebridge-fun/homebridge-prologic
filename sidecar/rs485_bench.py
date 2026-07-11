@@ -90,6 +90,9 @@ def main():
                     help='delay between presses (matches sidecar min-gap)')
     ap.add_argument('--confirm-timeout', type=float, default=2.5,
                     help='max seconds to wait for the relay to reflect the press')
+    ap.add_argument('--local', action='store_true',
+                    help='send LOCAL_WIRED frames (physical-keypad type) instead '
+                         'of REMOTE_WIRED, to A/B the two on direct serial')
     ap.add_argument('--token', default=os.environ.get('RS485_BRIDGE_TOKEN'),
                     help='bearer token if the bridge requires auth '
                          '(defaults to RS485_BRIDGE_TOKEN env var)')
@@ -98,7 +101,8 @@ def main():
     global TOKEN
     TOKEN = args.token or None
 
-    print(f'Bench target: {args.url}  key={args.key}  laps={args.laps}')
+    print(f'Bench target: {args.url}  key={args.key}  laps={args.laps}  '
+          f'frame={"LOCAL" if args.local else "REMOTE"}')
     health = _get(args.url, '/health')
     if not health.get('connected'):
         print(f'*** bridge reports not connected: {health} ***')
@@ -120,7 +124,8 @@ def main():
         expected = not prior
         t0 = time.time()
         try:
-            _post(args.url, '/key', {'key': args.key, 'settle': args.settle})
+            _post(args.url, '/key', {'key': args.key, 'settle': args.settle,
+                                     'local': args.local})
         except Exception as e:  # noqa: BLE001
             print(f'[{i:3}] POST failed: {e!r}')
             dropped += 1

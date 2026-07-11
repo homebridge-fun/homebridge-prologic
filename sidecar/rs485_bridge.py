@@ -294,14 +294,14 @@ class Bridge:
         return snap
 
     # --- write ------------------------------------------------------------
-    def send_key(self, key_name, settle=0.35):
-        """Queue one REMOTE_WIRED key-event frame, then wait briefly for the LCD
-        to change so the caller's frame-reader gets immediate feedback.
+    def send_key(self, key_name, settle=0.35, local=False):
+        """Queue one key-event frame, then wait briefly for the LCD to change so
+        the caller's frame-reader gets immediate feedback.
 
-        REMOTE_WIRED (not LOCAL_WIRED) is required: RIGHT/LEFT/PLUS/MINUS are
-        dead with LOCAL frames on this panel (confirmed empirically over the TCP
-        bridge and re-confirmed on direct serial). Mirrors pool_service.py's
-        MenuNavigator._send_key_remote exactly."""
+        REMOTE_WIRED by default (nav keys RIGHT/LEFT/PLUS/MINUS were dead as
+        LOCAL over the TCP bridge). `local=True` sends LOCAL_WIRED (the physical
+        keypad's frame) — used by the /key benchmark to A/B the two frame types
+        on direct serial. Mirrors pool_service.py's _send_key_remote."""
         aq = self._aq
         if aq is None:
             raise RuntimeError('not connected')
@@ -318,7 +318,8 @@ class Bridge:
             aq.send_key(k)
             self._lcd.wait_for_change(settle)
             return
-        aq._send_queue.put({'frame': self._remote_frame(k)})
+        frame = self._local_frame(k) if local else self._remote_frame(k)
+        aq._send_queue.put({'frame': frame})
         # Give the panel a moment to transmit + reflect the change.
         self._lcd.wait_for_change(settle)
 
@@ -526,11 +527,12 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_body()
             key = data['key']
             settle = float(data.get('settle', 0.35))
+            local = bool(data.get('local', False))
         except (ValueError, KeyError, TypeError) as e:
             self._send_json(400, {'error': f'bad request: {e}'})
             return
         try:
-            self.bridge.send_key(key, settle=settle)
+            self.bridge.send_key(key, settle=settle, local=local)
         except (ValueError, RuntimeError) as e:
             self._send_json(400, {'error': str(e)})
             return
