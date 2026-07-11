@@ -138,6 +138,14 @@ def _install_write_timing(predelay_s):
         # Wait for the panel's post-keep-alive accept window, then write once.
         time.sleep(_PREDELAY_S)
         self._write(frame)
+        # Fast-cycle experiment: a burst-pair writes a SECOND frame `pulse_s`
+        # later, in the SAME keep-alive window — a tight off->on power pulse for
+        # ColorLogic (instead of one press per keep-alive, which is too slow and
+        # lets the light fully power up between cycles). Inert for normal sends.
+        partner = data.get('burst_partner')
+        if partner is not None:
+            time.sleep(data.get('pulse_s', 0.04))
+            self._write(partner)
 
     AquaLogic._send_frame = _send_frame_timed
 
@@ -316,11 +324,18 @@ class Bridge:
 
     def _remote_frame(self, k):
         """Build a REMOTE_WIRED key-event frame for key `k` (value <= 0xffff)."""
+        return self._key_frame(k, self._aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT)
+
+    def _local_frame(self, k):
+        """Build a LOCAL_WIRED key-event frame (what the physical keypad sends)."""
+        return self._key_frame(k, self._aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT)
+
+    def _key_frame(self, k, frame_type):
         aq = self._aq
         frame = bytearray()
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_STX)
-        aq._append_data(frame, aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT)
+        aq._append_data(frame, frame_type)
         aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
         aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
         crc = sum(frame)
@@ -328,6 +343,38 @@ class Bridge:
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_ETX)
         return bytes(frame)
+
+    def fast_cycle(self, key_name, count, pulse_ms, on_ms, local=False):
+        """EXPERIMENT: power-cycle a toggle circuit with a TIGHT off->on pulse.
+
+        Each cycle queues one burst-pair so the sender writes the toggle twice
+        (off, then on) only `pulse_ms` apart in a SINGLE keep-alive window —
+        instead of one press per keep-alive (~150ms, slow enough that the light
+        fully powers up between cycles). `on_ms` is the dwell before the next
+        cycle. `local` uses LOCAL_WIRED frames (what the physical keypad sends)
+        vs REMOTE_WIRED. Assumes the circuit starts ON; leaves it ON. Open-loop.
+
+        This tests whether the panel accepts two key events back-to-back in one
+        window — if it does, we can cycle far faster than the keep-alive floor."""
+        aq = self._aq
+        if aq is None:
+            raise RuntimeError('not connected')
+        k = getattr(Keys, key_name, None)
+        if k is None:
+            raise ValueError(f'unknown key: {key_name}')
+        if int(k.value) > 0xffff:
+            raise ValueError(f'{key_name} is a wireless key; fast-cycle only '
+                             'supports wired toggle circuits')
+        frame = self._local_frame(k) if local else self._remote_frame(k)
+        pulse_s = pulse_ms / 1000.0
+        pairs = 0
+        for i in range(count):
+            aq._send_queue.put({'frame': frame, 'burst_partner': frame,
+                                'pulse_s': pulse_s})
+            pairs += 1
+            if i < count - 1:
+                time.sleep(on_ms / 1000.0)
+        return {'pairs': pairs, 'frame': 'local' if local else 'remote'}
 
     def cycle_key(self, key_name, count, off_ms, on_ms):
         """Blind, precisely-timed power-cycle of a TOGGLE circuit (e.g. LIGHTS)
@@ -470,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b'{}')
 
     def do_POST(self):
-        if self.path not in ('/key', '/cycle', '/program'):
+        if self.path not in ('/key', '/cycle', '/program', '/fastcycle'):
             self._send_json(404, {'error': 'not found'})
             return
         if not self._authed():
@@ -479,6 +526,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._do_cycle()
         if self.path == '/program':
             return self._do_program()
+        if self.path == '/fastcycle':
+            return self._do_fastcycle()
         try:
             data = self._read_body()
             key = data['key']
@@ -556,6 +605,37 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {'error': str(e)})
             return
         self._send_json(200, dict({'ok': True, 'key': key, 'program': n,
+                                   'elapsed_ms': round((time.monotonic() - t0) * 1000)},
+                                  **info))
+
+    def _do_fastcycle(self):
+        """POST /fastcycle {key, count, pulse_ms, on_ms, local} — EXPERIMENT:
+        tight off->on power pulses (both in one keep-alive window) to cycle the
+        light faster than the keep-alive floor. Circuit must start ON."""
+        try:
+            data = self._read_body()
+            key = data.get('key', 'LIGHTS')
+            count = int(data['count'])
+            pulse_ms = float(data.get('pulse_ms', 40))
+            on_ms = float(data.get('on_ms', 250))
+            local = bool(data.get('local', False))
+        except (ValueError, KeyError, TypeError) as e:
+            self._send_json(400, {'error': f'bad request: {e}'})
+            return
+        if not (1 <= count <= 40):
+            self._send_json(400, {'error': 'count must be 1..40'})
+            return
+        if not (2 <= pulse_ms <= 500) or not (20 <= on_ms <= 5000):
+            self._send_json(400, {'error': 'pulse_ms 2..500, on_ms 20..5000'})
+            return
+        try:
+            t0 = time.monotonic()
+            info = self.bridge.fast_cycle(key, count, pulse_ms, on_ms, local)
+        except (ValueError, RuntimeError) as e:
+            self._send_json(400, {'error': str(e)})
+            return
+        self._send_json(200, dict({'ok': True, 'key': key, 'cycles': count,
+                                   'pulse_ms': pulse_ms, 'on_ms': on_ms,
                                    'elapsed_ms': round((time.monotonic() - t0) * 1000)},
                                   **info))
 
