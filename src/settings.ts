@@ -44,20 +44,6 @@ export interface PlatformConfig {
   name: string;
   sidecarHost: string;
   sidecarPort: number;
-  /**
-   * Overrides sidecarHost/sidecarPort entirely when set — use this to reach a
-   * sidecar that isn't on the local LAN, e.g. one running on an isolated/guest
-   * network and exposed via a Cloudflare Tunnel hostname (https://pool-pad.example.com).
-   * Leave blank for the default local http://sidecarHost:sidecarPort.
-   */
-  sidecarBaseUrl?: string;
-  /**
-   * Cloudflare Access service-token credentials, sent as CF-Access-Client-Id /
-   * CF-Access-Client-Secret headers on every sidecar request. Required only
-   * when sidecarBaseUrl points at a Cloudflare Access-protected hostname.
-   */
-  sidecarAccessClientId?: string;
-  sidecarAccessClientSecret?: string;
   pollInterval: number;
   backend: 'aquaconnect' | 'rs485' | 'rs485bridge';
   aquaconnectHost: string;

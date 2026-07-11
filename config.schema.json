@@ -25,22 +25,6 @@
         "default": 5757,
         "description": "Port for the Python sidecar REST API."
       },
-      "sidecarBaseUrl": {
-        "title": "Sidecar Base URL (advanced)",
-        "type": "string",
-        "placeholder": "https://pool-pad.example.com",
-        "description": "Overrides Sidecar Host/Port entirely. Use this to reach a sidecar on a separate/isolated network via a Cloudflare Tunnel hostname. Leave blank for the normal local host:port connection."
-      },
-      "sidecarAccessClientId": {
-        "title": "Cloudflare Access Client ID (advanced)",
-        "type": "string",
-        "description": "Service-token Client ID, sent as a CF-Access-Client-Id header. Only needed when Sidecar Base URL points at a Cloudflare Access-protected hostname."
-      },
-      "sidecarAccessClientSecret": {
-        "title": "Cloudflare Access Client Secret (advanced)",
-        "type": "string",
-        "description": "Service-token Client Secret, sent as a CF-Access-Client-Secret header. Only needed when Sidecar Base URL points at a Cloudflare Access-protected hostname."
-      },
       "pollInterval": {
         "title": "Poll Interval (ms)",
         "type": "integer",
