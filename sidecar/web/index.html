@@ -292,6 +292,26 @@
       <button class="nav ctl" id="nav_down">▼</button>
     </div>
   </div>
+
+  <div class="card">
+    <h2 class="hrow">Pool Light Scenes <button class="lockbtn" id="scene_cal_toggle">⚙ Calibrate</button></h2>
+    <div id="scene_btns" style="display:flex;flex-wrap:wrap;gap:8px">loading…</div>
+    <div id="scene_msg" class="t" style="margin-top:8px;min-height:1.2em"></div>
+    <div id="scene_cal" style="display:none;margin-top:10px;border-top:1px solid #333;padding-top:10px">
+      <div class="setrow" style="flex-wrap:wrap;gap:6px">
+        <label>reset<input id="sc_reset" type="number" style="width:64px"></label>
+        <label>off<input id="sc_off" type="number" style="width:56px"></label>
+        <label>on<input id="sc_on" type="number" style="width:56px"></label>
+        <label>offset<input id="sc_offset" type="number" style="width:56px"></label>
+        <button class="ctl" id="sc_save">Save</button>
+      </div>
+      <div class="setrow" style="gap:6px;margin-top:6px">
+        <label>raw count<input id="sc_rawn" type="number" value="3" style="width:64px"></label>
+        <button class="ctl" id="sc_fireraw">Fire raw → watch</button>
+      </div>
+      <div class="t" style="opacity:.7;margin-top:4px">Calibration: fire a raw count, watch the pool, find where it flips static→moving.</div>
+    </div>
+  </div>
 </main>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
 
@@ -909,6 +929,62 @@
   pollDisplay();
   setInterval(pollDisplay, 3000);
   connectStream();
+})();
+</script>
+<script>
+// Pool Light Scenes — self-contained (own fetch + inline feedback line).
+(function () {
+  const body = 'pool';
+  const el = id => document.getElementById(id);
+  const msg = m => { const e = el('scene_msg'); if (e) e.textContent = m; };
+  const timing = () => ({
+    reset_ms: +el('sc_reset').value || 4000,
+    off_ms: +el('sc_off').value || 250,
+    on_ms: +el('sc_on').value || 250,
+  });
+  async function post(obj, note) {
+    msg('… ' + note);
+    try {
+      const r = await fetch('/lights/' + body + '/program', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(obj) });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      msg('✓ ' + note + ' — watch the pool: moving or static?');
+    } catch (e) { msg('⚠ ' + note + ' failed: ' + e.message); }
+  }
+  const fire = (n, name) => post(Object.assign({ program: n }, timing()), 'scene ' + n + ' ' + name);
+  const fireRaw = () => post(Object.assign({ count: +el('sc_rawn').value }, timing()), 'raw count ' + el('sc_rawn').value);
+  async function saveCal() {
+    try {
+      const r = await fetch('/lights/calibration', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offset: +el('sc_offset').value, reset_ms: +el('sc_reset').value,
+          off_ms: +el('sc_off').value, on_ms: +el('sc_on').value }) });
+      await r.json(); msg('✓ calibration saved');
+    } catch (e) { msg('⚠ save failed: ' + e.message); }
+  }
+  fetch('/lights/programs').then(r => r.json()).then(d => {
+    const c = d.calibration || {};
+    el('sc_reset').value = c.reset_ms ?? 4000;
+    el('sc_off').value = c.off_ms ?? 250;
+    el('sc_on').value = c.on_ms ?? 250;
+    el('sc_offset').value = c.offset ?? 0;
+    const box = el('scene_btns'); box.innerHTML = '';
+    (d.programs || []).forEach(p => {
+      const b = document.createElement('button');
+      b.className = 'ctl';
+      b.style.background = p.type === 'show' ? '#6b46c1' : '#4a5568';
+      b.textContent = p.n + '. ' + p.name;
+      b.onclick = () => fire(p.n, p.name);
+      box.appendChild(b);
+    });
+  }).catch(e => { const b = el('scene_btns'); if (b) b.textContent = 'load failed: ' + e.message; });
+  el('scene_cal_toggle').onclick = () => {
+    const c = el('scene_cal'); c.style.display = c.style.display === 'none' ? 'block' : 'none';
+  };
+  el('sc_save').onclick = saveCal;
+  el('sc_fireraw').onclick = fireRaw;
 })();
 </script>
 </body>
