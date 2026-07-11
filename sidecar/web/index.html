@@ -971,10 +971,13 @@
         body: JSON.stringify(obj) });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      msg('✓ ' + note + ' — watch the pool: moving or static?');
+      msg('✓ fired ' + note + '. What did you actually see — moving or static?');
     } catch (e) { msg('⚠ ' + note + ' failed: ' + e.message); }
   }
-  const fire = (n, name) => post(Object.assign({ program: n }, timing()), 'scene ' + n + ' ' + name);
+  const fire = (n, name, type) => {
+    const expect = type === 'show' ? 'EXPECT: moving show' : 'EXPECT: static color';
+    post(Object.assign({ program: n }, timing()), name + ' (#' + n + ', ' + (type === 'show' ? 'show' : 'fixed') + ') — ' + expect);
+  };
   const fireRaw = () => post(Object.assign({ count: +el('sc_rawn').value }, timing()), 'raw count ' + el('sc_rawn').value);
   async function saveCal() {
     try {
@@ -1001,7 +1004,7 @@
       tag.className = 'tag';
       tag.textContent = p.type === 'show' ? '◆ show' : 'static';
       b.append(name, tag);
-      b.onclick = () => fire(p.n, p.name);
+      b.onclick = () => fire(p.n, p.name, p.type);
       box.appendChild(b);
     });
   }).catch(e => { const b = el('scene_btns'); if (b) b.textContent = 'load failed: ' + e.message; });
