@@ -238,7 +238,12 @@ Practical note: the **blink-color check** (red/green/blue/white/purple) is the
 reliable way to identify the current mode — not the color set — and the
 reset-to-UCL sequence forces a known mode without needing to read red-vs-green.
 
-## POTENTIAL RELIABLE PATH: controller-menu programming (VERIFY on the panel)
+## Controller-menu programming — CONFIRMED NOT AVAILABLE on this system
+
+**2026-07-11: user confirmed the ProLogic panel does NOT expose light-program
+menus for these lights — they are switched relays, so the feature MUST use
+power-cycling (the relay).** The menu path below is reference-only (it applies to
+networked/OmniDirect installs, not this one).
 
 Source: Hayward "ColorLogic 4.0 Lights Programming" (user-supplied, 1 page).
 It programs the light **through the controller's menu**, NOT by power-cycling:
