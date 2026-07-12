@@ -74,22 +74,28 @@ From the operating guide, the **authoritative** advance action:
 | Turn on | switch on |
 | Turn off | switch off |
 | **Advance to next program** | **turn the switch OFF, then back ON within 10 s** |
+| **Save / lock in current program** | **leave off (or on) >10 s** — the light saves the current program |
 
-Key facts that reshape our whole approach:
+The three timing bands that matter (all on the same LIGHTS relay — this is why
+it's easy to trip the wrong one):
+- **off < 10 s → on:** advance one program (relative +1).
+- **off > 10 s:** locks in / saves the current program (no advance).
+- **off 11–15 s, repeated 3–4×:** **changes the COMPATIBILITY mode** (the maze).
+  Note this OVERLAPS the ">10 s save" band — a repeated 11–15 s off is the mode
+  trigger, which is exactly the trap our long resets fell into.
+- **off > 60 s → on:** **cold-start** white for 15 s, then last color.
 
-- **It's RELATIVE, not absolute.** Each off→on(within 10s) advances **one**
-  program *from the current one*. The docs describe **no "reset to program 1"**
-  for the *color* (the mode reset resets the *compatibility mode*, not
-  necessarily the color index). So absolute selection needs either state
-  tracking or a reliable known-start.
-- **Program counts:** **17** in UCL/switched mode; **27** in Omni Direct
-  (18–27 = extra fixed colors, Omni-Direct-only).
-- **Startup guard (this likely wrecked our counts):** *"When the light has been
-  off >60 s and turned on, it comes on **white for 15 s**, then returns to the
-  last color. **Avoid rapidly cycling the switch during the first 15 s** — wait
-  for the startup sequence to finish before advancing."* → **We were almost
-  certainly cycling during that 15 s startup**, so the advances didn't register
-  cleanly. And the initial white is *not* a program — don't count it.
+Key facts that reshape our approach:
+
+- **It's RELATIVE, not absolute.** Each off→on(<10s) advances **one** program
+  from the current one. No documented "reset to program 1" for the *color* (the
+  mode reset resets the *compatibility* mode, not the color index). Absolute
+  selection needs state tracking or a known start.
+- **Program counts:** **17** in UCL/switched mode; **27** in Omni Direct.
+- **The 15 s white startup is a COLD-START thing only** (after a >60 s off) — it
+  does **not** gate every advance. So: cold-start once, let the 15 s finish,
+  *then* step with off/on-<10s repeatedly. (Earlier I over-applied this as a
+  per-cycle gate — corrected.) The initial white is not a program; don't count it.
 
 ## The 17 UCL programs (switched mode) + appearance
 
