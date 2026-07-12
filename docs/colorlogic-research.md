@@ -1,148 +1,139 @@
-# Hayward ColorLogic — light-program research
+# Hayward ColorLogic — light-program research (authoritative)
 
-Research brief for the "select a light scene from the sidecar" feature. Goal:
-understand what the 17 programs actually look like, how the power-cycle
-programming really works, and **whether our heavy relay-cycling knocked the
-light into a different mode** (the strong suspicion — colors stopped matching
-the numbers). Compiled 2026-07-11 from Hayward docs + reseller guides (sources
-at the bottom). Anything marked **[VERIFY]** needs a primary-doc or on-hardware
-check.
+Sourced from the actual Hayward docs the user supplied (2026-07-11):
+- **Hayward Tech Service QRG — "Universal ColorLogic & CrystaLogic: Changing
+  Modes and Transformer Chart"** (the definitive mode-change doc)
+- **Royal Swimming Pools — "Operating the Hayward ColorLogic Light"** (advance
+  timing)
+- ColorLogic Family Brochure (show descriptions); PoolDial troubleshooter.
 
-## TL;DR / the leading hypothesis
+## The critical distinction: there are TWO kinds of "mode"
 
-Switched (power-cycle) ColorLogic lights run in **one of four modes**, and
-**each mode has a different color/show set**. Mode is itself changed by power
-interruptions — which we've done hundreds of during testing. So "colors don't
-line up with the numbers anymore" is most likely **the light is no longer in
-UCL mode** (or its baseline drifted). The fix is a known reset, and the mode is
-checkable by a flash color.
+The user is exactly right, and conflating these caused all our confusion:
 
-## The four modes (and how to tell which you're in)
+1. **Compatibility mode** — which controller/protocol the light *emulates*
+   (so it works with OmniLogic, AquaLogic, Pentair, etc.). **5 of these.** Set by
+   **long (11–15 s) power interruptions**, identified by a **blink color** on
+   power-up.
+2. **Color program / show** — the actual color (the 17 or 27 list). Advanced by
+   a **quick power-cycle (off→on within 10 s)**.
 
-Do a **3-cycle power-interruption check** and watch the brief flash color:
+**Changing #1 vs #2 use different power-cycle timings.** Mixing them up (and
+using ~10–15 s resets during our testing) is almost certainly why the colors
+stopped matching the numbers — **we likely changed the compatibility mode.**
 
-| Mode | Flash color | Notes |
+## Compatibility modes (the 5, and how to identify)
+
+Do: **turn ON, then OFF for 11–15 s, repeat 3×; turn back ON** → the light blinks
+**one of five** colors identifying its mode:
+
+| Mode | Blink | Program set |
 |---|---|---|
-| **UCL** (Universal ColorLogic) | **red** | the 17-program set our spec assumes |
-| **CL 4.0** | **green** | different (fewer) colors/shows |
-| **CL 2.5** | **blue** | different set |
-| **SaM** (Spa-a-Mode / sync) | **white** | different set |
+| **Universal ColorLogic (UCL)** | **red + white** | 17 programs (our list) |
+| ColorLogic 4.0 | green + white | different |
+| ColorLogic 2.5 | blue + white | different |
+| Pentair SAM | white + white | different |
+| **Omni Direct** | purple + white | **27 programs** (adds 18–27 fixed colors) |
 
-Red-green colorblindness caveat: UCL=red vs CL 4.0=green is exactly the pair
-that's hard to distinguish — but **blue (CL 2.5)** and **white (SaM)** are
-distinguishable, and the reset below forces UCL, so you can get to a known mode
-without having to read the red/green flash.
+- **To toggle modes:** after it blinks, turn OFF then back ON *immediately*,
+  repeat until the mode you want. **Turn off for 2 minutes to save.**
+- **CVD note:** UCL(red)/CL4.0(green) is the hard pair for red-green CVD, but
+  blue / white-only / purple are distinguishable — and the reset below *forces*
+  UCL, so you don't have to read red-vs-green.
 
-## Reset to a known state (do this first)
+### Reset to UCL mode (the clean fix)
+1. Turn ON, then **OFF for 11–14 s, repeat 4×**.
+2. Turn back ON → blinks **red + white** (= UCL mode).
+3. **Turn off for 2 minutes to save** in UCL mode.
 
-- **Off for 2 minutes → saves the light in UCL mode.** This is the clean reset
-  to the 17-program set. **[VERIFY exact duration]** (one source says 2 min).
-- **Off > 60 seconds, then on → the light comes on WHITE for ~15 seconds** (a
-  deliberate "see the pool" flash), *then* returns to the last fixed color/show.
-  This 15s-white startup is very likely something you saw during testing and is
-  **not** a program — don't count it.
+There's also an OmniLogic *service-menu* path (Service Mode → Light Mode → set
+UCL switching vs Omni Direct) — **but that needs OmniLogic R3.2.0+. This system
+is AquaLogic, so we use the power-cycle method above.**
 
-> Implication for our sidecar: a proper "reset to baseline" may need to hold the
-> light **off for minutes**, not the ~2–10s we've been using — and the board is
-> capacitor-backed (runs a while after power is cut), so a short off doesn't
-> truly reset. This lines up with your observation that a longer off was needed.
+## Color-program advance (within a mode)
 
-## Advance timing — CONFLICTING, needs resolution **[VERIFY]**
+From the operating guide, the **authoritative** advance action:
 
-Two different mechanics show up in the docs and they may be generation- or
-mode-specific. This is the crux of why our cycling has been unreliable:
+| Action | What to do |
+|---|---|
+| Turn on | switch on |
+| Turn off | switch off |
+| **Advance to next program** | **turn the switch OFF, then back ON within 10 s** |
 
-- **Quick off→on (within ~10s)** — the manual you have says the 17 programs are
-  "advanced using power-cycling (quickly powering the lights on/off/on)."
-- **Off for exactly 11–13 seconds, then on → advances to the next *show*** —
-  "too short → restarts the same show; too long → resync." (reseller guide)
+Key facts that reshape our whole approach:
 
-So there may be a distinction between **advancing within/among programs (quick)**
-vs **advancing shows / changing modes (long, 11–13s or 2min)**. **We need to
-nail which applies to this exact light**, because we've been doing rapid quick
-cycles — which may be the *program* advance, the *mode* change trigger, or
-neither, depending on generation. **This is the #1 open question.**
+- **It's RELATIVE, not absolute.** Each off→on(within 10s) advances **one**
+  program *from the current one*. The docs describe **no "reset to program 1"**
+  for the *color* (the mode reset resets the *compatibility mode*, not
+  necessarily the color index). So absolute selection needs either state
+  tracking or a reliable known-start.
+- **Program counts:** **17** in UCL/switched mode; **27** in Omni Direct
+  (18–27 = extra fixed colors, Omni-Direct-only).
+- **Startup guard (this likely wrecked our counts):** *"When the light has been
+  off >60 s and turned on, it comes on **white for 15 s**, then returns to the
+  last color. **Avoid rapidly cycling the switch during the first 15 s** — wait
+  for the startup sequence to finish before advancing."* → **We were almost
+  certainly cycling during that 15 s startup**, so the advances didn't register
+  cleanly. And the initial white is *not* a program — don't count it.
 
-## The 17 UCL programs (with what they look like)
+## The 17 UCL programs (switched mode) + appearance
 
-Order/numbering per the spec sheet you provided; **[VERIFY]** the actual advance
-order on-hardware (it may not match this list 1:1).
+`(S)` = show/moving, `(F)` = fixed/static. Advance order per the QRG:
 
-**Fixed colors (static — 10):**
-| # | Name | Appearance |
-|---|---|---|
-| 2 | Deep Blue Sea | deep blue |
-| 3 | Royal Blue | blue |
-| 4 | Afternoon Skies | lighter/sky blue |
-| 5 | Aqua Green | aqua/teal |
-| 6 | Emerald | green |
-| 7 | Cloud White | **white** (easy landmark) |
-| 8 | Warm Red | red |
-| 9 | Flamingo | pink |
-| 10 | Vivid Violet | purple/violet |
-| 11 | Sangria | deep red/magenta |
+| # | Name | Type | Looks like |
+|---|---|---|---|
+| 1 | Voodoo Lounge | S | psychedelic, 1,500+ hues |
+| 2 | Deep Blue Sea | F | deep blue |
+| 3 | Royal Blue | F | blue |
+| 4 | Afternoon Skies | F | sky blue |
+| 5 | Aqua Green | F | aqua/teal |
+| 6 | Emerald | F | green |
+| 7 | Cloud White | F | **white** (landmark) |
+| 8 | Warm Red | F | red |
+| 9 | Flamingo | F | pink |
+| 10 | Vivid Violet | F | purple |
+| 11 | Sangria | F | deep red/magenta |
+| 12 | Twilight | S | 1,500+ ever-changing, relaxing |
+| 13 | Tranquility | S | calming blues + white |
+| 14 | Gemstone | S | blue, green, magenta |
+| 15 | USA | S | **red, white, blue** (recognizable) |
+| 16 | Mardi Gras | S | fast, 32 colors |
+| 17 | Cool Cabaret | S | 100+ colors, vibrant |
 
-**Color-changing shows (moving — 7):**
-| # | Name | Appearance |
-|---|---|---|
-| 1 | Voodoo Lounge | psychedelic, 1,500+ hues, hypnotic |
-| 12 | Twilight | 1,500+ ever-changing colors, relaxing |
-| 13 | Tranquility | calming blues + white |
-| 14 | Gemstone | blue, green, magenta |
-| 15 | USA | **red, white, blue** (recognizable — flag-like) |
-| 16 | Mardi Gras | fast-paced, 32 colors |
-| 17 | Cool Cabaret | 100+ colors, vibrant |
+**Omni Direct mode adds (18–27, all fixed):** Yellow, Orange, Gold, Mint, Teal,
+Burnt Orange, Pure White, Crisp White, Warm White, Bright Yellow.
 
-**Color-blind-safe landmarks** (no red/green call needed): motion = show
-(1, 12–17) vs static = fixed (2–11); **Cloud White (#7)** is unmistakably white;
-**USA (#15)** flashes white in its cycle and is a moving show; **Tranquility
-(#13)** is blues+white.
+**CVD-safe landmarks:** motion = show (1, 12–17) vs static = fixed (2–11);
+Cloud White #7 = plainly white; USA #15 = moving with white flashes.
 
-## What this means for our sidecar feature
+## What this means for our sidecar feature (rework needed)
 
-1. **First, confirm the mode is UCL** (the 3-cycle flash check, or just reset:
-   off ≥2 min). If we've been operating in CL 4.0 / CL 2.5 / SaM, the whole
-   17-program mapping is wrong — which fully explains "colors don't match."
-2. **Reset probably needs a *long* off** (minutes), because the board is
-   capacitor-backed. Our `/program reset_ms` may need to go far higher than the
-   current 20s cap — or the reset needs a genuinely different mechanic.
-3. **Resolve the quick-vs-11–13s advance question** for this specific light
-   before trusting any count.
-4. Ignore the **15s white startup** after a long off — it's not program 1.
+Our current `/program` assumes **absolute reset + count N power-ons**. The real
+mechanic is different, so:
 
-## Open questions (for deeper research / another chat)
+1. **First, get the light back into UCL mode** (compatibility-mode reset:
+   11–14 s off ×4, then 2 min off). Until then, no mapping will match — this is
+   the most likely cause of "colors don't match the numbers."
+2. **Advance is relative** (off→on within 10 s = +1). To hit an absolute
+   program we must **track the current program** and step `(target − current)
+   mod count`, OR establish a known start. There is no documented color reset to
+   #1 — investigate whether a fresh mode-save lands on a known program **[VERIFY
+   on hardware]**.
+3. **Never cycle during the 15 s white startup** after a >60 s off. Our reset
+   must be followed by a **≥15 s settle** before the first advance.
+4. **Don't use 11–15 s offs during normal advancing** — that's the *mode-change*
+   trigger and will silently switch compatibility modes (what bit us).
+5. Advancing is **slow and deliberate** (one off→on within-10s cycle, then let
+   it settle), not a rapid burst — good news: no keep-alive-sync heroics needed.
 
-1. For *this* UCL light, does a **quick** off/on advance the program, or is the
-   advance the **11–13s** off? Is "quick cycling" instead the **mode-change**
-   trigger (which would explain us drifting out of UCL)?
-2. Exact **reset** duration/behavior to force UCL mode and land on program 1.
-3. Does the advance **wrap** 17→1, and is program 1 really Voodoo Lounge (the
-   first on after reset)?
-4. Do the mode differences (CL 4.0 / 2.5 / SaM) change the **program count**, and
-   what are their lists?
-5. Is there a **non-power-cycle** control path (e.g., the AquaLogic panel's own
-   lights menu, or an OmniLogic ColorLogic screen) that sets color directly —
-   which would sidestep all of this?
+## Open questions (hardware verification)
 
-## Source PDFs to pull (some 403'd my fetcher — grab these and paste back)
-
-- **Hayward — "2020 QRG: UCL How to Change Modes & Transformer Chart"** *(the
-  key mode-change doc)*:
-  `https://commerce.hayward-pool-assets.com/magento/2026/LSCUS22030/2020_QRG_UCL_How_to_Change_Modes_and_Transformer_Chart_c3eb.pdf`
-  (also mirrored at `hayward.com/media/akeneo_connector/asset_files/2/0/2020_QRG_UCL_How_to_Change_Modes_and_Transformer_Chart_c3eb.pdf`)
-- **UCL & CrystaLogic Troubleshooting Guide (residential)**:
-  `https://hayward.com/media/wysiwyg/pdf/heaters/universal-colorlogic-crystallogic-consumer-troubleshooting-guide.pdf`
-- **UCL & CrystaLogic TSG (UCL100e)**:
-  `https://hayward.com/media/akeneo_connector/asset_files/U/C/UCL100e_Universal_Color_CrystaLogic_TSG_0ec8.pdf`
-- **UCL overview / quick reference**:
-  `https://hayward.com/media/wysiwyg/pdf/lighting/ucl-overview.pdf`
-- **ColorLogic Family Brochure (LITLEDFAM16)** *(show descriptions)*:
-  `https://hayward.com/media/akeneo_connector/asset_files/c/o/colorlogic_family_brochure_LITLEDFAM16_b662.pdf`
-- **Universal ColorLogic Install & Operation Manual** (ManualsLib, incl.
-  troubleshooting p.13): `https://www.manualslib.com/manual/410451/Hayward-Universal-Colorlogic.html`
-- **UCL & CL 4.0 Installation Guide**:
-  `https://artisticpoolandspa.com/wp-content/uploads/2024/02/ColorLogic-Installation-Guide.pdf`
-- **PoolDial ColorLogic Troubleshooting Guide** (mode flash colors):
-  `https://www.pooldial.com/resources/articles/hayward/colorlogic/hayward-colorlogic-troubleshooting-guide`
-- **Royal Swimming Pools — Operating the ColorLogic Light** (timing):
-  `https://knowledgebase.royalswimmingpools.com/en/operating-the-hayward-colorlogic-light`
+1. After a UCL mode-save (2 min off), what color program does it land on — is
+   there a reliable known start (program 1)? If yes, absolute selection = save →
+   settle → advance N−1.
+2. Confirm this exact light is currently in **which** compatibility mode (blink
+   check) — quite possibly *not* UCL after our testing.
+3. Exact "advance" off/on window that reliably registers (docs say "within
+   10 s"; the physical experience is faster) and the minimum settle after
+   startup.
+4. Does advance wrap (17→1)?
