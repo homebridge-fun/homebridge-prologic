@@ -238,40 +238,9 @@ Practical note: the **blink-color check** (red/green/blue/white/purple) is the
 reliable way to identify the current mode — not the color set — and the
 reset-to-UCL sequence forces a known mode without needing to read red-vs-green.
 
-## Controller-menu programming — CONFIRMED NOT AVAILABLE on this system
+## Controller-menu programming — N/A (this system uses the relay)
 
-**2026-07-11: user confirmed the ProLogic panel does NOT expose light-program
-menus for these lights — they are switched relays, so the feature MUST use
-power-cycling (the relay).** The menu path below is reference-only (it applies to
-networked/OmniDirect installs, not this one).
-
-Source: Hayward "ColorLogic 4.0 Lights Programming" (user-supplied, 1 page).
-It programs the light **through the controller's menu**, NOT by power-cycling:
-
-`MENU (repeat) → Settings Menu → "Aux1 Settings" → + to view/change →
- "Aux1 Program" → +/- to pick Show (1, 7-16) or Fixed color (2-6) →
- Speed (x1/16..x16) → Motion (-1.2..+1.2) → Brightness (20-100%)`
-
-**Why this matters hugely:** menu navigation is exactly what the sidecar bridge
-already does at **100% reliability** (heater setpoints, chlorinator %). If the
-ProLogic panel exposes a light-program menu, we set colors by **navigating the
-menu** — no power-cycling, no mode drift, no counting, no capacitor timing. It
-would make the whole feature a straightforward MenuNavigator extension.
-
-**Caveats / must-verify on hardware:**
-- The menu controls Speed/Motion/Brightness → implies a **data-connected /
-  OmniDirect (networked)** light, not a plain switched relay. The user's lights
-  appear **switched** (programmed by hand power-cycling), so this exact menu may
-  not be present.
-- BUT some Hayward controllers offer a color menu that **automates the
-  power-cycling** for a switched light — same reliable outcome via menu nav.
-- **ACTION:** on the ProLogic panel, MENU → look for Settings → (Lights/Aux)
-  Settings → Program/Color for the pool (`LIGHTS`) and/or spa (`AUX_1`) circuits.
-  If present, this is the path — drive it via the bridge and skip power-cycling
-  entirely. Also check the sidecar's own menu sweeps/`/debug` for a light-program
-  screen. **[VERIFY]**
-
-CL 4.0 menu numbering seen in the guide: fixed colors **2-6** (2 = Deep Blue
-Sea), shows **1** and **7-16** (7 = Twilight; 15 = Custom Fade, 16 = Custom
-Chase). Full program table is on "page 1 of the manual" (not in this 1-page
-guide) — **[GET]**.
+Checked and confirmed 2026-07-11: the ProLogic panel does **not** offer a
+light-program menu for these lights — they are **switched relays**, so selection
+**must use power-cycling**. (Menu-based color programming exists only for
+networked/OmniDirect installs, which this is not.)
