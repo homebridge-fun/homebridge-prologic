@@ -216,3 +216,24 @@ is plainly white; SAm #1 and American #5 include white in their cycle.
   tracking** needed — big advantage over the pool light.
 - Reuse the daemon's power-cycle primitive on `AUX_1`; only the count semantics
   and program list differ.
+
+## Per-mode program sets (PRELIMINARY — [VERIFY] from the all-models guide)
+
+Each compatibility mode exposes a **different, usually smaller** program set than
+UCL's 17 — so if the light drifted into CL 4.0 / CL 2.5, the number→color mapping
+is entirely different and counts wrap sooner. Definitive lists are in Hayward's
+**"ColorLogic Programming Guide (all models)"**
+(`https://hayward.com/media/wysiwyg/pdf/lighting/ColorLogic-ProgramingGuideallmodels.pdf`
+— 403'd the fetcher; pull manually). From web-search summaries (imperfect):
+
+- **UCL** — 17 (10 fixed + 7 shows). CONFIRMED (QRG).
+- **ColorLogic 4.0** — ~5 fixed (Afternoon Skies, Deep Blue Sea, Emerald,
+  Sangria, Cloud White) + shows. Extra shows (Harmony, Rainbow, Custom Fade,
+  Custom Chase) may be the standalone CL4.0 *light*, not the compat *mode*.
+  **[VERIFY]**
+- **ColorLogic 2.5** — ~12 (≈5 fixed + 7 shows); fixed-color list came back
+  inconsistent. **[VERIFY]**
+
+Practical note: the **blink-color check** (red/green/blue/white/purple) is the
+reliable way to identify the current mode — not the color set — and the
+reset-to-UCL sequence forces a known mode without needing to read red-vs-green.
