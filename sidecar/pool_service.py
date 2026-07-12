@@ -1372,7 +1372,10 @@ class RS485BridgeBackend:
                  poll_s: float = 0.5):
         self._base = f'http://{host}:{port}'
         self._token = token or None
-        self.lcd = LcdCapture(hub=_get_hub('rs485'))
+        # Publish to the hub named after the ACTIVE backend ('rs485bridge') so
+        # the cockpit's /stream (which reads _get_hub(_active_backend)) shows the
+        # panel LCD. Using 'rs485' here left the Panel Display blank in bridge mode.
+        self.lcd = LcdCapture(hub=_get_hub('rs485bridge'))
         self._http_lock = threading.Lock()   # parity: nav-sweep/debug serialize here
         self._req_count = 0
         self._last_led: dict = {}
@@ -3412,7 +3415,7 @@ def toggle_backend() -> Response:
 # /stream/<name> and /benchmark/<name> forms target a specific backend by name
 # — needed for the parallel RS-485 validation where both buses run at once.
 
-_STREAM_BACKENDS = ('aquaconnect', 'rs485')
+_STREAM_BACKENDS = ('aquaconnect', 'rs485', 'rs485bridge')
 
 
 def _sse_response(hub: FrameHub) -> Response:
