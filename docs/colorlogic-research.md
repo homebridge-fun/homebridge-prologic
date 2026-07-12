@@ -1,4 +1,19 @@
-# Hayward ColorLogic — light-program research (authoritative)
+# Pool + spa light-program research (authoritative)
+
+**The two lights are DIFFERENT products and program differently** — do not share
+one routine:
+- **Pool light** = `LIGHTS` circuit = **Hayward Universal ColorLogic** (17/27
+  programs, relative advance, compatibility modes, 15s startup). §"Hayward" below.
+- **Spa light** = `AUX_1` circuit = **Pentair IntelliBrite 5G** (12 programs,
+  absolute count, much simpler). §"Spa" at the bottom.
+
+Sidecar implication: per-circuit config — different program lists, counts, reset
+thresholds, and advance mechanics. `LIGHT_PROGRAMS` (currently Hayward-only)
+needs a spa/Pentair list too, keyed by body.
+
+---
+
+# Hayward ColorLogic — pool light (authoritative)
 
 Sourced from the actual Hayward docs the user supplied (2026-07-11):
 - **Hayward Tech Service QRG — "Universal ColorLogic & CrystaLogic: Changing
@@ -137,3 +152,61 @@ mechanic is different, so:
    10 s"; the physical experience is faster) and the minimum settle after
    startup.
 4. Does advance wrap (17→1)?
+
+---
+
+# Spa light — Pentair IntelliBrite 5G (authoritative)
+
+Different manufacturer/model from the pool light. On the `AUX_1` circuit.
+Source: user-supplied Pentair IntelliBrite 5G operating instructions.
+
+## Mechanic — simpler than the Hayward: ABSOLUTE count
+
+- **Power-on:** momentary white, then the previously-selected color.
+- **Off > 5 seconds** → on restores the **last saved** show/color (short off, not
+  a mode reset like Hayward's).
+- **Select program N (1–12):** with the light on, **turn the wall switch off/on
+  N times** — N cycles = program N (**absolute**, not relative). Example: turn
+  on, then off/on **6×** → program 6 (California Sunset).
+- **No illumination during the off/on switching** — it stays dark while counting,
+  then shows the selected program. (This matches the "you shouldn't see it
+  flashing" behavior the user described — that behavior belongs to the SPA light,
+  not necessarily the pool one.)
+- **Hold / Recall** (details on operating-instructions p.4, not yet captured):
+  #13 "Hold" saves the current color mid-show. **[GET p.4]**
+
+Because it's absolute (N cycles = program N) with only a 5s save threshold and no
+compatibility-mode maze, the spa light is likely the **easier of the two to
+automate** — reliable count is all that's needed.
+
+## Programs (1–12)
+
+`(S)` = show/moving, `(F)` = fixed/static.
+
+| # | Name | Type | Looks like |
+|---|---|---|---|
+| 1 | SAm Mode | S | cycles white, magenta, blue, green (emulates Pentair SAm) |
+| 2 | Party | S | rapid color changing |
+| 3 | Romance | S | slow, calming transitions |
+| 4 | Caribbean | S | blues & greens |
+| 5 | American | S | **red, white, blue** |
+| 6 | California Sunset | S | orange, red, magenta |
+| 7 | Royal | S | richer/deeper tones |
+| 8 | Blue | F | blue |
+| 9 | Green | F | green |
+| 10 | Red | F | red |
+| 11 | White | F | **white** (landmark) |
+| 12 | Magenta | F | magenta/pink |
+| 13 | Hold | — | (feature: save current show color, not a program) |
+
+**CVD-safe landmarks:** motion = show (1–7) vs static = fixed (8–12); White #11
+is plainly white; SAm #1 and American #5 include white in their cycle.
+
+## Sidecar implications (spa)
+
+- Absolute selection: `AUX_1` off/on N times = program N. No long reset; just
+  ensure the light is on, then N clean off/on cycles.
+- Still open-loop (no feedback), but absolute count means **no position
+  tracking** needed — big advantage over the pool light.
+- Reuse the daemon's power-cycle primitive on `AUX_1`; only the count semantics
+  and program list differ.
