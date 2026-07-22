@@ -90,7 +90,14 @@
     border-radius: 10px; padding: 8px 10px; }
   .bd.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
-  .bd.active .bd-k::after { content: ' ● active'; color: var(--ok); letter-spacing: 0; }
+  .bd.active .bd-k::after { content: ' ● in use'; color: var(--ok); letter-spacing: 0; }
+  /* Per-body heater status line: mode (Auto/Off) + firing (Heating/Idle) */
+  .bd-stat { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .bd-stat .b { font-size: 11px; font-weight: 700; letter-spacing: .03em;
+    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); }
+  .bd-stat .b.on  { background: var(--ok);  color: #04263a; border-color: var(--ok); }
+  .bd-stat .b.off { background: transparent; color: var(--dim); }
+  .bd-stat .b.fire{ background: var(--accent); color: #04263a; border-color: var(--accent); }
   .bd-v { flex: 1; text-align: center; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .bd-v.pend { color: var(--accent); }
   .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
@@ -249,9 +256,11 @@
     <h2>Heat</h2>
     <div class="duo">
       <div class="bd ctl" id="heat_pool" data-field="heat_pool"><div class="bd-k">Pool</div>
-        <div class="setrow"><button class="step ctl" id="hp_dn">−</button><div class="bd-v" id="heat_pool_set">—</div><button class="step ctl" id="hp_up">+</button></div></div>
+        <div class="setrow"><button class="step ctl" id="hp_dn">−</button><div class="bd-v" id="heat_pool_set">—</div><button class="step ctl" id="hp_up">+</button></div>
+        <div class="bd-stat" id="heat_pool_stat"></div></div>
       <div class="bd ctl" id="heat_spa" data-field="heat_spa"><div class="bd-k">Spa</div>
-        <div class="setrow"><button class="step ctl" id="hs_dn">−</button><div class="bd-v" id="heat_spa_set">—</div><button class="step ctl" id="hs_up">+</button></div></div>
+        <div class="setrow"><button class="step ctl" id="hs_dn">−</button><div class="bd-v" id="heat_spa_set">—</div><button class="step ctl" id="hs_up">+</button></div>
+        <div class="bd-stat" id="heat_spa_stat"></div></div>
     </div>
   </div>
 
@@ -390,6 +399,19 @@
     const e = $(id); if (!e) return;
     e.textContent = on ? onLabel : offLabel;
     e.className = 'pill' + (e.classList.contains('ctl') ? ' ctl' : '') + (on ? ' on' : ' off');
+  }
+
+  // Per-body heater status badges in the Heat card: always the armed mode
+  // (Auto/Off), plus the firing state (Heating/Idle) for the body that's in use.
+  function heatBodyStat(id, body, armedReal, s, staged) {
+    const e = $(id); if (!e) return;
+    const armed = ('heat' in staged && staged.heatWhich === body) ? staged.heat : armedReal;
+    let html = '<span class="b ' + (armed ? 'on' : 'off') + '">' + (armed ? 'Auto' : 'Off') + '</span>';
+    if (s.valve_mode === body) {
+      const firing = !!s.heater_active;
+      html += '<span class="b ' + (firing ? 'fire' : 'off') + '">' + (firing ? 'Heating' : 'Idle') + '</span>';
+    }
+    e.innerHTML = html;
   }
 
   // ── Command plumbing ──────────────────────────────────────────────────────
@@ -744,6 +766,10 @@
     $('heat_spa_set').classList.toggle('pend', 'setSpa' in staged);
     $('heat_pool').classList.toggle('active', s.valve_mode === 'pool');
     $('heat_spa').classList.toggle('active', s.valve_mode === 'spa');
+    // Per-body status: mode (Auto/Off) always; firing (Heating/Idle) only for the
+    // body that's in use (the single physical heater only fires the active body).
+    heatBodyStat('heat_pool_stat', 'pool', !!s.pool_heater_enabled, s, staged);
+    heatBodyStat('heat_spa_stat',  'spa',  !!s.spa_heater_enabled,  s, staged);
     const aw = spa ? 'spa' : 'pool';
     const realHeat = spa ? !!s.spa_heater_enabled : !!s.pool_heater_enabled;
     const effHeat = ('heat' in staged && staged.heatWhich === aw) ? staged.heat : realHeat;
