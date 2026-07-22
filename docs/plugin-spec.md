@@ -557,8 +557,20 @@ any stale `thermostat-pool` / `thermostat-spa` accessories are unregistered on s
 active body, falling back to the `HEATER_1` LED circuit when the sidecar hasn't
 scrolled the Auto/Manual field yet): Heat (1) when armed, Off (0) when not. Tapping the
 Heat/Off dial toggles `HEATER_1` (`handleSetMode` → `setCircuit('HEATER_1', …)`); the mode
-is limited to Off/Heat (`validValues: [0, 1]`). `CurrentHeatingCoolingState` reflects whether
-the heater is *actually firing right now* (the `HEATER_1` relay LED for the active body).
+is limited to Off/Heat (`validValues: [0, 1]`).
+
+Two distinct signals drive the tile, and they must not be conflated:
+
+- **`TargetHeatingCoolingState` (Auto vs Off)** = the **armed** state — `pool/spa_heater_enabled`,
+  falling back to the `HEATER_1` Auto-mode circuit bit. Heat (1) when armed, Off (0) when Manual Off.
+- **`CurrentHeatingCoolingState` (Heating vs Idle)** = whether the relay is **actually firing right
+  now** — the sidecar's `heater_active` field (`ThermostatState.heaterActive`). It is **not** driven
+  by `heater1Circuit`, which is only the armed Auto-mode bit — a common trap that made the tile read
+  "Heating" whenever merely armed. Armed-but-below-nothing-to-do shows Idle; armed-and-firing shows
+  Heating.
+
+The web cockpit mirrors the same split: "Heater mode" pill = Auto/Off (armed), "Heating now" pill =
+Running/Idle (`heater_active`).
 
 The thermostat and the "Heater Auto" switch both map to the **single physical** `HEATER_1`
 enable, so a toggle from either is mirrored optimistically to the other via

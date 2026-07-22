@@ -235,8 +235,8 @@
     </div>
     <div class="condlist">
       <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
-      <div class="row"><span class="label">Heater</span><span class="pill ctl" id="heat_mode">—</span></div>
-      <div class="row"><span class="label">Calling for heat</span><span class="pill" id="heat_fire">—</span></div>
+      <div class="row"><span class="label">Heater mode</span><span class="pill ctl" id="heat_mode">—</span></div>
+      <div class="row"><span class="label">Heating now</span><span class="pill" id="heat_fire">—</span></div>
     </div>
   </div>
 
@@ -749,7 +749,7 @@
     const effHeat = ('heat' in staged && staged.heatWhich === aw) ? staged.heat : realHeat;
     setPill('heat_mode', effHeat, 'Auto', 'Off');
     $('heat_mode').classList.toggle('staged', 'heat' in staged);
-    setPill('heat_fire', !!s.heater_active, 'Yes', 'No');
+    setPill('heat_fire', !!s.heater_active, 'Running', 'Idle');
 
     // Chlorinator — staged value overlaid + dashed
     const effCP = ('chlorPool' in staged) ? staged.chlorPool : s.chlorinator_percent;

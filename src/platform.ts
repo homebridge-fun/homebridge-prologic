@@ -301,6 +301,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
           spaHeaterEnabled: status.spa_heater_enabled,
           valveMode: status.valve_mode,
           heater1Circuit: status.circuits['HEATER_1'] ?? false,
+          heaterActive: status.heater_active ?? false,
         };
         this.thermostatAuto?.updateState(ts);
 
