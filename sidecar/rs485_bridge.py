@@ -284,13 +284,22 @@ class Bridge:
         heater_active = self._get_state_safe(States.HEATER_1)
         if heater_active is not None:
             snap['heater_active'] = bool(heater_active)
-        # Valve mode from the cycling default display. On this hardware the LCD
-        # has no newline, so the whole frame is one string — substring match is
-        # safe ("Spa Mode"/"Pool Mode" ≠ "Spa Temp"/"Spa-CountDn").
-        if 'Pool Mode' in text:
-            snap['valve_mode'] = 'pool'
-        elif 'Spa Mode' in text:
+        # Valve mode from the LIVE LED broadcast (the panel's POOL/SPA LEDs) —
+        # the same bits the panel lights up, broadcast continuously, so this is
+        # instant AND self-reconfirming. The panel doesn't print a persistent
+        # "mode" line on the LCD, so the old "Pool/Spa Mode" text scan lagged
+        # (only caught it as the idle scroll happened to cycle by) or missed it
+        # entirely. LED bits are authoritative; LCD text is a last-resort fallback.
+        c = snap['circuits']
+        if c.get('SPA'):
             snap['valve_mode'] = 'spa'
+        elif c.get('POOL'):
+            snap['valve_mode'] = 'pool'
+        elif 'Spa Mode' in text or 'Spa Only' in text:
+            snap['valve_mode'] = 'spa'
+        elif 'Pool Mode' in text or 'Pool Only' in text:
+            snap['valve_mode'] = 'pool'
+        # else: leave None — the sidecar keeps the last-known mode.
         return snap
 
     # --- write ------------------------------------------------------------
