@@ -82,22 +82,22 @@
         "description": "Which bodies your panel is configured for. Controls the POOL/SPA mode-selection cycle and which heater setpoints are active. This system: pool + spa only (no spillover)."
       },
       "enableActiveHeaterThermostat": {
-        "title": "Active Heat Thermostat (mode-following)",
+        "title": "Heat Thermostat (mode-following, recommended)",
         "type": "boolean",
         "default": true,
-        "description": "Expose the mode-following thermostat (Accessory A) that mirrors whichever heater setpoint is active for the current valve mode. Name shows 'Heat — Pool' or 'Heat — Spa'."
+        "description": "Expose the single mode-following thermostat that mirrors whichever heater setpoint is active for the current valve mode (name shows 'Heat — Pool' or 'Heat — Spa'). Recommended: one physical heater = one tile. Leave the two dedicated tiles below OFF unless you specifically want separate pool/spa dials — they read one heater as three tiles and can look out of sync."
       },
       "enablePoolHeaterThermostat": {
-        "title": "Pool Heat Thermostat (fixed)",
+        "title": "Pool Heat Thermostat (fixed, advanced)",
         "type": "boolean",
-        "default": true,
-        "description": "Expose a dedicated Pool Heat thermostat (Accessory B) always showing the pool setpoint regardless of current mode."
+        "default": false,
+        "description": "Off by default. Adds a second, dedicated Pool Heat thermostat always showing the pool setpoint. Having this plus the mode-following tile means one heater shown as multiple tiles — they can disagree on heating/standby. Only enable if you want a fixed pool dial."
       },
       "enableSpaHeaterThermostat": {
-        "title": "Spa Heat Thermostat (fixed)",
+        "title": "Spa Heat Thermostat (fixed, advanced)",
         "type": "boolean",
-        "default": true,
-        "description": "Expose a dedicated Spa Heat thermostat (Accessory C) always showing the spa setpoint regardless of current mode."
+        "default": false,
+        "description": "Off by default. Adds a dedicated Spa Heat thermostat always showing the spa setpoint. Same caveat as the pool one — multiple tiles for one heater can look out of sync. Only enable if you want a fixed spa dial."
       },
       "enableTemperatureSensors": {
         "title": "Temperature Sensors",
