@@ -475,8 +475,6 @@ muddies measurements and doesn't reflect the swapped end-state.
   "circuits": ["SPA", "FILTER", "LIGHTS", "HEATER_1", "AUX_1", "AUX_2", "SUPER_CHLORINATE"],
   "activeBodies": ["pool", "spa"],
   "enableActiveHeaterThermostat": true,
-  "enablePoolHeaterThermostat": true,
-  "enableSpaHeaterThermostat": true,
   "enableTemperatureSensors": true,
   "enableChlorinatorFan": true,
   "enableSaltSensor": true,
@@ -504,9 +502,7 @@ cockpit, which reads/writes the sidecar directly.
 | Switch | Aux 1 | `circuits` includes AUX_1 (this system: spa light) |
 | Switch | Aux 2 | `circuits` includes AUX_2 |
 | Switch | Super Chlorinate | `circuits` includes SUPER_CHLORINATE |
-| Thermostat | Active Heat | `enableActiveHeaterThermostat` — mode-following |
-| Thermostat | Pool Heat | `enablePoolHeaterThermostat` + pool in `activeBodies` |
-| Thermostat | Spa Heat | `enableSpaHeaterThermostat` + spa in `activeBodies` |
+| Thermostat | Active Heat | `enableActiveHeaterThermostat` — single mode-following tile |
 | TemperatureSensor | Pool Temperature | `enableTemperatureSensors` |
 | TemperatureSensor | Air Temperature | `enableTemperatureSensors` |
 | AirQualitySensor | Salt Level | `enableSaltSensor` — VOCDensity = raw PPM, quality pinned to Excellent |
@@ -547,24 +543,27 @@ could not be shown reliably. The two-switch split is unambiguous. The thermostat
 > **Implementation note:** `SwitchAccessory` evicts any stale `Fanv2` service left on the
 > accessory by the abandoned three-state design before adding its `Switch` service.
 
-### 7.5 Three-Thermostat Model
+### 7.5 Single Mode-Following Thermostat Model
 
-**Accessory A — "Active Heat"**: follows `valve_mode`; shows active body's temp/setpoint.
-**Accessory B — "Pool Heat"**: always pool setpoint, regardless of mode.
-**Accessory C — "Spa Heat"**: always spa setpoint.
+**"Active Heat"** (Accessory A, the only heater thermostat): follows `valve_mode` and shows
+the active body's temp/setpoint (name conveys "Heat — Pool" / "Heat — Spa"). One physical
+heater = one tile. The earlier dedicated per-body "Pool Heat" / "Spa Heat" thermostats
+(`enablePoolHeaterThermostat` / `enableSpaHeaterThermostat`) were **removed**: one physical
+`HEATER_1` enable rendered as three tiles read as out of sync (they could disagree on
+Heating/Standby and on which setpoint was live). Their config options and code are gone, and
+any stale `thermostat-pool` / `thermostat-spa` accessories are unregistered on startup.
 
 `TargetHeatingCoolingState` is **driven from the armed state** (`heater_enabled` for the
-body this tile reflects, falling back to the `HEATER_1` LED circuit when the sidecar hasn't
+active body, falling back to the `HEATER_1` LED circuit when the sidecar hasn't
 scrolled the Auto/Manual field yet): Heat (1) when armed, Off (0) when not. Tapping the
 Heat/Off dial toggles `HEATER_1` (`handleSetMode` → `setCircuit('HEATER_1', …)`); the mode
 is limited to Off/Heat (`validValues: [0, 1]`). `CurrentHeatingCoolingState` reflects whether
 the heater is *actually firing right now* (the `HEATER_1` relay LED for the active body).
 
-All tiles map to the **single physical** `HEATER_1` enable, so a toggle from any one of them —
-a thermostat dial or the "Heater Auto" switch — is mirrored optimistically to the others via
-`platform.pushHeaterEnabled()` (`setModeOptimistic` on the thermostats, `updateState` on the
-switch), so they stay in step immediately instead of lagging until the next poll. The dynamic
-tile name still conveys Heating/Standby/Off.
+The thermostat and the "Heater Auto" switch both map to the **single physical** `HEATER_1`
+enable, so a toggle from either is mirrored optimistically to the other via
+`platform.pushHeaterEnabled()` (`setModeOptimistic` on the thermostat, `updateState` on the
+switch), so they stay in step immediately instead of lagging until the next poll.
 
 Setpoint range: 65–104°F. Display units: Fahrenheit.
 
@@ -617,7 +616,7 @@ On each poll cycle:
 1. Valve mode cached (`currentValveMode`); the SPA circuit switch reflects it via the LED bit
 2. Circuit switches (HEATER_1 "Heater Auto" uses enabled state; all others use LED bit)
 3. "Heater Running" switch ← `heater_active`
-4. Thermostat state → all three thermostat accessories
+4. Thermostat state → the mode-following thermostat accessory
 5. Pool + air temp sensors
 6. Chlorinator fan speed + running state (filter on AND % > 0)
 7. Salt level sensor
@@ -649,7 +648,7 @@ homebridge-prologic/
     ├── index.ts
     ├── platform.ts                 ← accessory registration, reconcileBackend, poll loop
     ├── switchAccessory.ts          ← generic circuit switch (SUPER_CHLORINATE special-cased). Spa mode is just the renamed SPA circuit switch (On=spa) — no dedicated accessory.
-    ├── thermostatAccessory.ts      ← three-body thermostat model
+    ├── thermostatAccessory.ts      ← mode-following heater thermostat
     ├── heaterRunningAccessory.ts   ← read-only "Heater Running" relay-firing switch
     ├── temperatureAccessory.ts     ← read-only temperature sensor
     ├── fanAccessory.ts             ← chlorinator % fan tile + CurrentFanState (VSP speeds are cockpit-only, not in HomeKit)

@@ -85,19 +85,7 @@
         "title": "Heat Thermostat (mode-following, recommended)",
         "type": "boolean",
         "default": true,
-        "description": "Expose the single mode-following thermostat that mirrors whichever heater setpoint is active for the current valve mode (name shows 'Heat — Pool' or 'Heat — Spa'). Recommended: one physical heater = one tile. Leave the two dedicated tiles below OFF unless you specifically want separate pool/spa dials — they read one heater as three tiles and can look out of sync."
-      },
-      "enablePoolHeaterThermostat": {
-        "title": "Pool Heat Thermostat (fixed, advanced)",
-        "type": "boolean",
-        "default": false,
-        "description": "Off by default. Adds a second, dedicated Pool Heat thermostat always showing the pool setpoint. Having this plus the mode-following tile means one heater shown as multiple tiles — they can disagree on heating/standby. Only enable if you want a fixed pool dial."
-      },
-      "enableSpaHeaterThermostat": {
-        "title": "Spa Heat Thermostat (fixed, advanced)",
-        "type": "boolean",
-        "default": false,
-        "description": "Off by default. Adds a dedicated Spa Heat thermostat always showing the spa setpoint. Same caveat as the pool one — multiple tiles for one heater can look out of sync. Only enable if you want a fixed spa dial."
+        "description": "Expose the single mode-following thermostat that mirrors whichever heater setpoint is active for the current valve mode (name shows 'Heat — Pool' or 'Heat — Spa'). One physical heater = one tile."
       },
       "enableTemperatureSensors": {
         "title": "Temperature Sensors",
