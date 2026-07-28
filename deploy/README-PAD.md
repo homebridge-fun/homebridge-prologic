@@ -91,10 +91,39 @@ under-voltage flag points at the USB supply / pad circuit, not software.
 ## Security posture
 
 - Daemon binds the **tailnet IP only** — nothing on the local Wi-Fi/LAN can open
-  the socket. The Pi runs on the **main** network; no guest-VLAN isolation is
-  needed because the tailnet bind removes the local attack surface.
+  the socket. This closes the **inbound** local attack surface regardless of
+  which network the Pi is on.
 - Tailnet IP is stable across network changes, so moving the Pi between Wi-Fi
   networks needs no reconfig.
+
+### Network placement — isolated (guest) network
+
+The Pi runs on the **isolated guest network**, not the main LAN. The tailnet
+bind already blocks inbound LAN access to the bridge, so the reason for guest
+placement is **outbound containment** (defense-in-depth): if the Pi were ever
+compromised — via SSH, `tailscaled`, or a bad pip dependency — an isolated
+network keeps it from pivoting to trusted devices on the main LAN. The tailnet
+bind does nothing for that direction; network isolation does.
+
+It's functionally free because the Pi only ever talks over Tailscale (an overlay
+over the internet, not the LAN): bridge ↔ hop traffic is unaffected, and a guest
+network's client-to-client isolation doesn't touch it. Requirements for the
+guest network: **no captive portal / re-auth** (this is an always-on device),
+and **outbound internet allowed** (Tailscale needs it). A dedicated IoT VLAN is
+even better if the router gains one later.
+
+> **Gotcha:** guest isolation blocks LAN access to the Pi, so reach it **only via
+> its tailnet IP** — `ssh greg@<tailnet-ip>` from the hop or any Tailscale
+> device. The LAN name/IP won't resolve. The main-network Wi-Fi profile stays
+> saved on the Pi (`nmcli connection`) as a console fallback.
+
+To move it (Pi OS uses NetworkManager) — the SSH session drops as it switches,
+then reconnect over the tailnet:
+```bash
+sudo nmcli device wifi connect "<GUEST_SSID>" password "<GUEST_PASS>"
+# session drops; reconnect: ssh greg@<tailnet-ip>, then verify:
+tailscale status | head -3 && systemctl is-active pool-bridge earlyoom
+```
 
 ### Auth: Tailscale ACL (recommended default — no secrets)
 
