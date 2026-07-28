@@ -14,19 +14,29 @@ TCP/WiFi bridge.
    curl -fsSL https://tailscale.com/install.sh | sh
    sudo tailscale up
    ```
-3. Clone this repo to `$HOME`:
+3. Clone this repo to `$HOME` (check out the working branch if not yet merged):
    ```bash
    git clone <repo-url> ~/homebridge-prologic
+   cd ~/homebridge-prologic && git checkout claude/gracious-planck-1yz8v9
    ```
 4. Run the installer:
    ```bash
    bash ~/homebridge-prologic/deploy/install-pad.sh
    ```
-5. Copy the **token** it prints into the Homebridge plugin / sidecar config so
-   the hop can authenticate to the bridge.
+5. **Update the hop.** A fresh Tailscale node gets a **new tailnet IP**. Note it
+   (`tailscale ip -4` on the pad) and set `rs485bridgeHost` in the Homebridge
+   plugin config on the hop to match. If you use a bearer token, put the same
+   value in the hop-side sidecar config too.
 
-That's it — the service is enabled, starts on boot, and survives USB replug
-(the udev rule re-pins `latency_timer=1`).
+That's it — the service is enabled, starts on boot, survives USB replug (the
+udev rule re-pins `latency_timer=1`), and the installer also applies the
+memory-pressure hardening (persistent journal, earlyoom, `swappiness=10`) so a
+spike can't wedge the Pi.
+
+> **Tailnet IP tip:** to avoid re-editing the hop after every re-image, you can
+> give the pad a stable name/tag in the Tailscale admin console and point the
+> hop at that instead of the raw `100.x` — but MagicDNS may not resolve on the
+> hop, so the raw IP is the reliable default.
 
 ## What the installer sets up
 
@@ -36,7 +46,8 @@ That's it — the service is enabled, starts on boot, and survives USB replug
 | `dialout` group | the run user | serial port access |
 | `99-ftdi-low-latency.rules` | `/etc/udev/rules.d/` | pins FTDI `latency_timer=1` across reboot/replug — **the 100%-write fix** |
 | `/etc/pool-bridge.env` | root-only (0600) | holds the bearer token + bind address (NOT committed) |
-| `pool-bridge.service` | `/etc/systemd/system/` | runs the daemon, binds the tailnet IP, restarts on failure |
+| `pool-bridge.service` | `/etc/systemd/system/` | runs the daemon (MemoryMax cap), binds the tailnet IP, restarts on failure |
+| persistent journal + `earlyoom` + `swappiness=10` | `/etc/systemd/journald.conf`, `earlyoom.service`, `/etc/sysctl.d/` | 512MB memory-pressure guards — kill a hog before a swap-thrash freeze, and keep a readable crash trail |
 
 ## Day-to-day
 

@@ -101,6 +101,30 @@ sudo systemctl restart pool-bridge.service
 sleep 3
 sudo systemctl --no-pager --lines=15 status pool-bridge.service || true
 
+# 6. Memory-pressure hardening --------------------------------------------
+# The Pi Zero 2 W has 512MB. Three field freezes traced to swap-thrash under
+# memory pressure (the hardware watchdog can't catch a livelock — systemd stays
+# alive petting it). Lite avoids the desktop RAM hogs, but keep the guards so a
+# spike can't wedge the whole Pi again. All idempotent.
+echo "==> memory-pressure hardening (persistent journal + earlyoom + swappiness)"
+
+# Persistent journal (capped) so the NEXT freeze leaves a readable `-b -1` trail.
+sudo mkdir -p /var/log/journal
+sudo sed -i 's/^#\?Storage=.*/Storage=persistent/'     /etc/systemd/journald.conf
+sudo sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
+sudo systemctl restart systemd-journald
+
+# earlyoom: kill the worst hog BEFORE the kernel thrashes to a freeze. The
+# bridge (its likely target) has Restart=on-failure, so it self-recovers.
+if ! command -v earlyoom >/dev/null 2>&1; then
+  sudo apt-get update -qq && sudo apt-get install -y earlyoom
+fi
+sudo systemctl enable --now earlyoom
+
+# Prefer OOM-kill over grinding the SD card to a halt on swap.
+echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-pad-swappiness.conf >/dev/null
+sudo sysctl -p /etc/sysctl.d/99-pad-swappiness.conf >/dev/null
+
 echo
 echo "==================================================================="
 echo " Pad bridge installed. Bound: $LISTEN"
