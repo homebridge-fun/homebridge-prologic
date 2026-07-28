@@ -871,10 +871,15 @@
     const b = $('banner');
     if (s.bridge_wedged) {
       const cd = s.wedge_cooldown_remaining_s;
+      const bridge = s.backend === 'rs485bridge';
+      const subj = bridge ? 'RS-485 bridge' : 'AquaConnect box';
+      const hint = bridge
+        ? 'check the pad Pi / pool-bridge daemon — clears itself once reachable'
+        : 'power-cycle the AquaConnect box';
       b.className = 'banner bad show';
       b.textContent = cd > 0
-        ? `⚠ Panel wedged — power-cycle cooldown, ${cd}s remaining`
-        : '⚠ Panel command path wedged — power-cycle the AquaConnect box';
+        ? `⚠ ${subj} recovering — cooldown, ${cd}s remaining`
+        : `⚠ Command path wedged — ${hint}`;
     } else { b.className = 'banner'; }
 
     txt('backend', s.backend || '—');

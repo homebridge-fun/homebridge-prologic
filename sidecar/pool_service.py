@@ -268,9 +268,8 @@ def _record_command_failure() -> None:
             state.wedge_detected_at = now
         log.warning(
             'Bridge command path appears wedged (%d consecutive unconfirmed writes). '
-            'HomeKit automation will power-cycle the AquaConnect box; '
-            'commands blocked for %.0fs cooldown.',
-            streak, _WEDGE_POWERCYCLE_COOLDOWN_S)
+            'Recovery: %s. Commands blocked for %.0fs cooldown.',
+            streak, _wedge_recovery_hint(), _WEDGE_POWERCYCLE_COOLDOWN_S)
 
 
 def _wedge_cooling_down() -> Optional[float]:
@@ -299,16 +298,28 @@ def _wedge_block_response() -> Optional[tuple]:
         remaining = _WEDGE_POWERCYCLE_COOLDOWN_S - (time.time() - detected_at)
     if remaining is not None and remaining > 0:
         return jsonify({
-            'error': f'AquaConnect power-cycling — commands blocked for {remaining:.0f}s cooldown',
+            'error': f'{_wedge_subject()} recovering — commands blocked for {remaining:.0f}s cooldown',
             'bridge_wedged': True,
             'cooling_down': True,
             'cooldown_remaining_s': round(remaining),
         }), 503
     return jsonify({
-        'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
+        'error': f'Command path wedged — {_wedge_recovery_hint()}',
         'bridge_wedged': True,
         'cooling_down': False,
     }), 503
+
+
+def _wedge_subject() -> str:
+    """Backend-appropriate name for the thing that's wedged."""
+    return 'RS-485 bridge' if _active_backend == 'rs485bridge' else 'AquaConnect box'
+
+
+def _wedge_recovery_hint() -> str:
+    """Backend-appropriate recovery instruction shown in errors/logs."""
+    if _active_backend == 'rs485bridge':
+        return 'check the pad Pi / pool-bridge daemon (it clears itself once reachable)'
+    return 'power-cycle the AquaConnect box'
 
 def _immediate_wedge_probe() -> None:
     """Spawn a background daemon thread to probe wedge state right now.
@@ -1500,6 +1511,14 @@ class RS485BridgeBackend:
             snap = self._get_state()
             if snap:
                 self._apply(snap)
+                # For direct serial the daemon's reachability IS the liveness
+                # signal (see probe_wedge): a healthy /state means the bridge is
+                # back, so clear any stale wedge the AquaConnect-style command-
+                # failure path may have raised while the pad was unreachable.
+                # _record_command_success only logs/acts when actually wedged, so
+                # this is a cheap no-op in the common case.
+                if snap.get('connected') and state.bridge_wedged:
+                    _record_command_success()
                 with self._frame_cond:
                     self._frame_cond.notify_all()
             self._read_wake.wait(timeout=self._poll_s)
@@ -4218,7 +4237,7 @@ def _ac_canary_probe() -> dict:
                     # the box's reboot window and a fast "recovery" races the plug.
                     state.wedge_detected_at = time.time()
                 log.warning('Bridge command path wedged (active canary probe). '
-                            'Power-cycle the AquaConnect box to recover.')
+                            'Recovery: %s.', _wedge_recovery_hint())
         return result
     except Exception as e:
         log.error('Canary probe error: %s', e)
