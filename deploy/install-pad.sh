@@ -28,6 +28,14 @@ PORT="${RS485_BRIDGE_PORT:-/dev/ttyUSB0}"
 
 echo "==> pad bridge install (repo: $REPO, user: $RUN_USER)"
 
+# 0. System prerequisites --------------------------------------------------
+# Raspberry Pi OS Lite ships without pip (and sometimes without git). Bootstrap
+# them via apt before any pip use, so a clean Lite image installs end-to-end.
+if ! command -v pip3 >/dev/null 2>&1; then
+  echo "==> installing python3-pip (missing on Lite)"
+  sudo apt-get update -qq && sudo apt-get install -y python3-pip
+fi
+
 # 1. Python deps -----------------------------------------------------------
 echo "==> installing python deps (aqualogic==3.4, pyserial)"
 pip3 install --break-system-packages --quiet 'aqualogic==3.4' pyserial
