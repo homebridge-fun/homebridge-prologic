@@ -321,12 +321,44 @@ throws on AquaConnect because the `_states` bitmap is RS-485-only.
 The plugin surfaces these as two switches (see §7.4): "Heater Auto" (armed) and
 "Heater Running" (active).
 
-### 5.6 Bridge Wedge Detection
+### 5.6 Bridge Wedge Detection — forked by backend
 
-**Passive**: `_record_command_failure()` debounced; after threshold=2, fires active probe.
-**Active** (`_ac_canary_probe`): presses AUX2 (inert on this system), checks AUX2 LED
-nibble flips. Sets `bridge_wedged=True` immediately on failure. Probe runs every 300s
-(healthy) / 30s (wedged).
+Wedge detection and recovery are **different by backend**, because the two failure
+modes are fundamentally different. `bridge_wedged` is a shared flag, but what sets
+it, what clears it, and what the cockpit/HomeKit do about it depend on
+`_active_backend`.
+
+**AquaConnect (`aquaconnect`)** — the box can enter a silent read-only mode
+(POSTs 200, reads live, keypresses dropped) that **only a physical power-cycle
+clears**:
+- **Passive**: `_record_command_failure()` debounced; after threshold=2, sets
+  `bridge_wedged` + `wedge_detected_at`.
+- **Active** (`_ac_canary_probe`): presses AUX2 (inert), checks the LED nibble
+  flips; sets `bridge_wedged=True` on failure. Probe every 300s (healthy) / 30s
+  (wedged).
+- **Recovery presumes an AUTOMATED POWER-CYCLE.** On wedge, a 120s cooldown
+  (`_WEDGE_POWERCYCLE_COOLDOWN_S`) blocks commands and defers the recovery probe
+  to a box reboot window. **This only recovers if a HomeKit automation
+  power-cycles the box** (smart plug driven by the "Bridge Needs Rebooting"
+  switch). Without that automation the box stays wedged until manually
+  power-cycled — the clearing logic is written around the plug existing. **Setup
+  requirement:** configure that automation, or AquaConnect wedge recovery is
+  manual. See the setup notes / `deploy/` for the smart-plug wiring.
+
+**RS-485 smart bridge (`rs485bridge`)** — direct serial, stateless daemon. There
+is **no box to power-cycle and no read-only mode** — a failure just means the pad
+was briefly unreachable (typically weak Wi-Fi). So the AquaConnect machinery is
+disabled and replaced with a reachability model:
+- `_record_command_failure()` / `_immediate_wedge_probe()` are **no-ops**;
+  `_wedge_block_response()` **never blocks** (a command during an outage fails
+  fast and the caller retries).
+- `RS485BridgeBackend._poll_loop` **owns** `bridge_wedged`: sets **offline** after
+  `_BRIDGE_OFFLINE_MISSES` (3) consecutive failed `/state` polls, `wedge_detected_at`
+  stays `None` (**no cooldown**), and it **self-clears on the first good poll**.
+  The loop is wrapped so a malformed snapshot can't kill the poll thread.
+- Cockpit shows a mild amber **"RS-485 bridge offline — reconnecting (clears
+  itself automatically)"**, not the red power-cycle wedge. The underlying
+  trigger (weak Wi-Fi) is a physical fix, not a software recovery.
 
 ### 5.7 VSP Slot Navigation
 
