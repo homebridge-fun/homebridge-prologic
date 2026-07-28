@@ -1,0 +1,11 @@
+[Unit]
+Description=Pad Pi health sample (memory + under-voltage) -> /var/log/pad-health.csv
+Documentation=https://github.com/homebridge-fun/homebridge-prologic
+
+[Service]
+Type=oneshot
+# Runs as root to write /var/log and read vcgencmd. Absolute path is written by
+# install-pad.sh via the unit copy; the script itself is dependency-free.
+ExecStart=/usr/local/bin/pad-healthlog.sh
+Nice=10
+IOSchedulingClass=idle

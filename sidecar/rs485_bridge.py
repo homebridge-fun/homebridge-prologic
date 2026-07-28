@@ -138,6 +138,14 @@ def _install_write_timing(predelay_s):
         # Wait for the panel's post-keep-alive accept window, then write once.
         time.sleep(_PREDELAY_S)
         self._write(frame)
+        # Fast-cycle experiment: a burst-pair writes a SECOND frame `pulse_s`
+        # later, in the SAME keep-alive window — a tight off->on power pulse for
+        # ColorLogic (instead of one press per keep-alive, which is too slow and
+        # lets the light fully power up between cycles). Inert for normal sends.
+        partner = data.get('burst_partner')
+        if partner is not None:
+            time.sleep(data.get('pulse_s', 0.04))
+            self._write(partner)
 
     AquaLogic._send_frame = _send_frame_timed
 
@@ -276,24 +284,33 @@ class Bridge:
         heater_active = self._get_state_safe(States.HEATER_1)
         if heater_active is not None:
             snap['heater_active'] = bool(heater_active)
-        # Valve mode from the cycling default display. On this hardware the LCD
-        # has no newline, so the whole frame is one string — substring match is
-        # safe ("Spa Mode"/"Pool Mode" ≠ "Spa Temp"/"Spa-CountDn").
-        if 'Pool Mode' in text:
-            snap['valve_mode'] = 'pool'
-        elif 'Spa Mode' in text:
+        # Valve mode from the LIVE LED broadcast (the panel's POOL/SPA LEDs) —
+        # the same bits the panel lights up, broadcast continuously, so this is
+        # instant AND self-reconfirming. The panel doesn't print a persistent
+        # "mode" line on the LCD, so the old "Pool/Spa Mode" text scan lagged
+        # (only caught it as the idle scroll happened to cycle by) or missed it
+        # entirely. LED bits are authoritative; LCD text is a last-resort fallback.
+        c = snap['circuits']
+        if c.get('SPA'):
             snap['valve_mode'] = 'spa'
+        elif c.get('POOL'):
+            snap['valve_mode'] = 'pool'
+        elif 'Spa Mode' in text or 'Spa Only' in text:
+            snap['valve_mode'] = 'spa'
+        elif 'Pool Mode' in text or 'Pool Only' in text:
+            snap['valve_mode'] = 'pool'
+        # else: leave None — the sidecar keeps the last-known mode.
         return snap
 
     # --- write ------------------------------------------------------------
-    def send_key(self, key_name, settle=0.35):
-        """Queue one REMOTE_WIRED key-event frame, then wait briefly for the LCD
-        to change so the caller's frame-reader gets immediate feedback.
+    def send_key(self, key_name, settle=0.35, local=False):
+        """Queue one key-event frame, then wait briefly for the LCD to change so
+        the caller's frame-reader gets immediate feedback.
 
-        REMOTE_WIRED (not LOCAL_WIRED) is required: RIGHT/LEFT/PLUS/MINUS are
-        dead with LOCAL frames on this panel (confirmed empirically over the TCP
-        bridge and re-confirmed on direct serial). Mirrors pool_service.py's
-        MenuNavigator._send_key_remote exactly."""
+        REMOTE_WIRED by default (nav keys RIGHT/LEFT/PLUS/MINUS were dead as
+        LOCAL over the TCP bridge). `local=True` sends LOCAL_WIRED (the physical
+        keypad's frame) — used by the /key benchmark to A/B the two frame types
+        on direct serial. Mirrors pool_service.py's _send_key_remote."""
         aq = self._aq
         if aq is None:
             raise RuntimeError('not connected')
@@ -310,17 +327,25 @@ class Bridge:
             aq.send_key(k)
             self._lcd.wait_for_change(settle)
             return
-        aq._send_queue.put({'frame': self._remote_frame(k)})
+        frame = self._local_frame(k) if local else self._remote_frame(k)
+        aq._send_queue.put({'frame': frame})
         # Give the panel a moment to transmit + reflect the change.
         self._lcd.wait_for_change(settle)
 
     def _remote_frame(self, k):
         """Build a REMOTE_WIRED key-event frame for key `k` (value <= 0xffff)."""
+        return self._key_frame(k, self._aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT)
+
+    def _local_frame(self, k):
+        """Build a LOCAL_WIRED key-event frame (what the physical keypad sends)."""
+        return self._key_frame(k, self._aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT)
+
+    def _key_frame(self, k, frame_type):
         aq = self._aq
         frame = bytearray()
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_STX)
-        aq._append_data(frame, aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT)
+        aq._append_data(frame, frame_type)
         aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
         aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
         crc = sum(frame)
@@ -328,6 +353,38 @@ class Bridge:
         frame.append(aq.FRAME_DLE)
         frame.append(aq.FRAME_ETX)
         return bytes(frame)
+
+    def fast_cycle(self, key_name, count, pulse_ms, on_ms, local=False):
+        """EXPERIMENT: power-cycle a toggle circuit with a TIGHT off->on pulse.
+
+        Each cycle queues one burst-pair so the sender writes the toggle twice
+        (off, then on) only `pulse_ms` apart in a SINGLE keep-alive window —
+        instead of one press per keep-alive (~150ms, slow enough that the light
+        fully powers up between cycles). `on_ms` is the dwell before the next
+        cycle. `local` uses LOCAL_WIRED frames (what the physical keypad sends)
+        vs REMOTE_WIRED. Assumes the circuit starts ON; leaves it ON. Open-loop.
+
+        This tests whether the panel accepts two key events back-to-back in one
+        window — if it does, we can cycle far faster than the keep-alive floor."""
+        aq = self._aq
+        if aq is None:
+            raise RuntimeError('not connected')
+        k = getattr(Keys, key_name, None)
+        if k is None:
+            raise ValueError(f'unknown key: {key_name}')
+        if int(k.value) > 0xffff:
+            raise ValueError(f'{key_name} is a wireless key; fast-cycle only '
+                             'supports wired toggle circuits')
+        frame = self._local_frame(k) if local else self._remote_frame(k)
+        pulse_s = pulse_ms / 1000.0
+        pairs = 0
+        for i in range(count):
+            aq._send_queue.put({'frame': frame, 'burst_partner': frame,
+                                'pulse_s': pulse_s})
+            pairs += 1
+            if i < count - 1:
+                time.sleep(on_ms / 1000.0)
+        return {'pairs': pairs, 'frame': 'local' if local else 'remote'}
 
     def cycle_key(self, key_name, count, off_ms, on_ms):
         """Blind, precisely-timed power-cycle of a TOGGLE circuit (e.g. LIGHTS)
@@ -361,6 +418,60 @@ class Bridge:
             if i < count - 1:
                 time.sleep(on_ms / 1000.0)
         return presses
+
+    def select_program(self, key_name, n, reset_ms=4000, off_ms=120, on_ms=250,
+                       start_on=None, local=False):
+        """Select ColorLogic program `n` (1..17) by the ABSOLUTE reset procedure:
+        ensure the light is fully OFF, hold it off `reset_ms` (resets to
+        baseline), then do `n` power-restores (end ON) so it lands on program n.
+
+        The reset is now VERIFIED, not a single racy read: `start_on` (the
+        sidecar's settled poll of the LIGHTS circuit) seeds the current state,
+        and we confirm the light is actually off (re-reading between presses)
+        before the reset hold — an unreliable reset made every count start from
+        a random program. Returns timing + how the reset resolved."""
+        aq = self._aq
+        if aq is None:
+            raise RuntimeError('not connected')
+        k = getattr(Keys, key_name, None)
+        if k is None:
+            raise ValueError(f'unknown key: {key_name}')
+        if int(k.value) > 0xffff:
+            raise ValueError(f'{key_name} is a wireless key; program-cycle only '
+                             'supports wired toggle circuits (LIGHTS, AUX_x)')
+        # LOCAL_WIRED replicates the physical keypad (what reliably programs the
+        # light by hand); REMOTE_WIRED is the nav-key path. Selectable.
+        frame = self._local_frame(k) if local else self._remote_frame(k)
+        st = getattr(States, key_name, None)
+        presses = 0
+
+        # 1. Ensure OFF — trust the caller's SETTLED state (the sidecar's steady
+        #    poll), not the daemon's racy per-frame read. At most ONE press: a
+        #    retry loop on unreliable reads was firing extra toggles and
+        #    corrupting the count. If state is unknown, do a single settled read.
+        on = start_on
+        if on is None:
+            time.sleep(0.3)
+            on = self._get_state_safe(st) if st is not None else None
+        if on:   # currently ON -> one press to turn it off
+            aq._send_queue.put({'frame': frame})
+            presses += 1
+            time.sleep(0.8)     # let the OFF register before the reset hold
+        confirmed_off = (on is False) or (on is True)  # we acted; None = unknown
+        # 2. Hold off for the reset window.
+        time.sleep(reset_ms / 1000.0)
+        # 3. n power-restores, ending ON. First restore = baseline program.
+        aq._send_queue.put({'frame': frame})   # -> ON (program 1)
+        presses += 1
+        for _ in range(n - 1):
+            time.sleep(on_ms / 1000.0)
+            aq._send_queue.put({'frame': frame})   # -> OFF
+            presses += 1
+            time.sleep(off_ms / 1000.0)
+            aq._send_queue.put({'frame': frame})   # -> ON (advance)
+            presses += 1
+        return {'presses': presses, 'reset_confirmed_off': confirmed_off,
+                'start_on': start_on, 'frame': 'local' if local else 'remote'}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -410,22 +521,27 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b'{}')
 
     def do_POST(self):
-        if self.path not in ('/key', '/cycle'):
+        if self.path not in ('/key', '/cycle', '/program', '/fastcycle'):
             self._send_json(404, {'error': 'not found'})
             return
         if not self._authed():
             return
         if self.path == '/cycle':
             return self._do_cycle()
+        if self.path == '/program':
+            return self._do_program()
+        if self.path == '/fastcycle':
+            return self._do_fastcycle()
         try:
             data = self._read_body()
             key = data['key']
             settle = float(data.get('settle', 0.35))
+            local = bool(data.get('local', False))
         except (ValueError, KeyError, TypeError) as e:
             self._send_json(400, {'error': f'bad request: {e}'})
             return
         try:
-            self.bridge.send_key(key, settle=settle)
+            self.bridge.send_key(key, settle=settle, local=local)
         except (ValueError, RuntimeError) as e:
             self._send_json(400, {'error': str(e)})
             return
@@ -461,6 +577,73 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {'ok': True, 'key': key, 'cycles': count,
                               'presses': presses,
                               'elapsed_ms': round((time.monotonic() - t0) * 1000)})
+
+    def _do_program(self):
+        """POST /program {key, n, reset_ms, off_ms, on_ms} — select ColorLogic
+        program `n` by the absolute reset procedure (full off -> hold -> n
+        restores -> leave on). Bounded to avoid a runaway relay-mash."""
+        try:
+            data = self._read_body()
+            key = data.get('key', 'LIGHTS')
+            n = int(data['n'])
+            reset_ms = float(data.get('reset_ms', 4000))
+            off_ms = float(data.get('off_ms', 120))
+            on_ms = float(data.get('on_ms', 250))
+            start_on = data.get('start_on')  # sidecar's settled LIGHTS state
+            local = bool(data.get('local', False))
+        except (ValueError, KeyError, TypeError) as e:
+            self._send_json(400, {'error': f'bad request: {e}'})
+            return
+        if not (1 <= n <= 17):
+            self._send_json(400, {'error': 'n (program) must be 1..17'})
+            return
+        if not (500 <= reset_ms <= 20000):
+            self._send_json(400, {'error': 'reset_ms must be 500..20000'})
+            return
+        if not (20 <= off_ms <= 3000) or not (20 <= on_ms <= 3000):
+            self._send_json(400, {'error': 'off_ms/on_ms must be 20..3000'})
+            return
+        try:
+            t0 = time.monotonic()
+            info = self.bridge.select_program(key, n, reset_ms, off_ms, on_ms,
+                                              start_on=start_on, local=local)
+        except (ValueError, RuntimeError) as e:
+            self._send_json(400, {'error': str(e)})
+            return
+        self._send_json(200, dict({'ok': True, 'key': key, 'program': n,
+                                   'elapsed_ms': round((time.monotonic() - t0) * 1000)},
+                                  **info))
+
+    def _do_fastcycle(self):
+        """POST /fastcycle {key, count, pulse_ms, on_ms, local} — EXPERIMENT:
+        tight off->on power pulses (both in one keep-alive window) to cycle the
+        light faster than the keep-alive floor. Circuit must start ON."""
+        try:
+            data = self._read_body()
+            key = data.get('key', 'LIGHTS')
+            count = int(data['count'])
+            pulse_ms = float(data.get('pulse_ms', 40))
+            on_ms = float(data.get('on_ms', 250))
+            local = bool(data.get('local', False))
+        except (ValueError, KeyError, TypeError) as e:
+            self._send_json(400, {'error': f'bad request: {e}'})
+            return
+        if not (1 <= count <= 40):
+            self._send_json(400, {'error': 'count must be 1..40'})
+            return
+        if not (2 <= pulse_ms <= 500) or not (20 <= on_ms <= 5000):
+            self._send_json(400, {'error': 'pulse_ms 2..500, on_ms 20..5000'})
+            return
+        try:
+            t0 = time.monotonic()
+            info = self.bridge.fast_cycle(key, count, pulse_ms, on_ms, local)
+        except (ValueError, RuntimeError) as e:
+            self._send_json(400, {'error': str(e)})
+            return
+        self._send_json(200, dict({'ok': True, 'key': key, 'cycles': count,
+                                   'pulse_ms': pulse_ms, 'on_ms': on_ms,
+                                   'elapsed_ms': round((time.monotonic() - t0) * 1000)},
+                                  **info))
 
     def log_message(self, fmt, *args):
         pass  # quiet — systemd journal would double-log otherwise

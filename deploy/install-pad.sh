@@ -28,6 +28,14 @@ PORT="${RS485_BRIDGE_PORT:-/dev/ttyUSB0}"
 
 echo "==> pad bridge install (repo: $REPO, user: $RUN_USER)"
 
+# 0. System prerequisites --------------------------------------------------
+# Raspberry Pi OS Lite ships without pip (and sometimes without git). Bootstrap
+# them via apt before any pip use, so a clean Lite image installs end-to-end.
+if ! command -v pip3 >/dev/null 2>&1; then
+  echo "==> installing python3-pip (missing on Lite)"
+  sudo apt-get update -qq && sudo apt-get install -y python3-pip
+fi
+
 # 1. Python deps -----------------------------------------------------------
 echo "==> installing python deps (aqualogic==3.4, pyserial)"
 pip3 install --break-system-packages --quiet 'aqualogic==3.4' pyserial
@@ -44,7 +52,9 @@ fi
 echo "==> installing FTDI latency_timer=1 udev rule"
 sudo cp "$REPO/deploy/99-ftdi-low-latency.rules" /etc/udev/rules.d/
 sudo udevadm control --reload-rules
-sudo udevadm trigger --attr-match=subsystem=usb-serial || true
+# --action=add: the rule applies on the "add" event; a bare `udevadm trigger`
+# defaults to action=change and would silently no-op for an add-scoped rule.
+sudo udevadm trigger --action=add --attr-match=subsystem=usb-serial || true
 if [ -e "/sys/bus/usb-serial/devices/$(basename "$PORT")/latency_timer" ]; then
   echo -n "    latency_timer now: "
   cat "/sys/bus/usb-serial/devices/$(basename "$PORT")/latency_timer"
@@ -100,6 +110,43 @@ sudo systemctl enable pool-bridge.service
 sudo systemctl restart pool-bridge.service
 sleep 3
 sudo systemctl --no-pager --lines=15 status pool-bridge.service || true
+
+# 6. Memory-pressure hardening --------------------------------------------
+# The Pi Zero 2 W has 512MB. Three field freezes traced to swap-thrash under
+# memory pressure (the hardware watchdog can't catch a livelock — systemd stays
+# alive petting it). Lite avoids the desktop RAM hogs, but keep the guards so a
+# spike can't wedge the whole Pi again. All idempotent.
+echo "==> memory-pressure hardening (persistent journal + earlyoom + swappiness)"
+
+# Persistent journal (capped) so the NEXT freeze leaves a readable `-b -1` trail.
+sudo mkdir -p /var/log/journal
+sudo sed -i 's/^#\?Storage=.*/Storage=persistent/'     /etc/systemd/journald.conf
+sudo sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
+sudo systemctl restart systemd-journald
+
+# earlyoom: kill the worst hog BEFORE the kernel thrashes to a freeze. The
+# bridge (its likely target) has Restart=on-failure, so it self-recovers.
+if ! command -v earlyoom >/dev/null 2>&1; then
+  sudo apt-get update -qq && sudo apt-get install -y earlyoom
+fi
+sudo systemctl enable --now earlyoom
+
+# Prefer OOM-kill over grinding the SD card to a halt on swap.
+echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-pad-swappiness.conf >/dev/null
+sudo sysctl -p /etc/sysctl.d/99-pad-swappiness.conf >/dev/null
+
+# 7. Health sampler --------------------------------------------------------
+# 5-min CSV samples (memory/swap trend + Pi under-voltage) kept 30 days, so an
+# intermittent freeze or a power/brownout issue is diagnosable after the fact
+# instead of leaving us blind like the first three freezes did.
+echo "==> installing pad health sampler (5-min samples, 30-day CSV)"
+sudo install -m 0755 "$REPO/deploy/pad-healthlog.sh" /usr/local/bin/pad-healthlog.sh
+sudo cp "$REPO/deploy/pool-healthlog.service" /etc/systemd/system/
+sudo cp "$REPO/deploy/pool-healthlog.timer"   /etc/systemd/system/
+sudo cp "$REPO/deploy/pad-health.logrotate"   /etc/logrotate.d/pad-health
+sudo systemctl daemon-reload
+sudo systemctl enable --now pool-healthlog.timer
+sudo systemctl start pool-healthlog.service   # write the first row now
 
 echo
 echo "==================================================================="

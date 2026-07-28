@@ -23,10 +23,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private readonly cfg: ProLogicConfig;
   private readonly cachedAccessories: PlatformAccessory[] = [];
   private readonly switches = new Map<Circuit, SwitchAccessory>();
-  // §10 thermostats: A=mode-following, B=dedicated pool, C=dedicated spa
+  // §10: single mode-following thermostat (mirrors the active heater setpoint).
   private thermostatAuto?: ThermostatAccessory;
-  private thermostatPool?: ThermostatAccessory;
-  private thermostatSpa?: ThermostatAccessory;
   private poolTempSensor?: TemperatureAccessory;
   private airTempSensor?: TemperatureAccessory;
   private chlorinatorFan?: FanAccessory;
@@ -55,8 +53,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       circuits: config['circuits'] ?? ['FILTER', 'LIGHTS', 'HEATER_1'],
       activeBodies: config['activeBodies'] ?? ['pool', 'spa'],
       enableActiveHeaterThermostat: config['enableActiveHeaterThermostat'] ?? true,
-      enablePoolHeaterThermostat: config['enablePoolHeaterThermostat'] ?? true,
-      enableSpaHeaterThermostat: config['enableSpaHeaterThermostat'] ?? true,
       enableTemperatureSensors: config['enableTemperatureSensors'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enableSaltSensor: config['enableSaltSensor'] ?? true,
@@ -91,8 +87,6 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   public pushHeaterEnabled(enabled: boolean): void {
     this.switches.get('HEATER_1')?.updateState(enabled);
     this.thermostatAuto?.setModeOptimistic(enabled);
-    if (this.currentValveMode === 'spa') this.thermostatSpa?.setModeOptimistic(enabled);
-    else if (this.currentValveMode === 'pool') this.thermostatPool?.setModeOptimistic(enabled);
   }
 
   private discoverAccessories(): void {
@@ -143,25 +137,13 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.heaterRunning = new HeaterRunningAccessory(this, runAcc);
     }
 
-    // Accessory A: mode-following "active" thermostat (§10.1)
+    // Single mode-following "active" thermostat (§10.1). One physical heater =
+    // one tile; it mirrors whichever setpoint is active for the current valve
+    // mode (name shows "Heat — Pool" / "Heat — Spa").
     if (this.cfg.enableActiveHeaterThermostat) {
       const acc = register('Active Heat',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-thermostat-auto`));
       this.thermostatAuto = new ThermostatAccessory(this, acc, 'auto');
-    }
-
-    // Accessory B: dedicated pool thermostat (§10.2)
-    if (this.cfg.enablePoolHeaterThermostat && this.cfg.activeBodies.includes('pool')) {
-      const acc = register('Pool Heat',
-        this.api.hap.uuid.generate(`${PLUGIN_NAME}-thermostat-pool`));
-      this.thermostatPool = new ThermostatAccessory(this, acc, 'pool');
-    }
-
-    // Accessory C: dedicated spa thermostat (§10.2)
-    if (this.cfg.enableSpaHeaterThermostat && this.cfg.activeBodies.includes('spa')) {
-      const acc = register('Spa Heat',
-        this.api.hap.uuid.generate(`${PLUGIN_NAME}-thermostat-spa`));
-      this.thermostatSpa = new ThermostatAccessory(this, acc, 'spa');
     }
 
     // Temperature sensors
@@ -319,10 +301,9 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
           spaHeaterEnabled: status.spa_heater_enabled,
           valveMode: status.valve_mode,
           heater1Circuit: status.circuits['HEATER_1'] ?? false,
+          heaterActive: status.heater_active ?? false,
         };
         this.thermostatAuto?.updateState(ts);
-        this.thermostatPool?.updateState(ts);
-        this.thermostatSpa?.updateState(ts);
 
         this.poolTempSensor?.updateTemperature(status.pool_temp);
         this.airTempSensor?.updateTemperature(status.air_temp);

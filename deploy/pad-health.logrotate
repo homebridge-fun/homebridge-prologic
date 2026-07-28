@@ -1,0 +1,12 @@
+# Keep ~30 days of pad health samples. copytruncate so the appending sampler
+# keeps writing to the same file across rotations (it re-adds the CSV header
+# when it finds the file emptied). Installed to /etc/logrotate.d/pad-health.
+/var/log/pad-health.csv {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

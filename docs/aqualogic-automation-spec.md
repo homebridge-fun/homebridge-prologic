@@ -16,7 +16,7 @@ Established live on the actual hardware (ProLogic PS, main board sticker `G1--11
 
 | Item | Value |
 |---|---|
-| Bridge | **USR-W610** (RS-485 mode), TCP **Server**, port **8899**, IP `192.168.68.101` |
+| Connection | **Direct USB-RS485 adapter** on the pad Pi (no TCP bridge) — driven by the `rs485bridge` daemon (§16) |
 | Serial params | **19200 / 8 / None / 2** (8N2) — must match the aqualogic library, which hardcodes 19200 + `STOPBITS_TWO` |
 | Panel header | **J2** |
 | RS-485 data pair | **pin 2 + pin 4** (two-wire A/B) |
@@ -25,24 +25,17 @@ Established live on the actual hardware (ProLogic PS, main board sticker `G1--11
 | Ground | not required on short runs (two-wire worked) |
 
 **Bring-up gotchas (all hit during the first install):**
-- The Waveshare UART-WIFI232-B2 produced identical garbage to the W610 — both bridges are fine; the problems were pin selection and framing.
 - A correct connection shows a clean **8-byte repeating frame** in a raw TCP capture. If you see that but **no `10 02` frame starts**, A/B polarity is reversed — swap A and B on the bridge.
 - Symptom map: `socket timeout` = no bytes at all (wrong pins / no link); `Frame timeout` / `Bad CRC` = bytes arriving but mis-framed (wrong pair, polarity, or stop bits); clean `10 02 … 10 03` with ASCII payload = success.
 
-**RS-485 over a TCP bridge: reads work, writes do NOT `[VERIFIED 2026-06-28]`**
+**RS-485 writes require a direct serial connection `[VERIFIED]`**
 
-Tested three serial-to-Ethernet bridges (USR-W610 WiFi, Waveshare RS485-to-ETH, USR-TCP232-410S) — current test bridge at `192.168.50.101:8899`:
-- **Reads are reliable on all of them.** LCD frames + equipment state decode cleanly; the parallel observer (`--observe-rs485`) mirrors live state perfectly.
-- **Writes (keypresses) are not.** Across every bridge and every knob — predelay sweep 20–210 ms, `pad_bytes`, the 410S's `485 Anti-Collision` + idle-time, AC box unplugged to rule out bus contention — keypresses fail to land. Navigation never reaches the Settings menu; the only LCD changes observed are the panel's own ~6-second idle scroll. The 410S additionally corrupts the RX stream on transmit (`Connection lost: index out of range` — it echoes our TX back into the receive path).
-
-**Root cause** (confirmed against the `aqualogic` source + Hayward/Goldline protocol): the panel polls remotes for a pending key ~every 100 ms and expects the answer in a **narrow window immediately after the keep-alive frame**. A TCP bridge inserts network round-trip latency (keep-alive → TCP → Pi → TCP → wire) into that window, so the keypress always arrives too late. Reads are passive and latency-insensitive, which is exactly why they work and writes don't. Predelay tuning can't fix it (it only *adds* delay; the round-trip already blew the window — drop rate is flat across all predelays).
-
-**Conclusion:** reliable RS-485 **writes require a direct serial connection** — an **isolated USB-RS485 adapter on the Pi** (FT232+SP485 class), no TCP in the loop. Two viable topologies: (a) Pi local at the pad, or (b) run the RS-485 twisted pair to the house Pi (add TVS/surge protection at both ends; galvanic isolation is mandatory for the long pool-to-house run). The TCP bridge remains useful as a **read-only observer**. The current daily-control path is the **AquaConnect HTTP backend**, which is unaffected by all of this.
-
-**Untested variable — key-event FRAME TYPE `[OPEN, to test on direct serial]`.** The `aqualogic` library picks the transmit frame type purely by key value in `_get_key_event_frame()`: keys ≤ `0xffff` go out as **LOCAL_WIRED** (`00 02`), keys > `0xffff` (incl. `HEATER_1` = `0x00040000`, `VALVE_3/4`, `AUX_8+`) go out as **WIRELESS** (`00 83`). It **never transmits REMOTE_WIRED** (`00 03`) — that type is only parsed on receive. Our adapter taps the bus as effectively a *remote* device, so it's plausible the panel ignores a LOCAL_WIRED event from a second bus device where it would honor a REMOTE_WIRED one. All write testing to date used the library default (LOCAL_WIRED for nav, WIRELESS for HEATER_1); we never swept the frame type. The timing problem confounds this over a TCP bridge, so test on **direct serial**.
-
-- Harness: `POST /debug/rawkey {"key":"RIGHT","frametype":"local|remote|wireless"}` builds and queues a single key frame of the chosen type (bypasses `send_key`). Requires the rs485 backend active and the panel connected.
-- Sweep recipe: switch to the rs485 backend → press a visibly-confirmable key (`RIGHT` enters the Settings menu) under each frametype in turn, watching the LCD (`/display` or the cockpit Panel Display). Whichever type actually moves the panel is the one a bus remote must use. For the heater, repeat with `key=HEATER_1` (`wireless` is the library default; also try `remote`).
+The panel polls remotes for a pending key ~every 100 ms and expects the answer in a **narrow
+window immediately after the keep-alive frame**. Any network round-trip (keep-alive → TCP → Pi →
+TCP → wire) blows that window, so remote keypresses always arrive too late — this is precisely why
+the direct-serial smart bridge exists (see §16). **Reads are passive and latency-insensitive**, so
+they decode cleanly over any transport; only writes need the direct link. The daemon transmits
+REMOTE_WIRED key frames (resolved and documented in §16).
 
 ---
 
@@ -446,10 +439,12 @@ at runtime (`--backend rs485|aquaconnect`). Both feed the **same**
 `MenuNavigator` and `LcdCapture`, so all menu logic (§3–§13) is shared; only the
 transport differs.
 
-- **`rs485`** (default) — raw RS-485 frames over the USR-W610 WiFi serial bridge
-  (§0, §11). Fast; the validated primary path.
+- **`rs485bridge`** (default) — direct-serial pad daemon driven over HTTP/Tailscale
+  (§0, §11, §16). Fast; the production primary path.
 - **`aquaconnect`** — HTTP to the AquaConnect web box. No RS-485 wiring needed;
   useful as a fallback and for A/B testing navigation logic.
+- **`rs485`** — legacy raw RS-485 frames over a TCP serial bridge (§0). Reads work
+  but writes are unreliable; **deprecated**, superseded by `rs485bridge`.
 
 `[VERIFIED-REF]` below = matches the working `SteveTheGeekHA/AquaConnectDeviceHandler`
 reference implementation; confirm once against the live box with `GET

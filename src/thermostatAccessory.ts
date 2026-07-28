@@ -13,8 +13,10 @@ export interface ThermostatState {
   poolHeaterEnabled: boolean | null;
   spaHeaterEnabled: boolean | null;
   valveMode: 'pool' | 'spa' | null;
-  /** HEATER_1 broadcast circuit — true when the heater is enabled (keypad state). */
+  /** HEATER_1 Auto-mode circuit — true when the heater is ARMED (Auto vs Manual Off). */
   heater1Circuit: boolean;
+  /** Heater relay firing RIGHT NOW (distinct from armed). Drives Heating vs Idle. */
+  heaterActive: boolean;
 }
 
 export type ThermostatBody = 'auto' | 'pool' | 'spa';
@@ -185,15 +187,18 @@ export class ThermostatAccessory {
       }
     }
 
-    // Body-specific Auto-mode flag: is the heater set to fire when temp < setpoint?
-    // Falls back to the HEATER_1 LED circuit if the sidecar hasn't seen the scroll
+    // TargetHeatingCoolingState = ARMED state (Auto vs Manual Off). Body-specific
+    // Auto-mode flag: is the heater set to fire when temp < setpoint? Falls back
+    // to the HEATER_1 Auto-mode circuit if the sidecar hasn't seen the scroll
     // screen yet (e.g. RS-485 backend which doesn't expose the Auto/Manual field).
     const enabledByBody = which === 'spa' ? s.spaHeaterEnabled : s.poolHeaterEnabled;
     const enabled = enabledByBody ?? s.heater1Circuit;
 
-    // HomeKit has no "standby"; the current-heating-state field is HEAT only
-    // when the heater is actually calling for heat right now (HEATER_1 LED).
-    const isActiveNow = s.heater1Circuit && (s.valveMode === which || this.body === 'auto');
+    // CurrentHeatingCoolingState = HEAT only when the relay is actually FIRING
+    // right now (heater_active), NOT merely armed. heater1Circuit is the armed
+    // Auto-mode bit, so it must not drive this — that's the Auto/Off distinction,
+    // handled by `enabled` above. This is the Running (Heating) vs Idle line.
+    const isActiveNow = s.heaterActive && (s.valveMode === which || this.body === 'auto');
     if (this.heatingActive !== isActiveNow) {
       this.heatingActive = isActiveNow;
       this.service.updateCharacteristic(C.CurrentHeatingCoolingState, isActiveNow ? 1 : 0);

@@ -79,15 +79,19 @@ def main():
     print(f'Sniffing {args.port} at 19200/8N2 for {args.seconds}s ...\n')
 
     by_type = collections.defaultdict(list)
+    ka_times = []          # arrival times of keep-alive (0101) frames
     printed = 0
     t0 = time.time()
     for fr in frames(ser, args.seconds):
         if len(fr) < 2:
             continue
+        now = time.time()
         ftype = fr[:2]
         by_type[ftype].append(fr)
+        if ftype == b'\x01\x01':
+            ka_times.append(now)
         if printed < args.show:
-            dt = (time.time() - t0) * 1000
+            dt = (now - t0) * 1000
             print(f'  +{dt:7.1f}ms  type={ftype.hex()}  len={len(fr):2}  {fr.hex()}')
             printed += 1
 
@@ -120,7 +124,34 @@ def main():
                     print(f'     byte[{i}]: {shown}')
             print('     -> if a byte cycles through a small fixed set, that is the')
             print('        device-slot address; lock onto the wired-remote value.')
+
+    # Keep-alive cadence — the REAL send-rate floor (one queued frame per KA).
+    # Run with FTDI latency_timer=1 for accurate timestamps; at the 16ms default
+    # read-buffering batches frames and distorts these gaps.
+    if len(ka_times) > 3:
+        gaps = sorted((ka_times[i + 1] - ka_times[i]) * 1000
+                      for i in range(len(ka_times) - 1))
+        n = len(gaps)
+        med = gaps[n // 2]
+        p10 = gaps[max(0, n // 10)]
+        p90 = gaps[min(n - 1, (9 * n) // 10)]
+        print(f'\nKeep-alive interval (n={n + 1} KA frames over {args.seconds}s):')
+        print(f'  min={gaps[0]:.1f}ms  p10={p10:.1f}ms  median={med:.1f}ms  '
+              f'p90={p90:.1f}ms  max={gaps[-1]:.1f}ms')
+        print(f'  -> rate ~ {1000.0 / med:.0f} keep-alives/sec = the true'
+              ' one-press-per-KA send floor.')
+        print(f'  (Read with latency_timer='
+              f'{_read_latency(args.port)}ms — must be 1 for these to be accurate.)')
     print('=' * 60)
+
+
+def _read_latency(port):
+    import os
+    try:
+        with open(f'/sys/bus/usb-serial/devices/{os.path.basename(port)}/latency_timer') as f:
+            return f.read().strip()
+    except Exception:
+        return '?'
 
 
 if __name__ == '__main__':

@@ -21,5 +21,16 @@ ExecStart=/usr/bin/python3 ${RS485_BRIDGE_SCRIPT} \
 Restart=on-failure
 RestartSec=5
 
+# Resource cap — the daemon is lightweight (http.server + pyserial + aqualogic,
+# ~40MB steady). On a 512MB Pi a runaway here must never be allowed to thrash
+# the whole system into a swap-death freeze. MemoryHigh throttles + reclaims
+# first (soft, gives it a chance to recover); MemoryMax is the hard cgroup
+# ceiling — past it the kernel OOM-kills ONLY this service's cgroup, the SIGKILL
+# is a non-zero exit, and Restart=on-failure brings it straight back. OOMPolicy=
+# kill makes the whole cgroup die together (no half-dead child threads).
+MemoryHigh=96M
+MemoryMax=150M
+OOMPolicy=kill
+
 [Install]
 WantedBy=multi-user.target

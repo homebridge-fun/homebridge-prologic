@@ -13,11 +13,13 @@
 A Homebridge 2.0 platform plugin that controls a **Hayward Goldline AquaPlus PS-8** pool
 controller via a Python sidecar that supports two interchangeable backends:
 
-- **AquaConnect** (primary): Hayward's own local web interface on a ACHN box at
-  `192.168.50.100`. The embedded GoAhead "Webs" HTTP server handles polling reads and
+- **RS-485 smart bridge** (`rs485bridge`, **production primary**): a thin daemon on a
+  pad-mounted Pi Zero 2 W owns a direct USB-RS485 serial link to the panel's J2/J4 RS-485
+  port (using the `aqualogic` Python library) and exposes a small HTTP API the sidecar
+  consumes over Tailscale. Fast (~2.5× AquaConnect) and 100% reliable keypresses. See §4.4.
+- **AquaConnect** (`aquaconnect`, fallback): Hayward's own local web interface on an ACHN
+  box at `192.168.50.100`. The embedded GoAhead "Webs" HTTP server handles polling reads and
   keypress commands over TCP/IP. No cloud dependency; all traffic is LAN-only.
-- **RS-485** (alternative): Direct serial protocol via a USR-W610 WiFi-to-RS-485 bridge
-  connected to the panel's J2/J4 RS-485 port, using the `aqualogic` Python library.
 
 The active backend is selected in plugin config and persisted by the sidecar. Both backends
 expose the same REST API to the Homebridge plugin. Switching backends restarts the sidecar
@@ -41,11 +43,7 @@ automatically via systemd.
    │ direct USB-RS485        ↕ HTTP over Tailscale (tailnet IP)
    │ (19200/8N2, FTDI        │
    │  latency_timer=1)  [Pi Zero 2 W @ pad: rs485_bridge.py ← pool-bridge]
-       OR                           (owns serial + timing; 100% writes)
-                ┌─ rs485 backend (legacy TCP bridge) ────────────────────┐
-[AquaPlus panel]│  RS-485 broadcast frames (status) / key commands       │
-[USR-W610 bridge└────────────────────────────────────────────────────────┘
-@ 192.168.68.101]           ↕ TCP (raw RS-485 byte stream — writes unreliable)
+                                     (owns serial + timing; 100% writes)
 
                      [Pi 4 "hop": pool_service.py ← systemd: pool-sidecar]
                               ↕ localhost:5757 REST
@@ -187,24 +185,19 @@ transiently when FILTER turns on; PLUS cycles slots.
 
 - **Connector**: J2 or J4 on the AquaPlus main PCB (parallel, either works)
 
-| J2/J4 pin | Label | Wire color | USR-W610 terminal |
+| J2/J4 pin | Label | Wire color | USB-RS485 adapter |
 |---|---|---|---|
 | Pin 2 | DATA+ | black | A+ |
 | Pin 3 | DATA− | yellow | B− |
 | Pin 4 | GND | green | GND |
 
-Pin 1 is not a data line. If CRC errors persist, swap A and B at bridge terminals.
+Pin 1 is not a data line. If CRC errors persist, swap A and B at the adapter.
 
-### 4.2 USR-W610 Configuration
+### 4.2 Serial Adapter
 
-| Setting | Value |
-|---|---|
-| Mode | STA |
-| Network protocol | TCP Server |
-| Local port | 8899 |
-| Baud rate | 19200 |
-| Stop bits | **2** (8N2) ← critical |
-| Transparent mode | Enabled |
+The current path is a **direct USB-RS485 adapter** on the pad Pi (FTDI/FT232 class,
+19200/8N2, `latency_timer=1`) driven by the `rs485bridge` daemon — see §4.4 and
+`deploy/README-PAD.md`. There is no TCP serial bridge to configure.
 
 ### 4.3 What the `aqualogic` Library Provides
 
@@ -217,9 +210,8 @@ heater setpoints, heater enable/disable state, chlorinator % writes, VSP slot sp
 
 ### 4.4 RS-485 Smart Bridge (`rs485bridge` backend — current direction)
 
-The legacy `rs485` backend reaches the panel through a TCP serial bridge (USR-W610); reads
-work but **writes are unreliable** — the network round-trip misses the panel's narrow
-post-keep-alive keypress-accept window (see automation-spec §0). The fix is **direct serial**,
+Reliable RS-485 **writes require a direct serial connection** — a network round-trip misses the
+panel's narrow post-keep-alive keypress-accept window (see automation-spec §0). The fix is **direct serial**,
 but the panel is at the pad, far from the hop. So a **thin daemon runs on a pad-mounted
 Pi Zero 2 W** (`sidecar/rs485_bridge.py`, systemd `pool-bridge`) that owns the USB-RS485 link
 and all timing, and the hop's sidecar drives it over HTTP/Tailscale via the `rs485bridge`
@@ -483,8 +475,6 @@ muddies measurements and doesn't reflect the swapped end-state.
   "circuits": ["SPA", "FILTER", "LIGHTS", "HEATER_1", "AUX_1", "AUX_2", "SUPER_CHLORINATE"],
   "activeBodies": ["pool", "spa"],
   "enableActiveHeaterThermostat": true,
-  "enablePoolHeaterThermostat": true,
-  "enableSpaHeaterThermostat": true,
   "enableTemperatureSensors": true,
   "enableChlorinatorFan": true,
   "enableSaltSensor": true,
@@ -512,9 +502,7 @@ cockpit, which reads/writes the sidecar directly.
 | Switch | Aux 1 | `circuits` includes AUX_1 (this system: spa light) |
 | Switch | Aux 2 | `circuits` includes AUX_2 |
 | Switch | Super Chlorinate | `circuits` includes SUPER_CHLORINATE |
-| Thermostat | Active Heat | `enableActiveHeaterThermostat` — mode-following |
-| Thermostat | Pool Heat | `enablePoolHeaterThermostat` + pool in `activeBodies` |
-| Thermostat | Spa Heat | `enableSpaHeaterThermostat` + spa in `activeBodies` |
+| Thermostat | Active Heat | `enableActiveHeaterThermostat` — single mode-following tile |
 | TemperatureSensor | Pool Temperature | `enableTemperatureSensors` |
 | TemperatureSensor | Air Temperature | `enableTemperatureSensors` |
 | AirQualitySensor | Salt Level | `enableSaltSensor` — VOCDensity = raw PPM, quality pinned to Excellent |
@@ -555,24 +543,39 @@ could not be shown reliably. The two-switch split is unambiguous. The thermostat
 > **Implementation note:** `SwitchAccessory` evicts any stale `Fanv2` service left on the
 > accessory by the abandoned three-state design before adding its `Switch` service.
 
-### 7.5 Three-Thermostat Model
+### 7.5 Single Mode-Following Thermostat Model
 
-**Accessory A — "Active Heat"**: follows `valve_mode`; shows active body's temp/setpoint.
-**Accessory B — "Pool Heat"**: always pool setpoint, regardless of mode.
-**Accessory C — "Spa Heat"**: always spa setpoint.
+**"Active Heat"** (Accessory A, the only heater thermostat): follows `valve_mode` and shows
+the active body's temp/setpoint (name conveys "Heat — Pool" / "Heat — Spa"). One physical
+heater = one tile. The earlier dedicated per-body "Pool Heat" / "Spa Heat" thermostats
+(`enablePoolHeaterThermostat` / `enableSpaHeaterThermostat`) were **removed**: one physical
+`HEATER_1` enable rendered as three tiles read as out of sync (they could disagree on
+Heating/Standby and on which setpoint was live). Their config options and code are gone, and
+any stale `thermostat-pool` / `thermostat-spa` accessories are unregistered on startup.
 
 `TargetHeatingCoolingState` is **driven from the armed state** (`heater_enabled` for the
-body this tile reflects, falling back to the `HEATER_1` LED circuit when the sidecar hasn't
+active body, falling back to the `HEATER_1` LED circuit when the sidecar hasn't
 scrolled the Auto/Manual field yet): Heat (1) when armed, Off (0) when not. Tapping the
 Heat/Off dial toggles `HEATER_1` (`handleSetMode` → `setCircuit('HEATER_1', …)`); the mode
-is limited to Off/Heat (`validValues: [0, 1]`). `CurrentHeatingCoolingState` reflects whether
-the heater is *actually firing right now* (the `HEATER_1` relay LED for the active body).
+is limited to Off/Heat (`validValues: [0, 1]`).
 
-All tiles map to the **single physical** `HEATER_1` enable, so a toggle from any one of them —
-a thermostat dial or the "Heater Auto" switch — is mirrored optimistically to the others via
-`platform.pushHeaterEnabled()` (`setModeOptimistic` on the thermostats, `updateState` on the
-switch), so they stay in step immediately instead of lagging until the next poll. The dynamic
-tile name still conveys Heating/Standby/Off.
+Two distinct signals drive the tile, and they must not be conflated:
+
+- **`TargetHeatingCoolingState` (Auto vs Off)** = the **armed** state — `pool/spa_heater_enabled`,
+  falling back to the `HEATER_1` Auto-mode circuit bit. Heat (1) when armed, Off (0) when Manual Off.
+- **`CurrentHeatingCoolingState` (Heating vs Idle)** = whether the relay is **actually firing right
+  now** — the sidecar's `heater_active` field (`ThermostatState.heaterActive`). It is **not** driven
+  by `heater1Circuit`, which is only the armed Auto-mode bit — a common trap that made the tile read
+  "Heating" whenever merely armed. Armed-but-below-nothing-to-do shows Idle; armed-and-firing shows
+  Heating.
+
+The web cockpit mirrors the same split: "Heater mode" pill = Auto/Off (armed), "Heating now" pill =
+Running/Idle (`heater_active`).
+
+The thermostat and the "Heater Auto" switch both map to the **single physical** `HEATER_1`
+enable, so a toggle from either is mirrored optimistically to the other via
+`platform.pushHeaterEnabled()` (`setModeOptimistic` on the thermostat, `updateState` on the
+switch), so they stay in step immediately instead of lagging until the next poll.
 
 Setpoint range: 65–104°F. Display units: Fahrenheit.
 
@@ -625,7 +628,7 @@ On each poll cycle:
 1. Valve mode cached (`currentValveMode`); the SPA circuit switch reflects it via the LED bit
 2. Circuit switches (HEATER_1 "Heater Auto" uses enabled state; all others use LED bit)
 3. "Heater Running" switch ← `heater_active`
-4. Thermostat state → all three thermostat accessories
+4. Thermostat state → the mode-following thermostat accessory
 5. Pool + air temp sensors
 6. Chlorinator fan speed + running state (filter on AND % > 0)
 7. Salt level sensor
@@ -657,7 +660,7 @@ homebridge-prologic/
     ├── index.ts
     ├── platform.ts                 ← accessory registration, reconcileBackend, poll loop
     ├── switchAccessory.ts          ← generic circuit switch (SUPER_CHLORINATE special-cased). Spa mode is just the renamed SPA circuit switch (On=spa) — no dedicated accessory.
-    ├── thermostatAccessory.ts      ← three-body thermostat model
+    ├── thermostatAccessory.ts      ← mode-following heater thermostat
     ├── heaterRunningAccessory.ts   ← read-only "Heater Running" relay-firing switch
     ├── temperatureAccessory.ts     ← read-only temperature sensor
     ├── fanAccessory.ts             ← chlorinator % fan tile + CurrentFanState (VSP speeds are cockpit-only, not in HomeKit)
@@ -729,11 +732,9 @@ avoid turning the Pi into an attack/pivot surface. Two front-ends sit in front:
 | **Remote** | **Tailscale** (`tailscale serve`) | WireGuard device identity | No inbound port; reachable only from the tailnet |
 
 Rationale (evaluated 2026-06-29): opening the sidecar's own port was rejected as
-the only option that grows the Pi's inbound surface. Cloudflare Tunnel + Access
-(outbound-only, revocable service tokens, apt `cloudflared`) was the runner-up
-and remains the upgrade path if persistent no-login access or remote-without-VPN
-is wanted; caddy-security (self-hosted persistent sessions) was rejected for its
-out-of-apt binary lifecycle and single-maintainer plugin. Revocable per-key auth
+the only option that grows the Pi's inbound surface. caddy-security (self-hosted
+persistent sessions) was rejected for its out-of-apt binary lifecycle and
+single-maintainer plugin. Revocable per-key auth
 was deemed over-engineering for a single user; "rotate the one password" suffices.
 
 ### 10.0c Operational reference — wedge probe tuning
@@ -806,6 +807,7 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 
 | Item | Priority | Notes |
 |---|---|---|
+| **ColorLogic light scene selection (EXPERIMENTAL — paused 2026-07-11)** | Med | Goal: list the 17 named UCL scenes and reliably switch to one by name (pool light = `LIGHTS`, spa = `AUX_1`). **Built (rs485bridge only):** daemon `POST /program` (reset→N power-restores→leave on), `/cycle`, `/fastcycle` (burst pair in one keep-alive window), `/keys`; `select_program(local=)`; sidecar `LIGHT_PROGRAMS`, `GET /lights/programs`, `POST /lights/<body>/program` (name/number/raw count), `GET/POST /lights/calibration` (persisted offset+timing+local); cockpit "Pool Light Scenes" card. **NOT working: reliable exact landing.** Key findings: (1) **Mechanic is correct** — full off ~2s (reset to baseline), then **N power-ons ending on = program N** (confirmed vs user's Royal Blue=3). (2) **The light must stay in its startup PAUSE (dark) for the whole on/off sequence** — it counts cycles while unlit and only illuminates on the final leave-on; **if you can see it flashing, the cycles are too slow** and it escapes the pause → miscount. Finger speed stays inside the pause; our timing doesn't. (3) **Bus reality (measured at `latency_timer=1`):** keep-alives arrive in **pairs ~4ms apart, ~200ms between pairs**; aqualogic sends **one queued frame per keep-alive**. So sleep-based `off_ms/on_ms` queuing is **jittery/unreliable** (presses land 2-per-pair then 200ms gap; likely also tripping panel keypad debounce), and the "~150ms floor" I originally cited was a **FTDI-16ms-latency artifact** — corrected. Observed severity: selecting program 3 landed anywhere from ending-off with ~2 visible flashes to **~13 cycles landing on a show** — the count is essentially random with the current timing. **UPDATE 2026-07-11 (session 2):** the dominant cause of the wild overshoot was a **calibration bug — `offset` stuck at 17** (persisted in `backend.json`), so every scene ran `n = program + 17 → clamped 17` (≈34 presses, always program 17 / a show). **With `offset=0`, low counts (Royal Blue #3, Deep Blue #2, Voodoo #1) now work reliably.** Remaining open: **high counts drift** (USA #15 landed green/purple ~5–10 = *under*count) — likely per-cycle drops from panel keypad debounce at ~250ms (near the keep-alive rhythm). **Mechanic still uncertain:** possibly ABSOLUTE (full-power-down reset then N power-ons — the board runs on a capacitor + a small charge per on-pulse, counts while cycling, and **locks in a fixed delay after the LAST on**, so there's *no* finish-window to beat) OR RELATIVE (each off/on advances one from current). Test-condition blocker: calibrating needs reliable observation, which is hard in **daylight + red-green CVD** (bulb color ≠ in-water night color). **Next-session setup:** test **at night**, calibrate purely on the **motion cue** (show=moving 1/12–17, fixed=static 2–11 — CVD-safe), optionally a one-time sighted/phone-hex color map; try **slower** cleanly-separated cycles (off/on ~400–500ms, no time pressure) to see if the high-count undercount closes. (4) Use **LOCAL_WIRED** frames (replicate the physical keypad), not REMOTE — though a clean A/B (`rs485_bench.py --local`, AUX_2 ×40 each) found **LOCAL and REMOTE equivalent**: both 100% landing, ~same latency (~200ms, which is confirm-overhead, not frame type). So **frame type is NOT the lights lever** — the timing/keep-alive-sync is. LOCAL is proven reliable for a circuit toggle either way. (Nav *arrow* keys as LOCAL remain untested — they were REMOTE-only over the TCP bridge — so core nav stays REMOTE.) **Right approach next time:** rebuild the cycle as **deterministic keep-alive-synced tight pulses** (daemon fires one clean minimal off/on per keep-alive pair, locked to the bus rhythm — not `time.sleep`), so every cycle stays inside the startup pause and the count is exact. Then calibrate the count→scene offset via the static→show motion boundary (color-blind-safe: show=moving, fixed=static). Core pool control is unaffected; this is isolated to the `/lights/*` + `/program|/cycle|/fastcycle` paths. |
 | **Remove legacy `rs485` backend from the sidecar** | Med | Plugin UI/config already removed it (2026-07-10); production is on `rs485bridge`. Sidecar-internal excision is a ~400-line refactor entangled with key-timing globals (`KEY_BURST`/`KEY_PREDELAY_MS`), the wedge-probe machinery, and the `/benchmark/rs485` + `/debug/nav-sweep`/`nav-benchmark`/`rawkey`/`taptest` + `/keytiming` tooling — and touches the `/status` path. Do it as its OWN pass with a sidecar **boot-test on `rs485bridge` + `aquaconnect` + `--simulate`** before deploy (a `/status` regression takes HomeKit + cockpit offline). Remove: `panel_thread`, `RealPanel`, `rs485_observer_thread`, `_install_key_burst`, the `observe_rs485` args/config, and the rs485 debug/benchmark routes. KEEP: `SimPanel`/`--simulate`, `_get_panel`, `_get_navigator`. |
 | **Code-review follow-ups (COMPLETE 2026-07-10)** | Done | Full 3-way code review done (sidecar/plugin/cockpit). HTML-escaping of fault/label innerHTML; FILTER-off-during-heater-cooldown cry-wolf guard; #1 removed pump/VSP speeds from HomeKit (plugin side — commit `366d259`); sidecar + cockpit dead-code cleanup; spec fixes; heater switch ⇄ thermostat sync — all done (sub-rows below). |
 | ↳ Sidecar dead-code cleanup | Done | Removed `activate_vsp_slot` + `/vsp/slot4*` compat routes + `read_vsp_slot4`/`set_vsp_slot4`/`activate_vsp_slot4` aliases; `keypad_press` (unreachable), `_wait_key_sent` (unused), `_AC_SETTLE_S` (unused const). Renamed module-level `_pct` → `_percentile`. Kept `/vsp/slot/<n>` set + `/vsp/spa` (cockpit uses them). |
@@ -819,7 +821,6 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 | Passive menu-value capture | Done | Menu-only values (heater setpoint °F `Pool/Spa Heater1 85°F`, VSP slot speeds `Filter Speed1 90%`) are now parsed from any LCD frame — so when the **owner changes them by hand at the panel**, the physical display shows the menu, our poll reads it, and state updates with no active nav. (Chlorinator % and spa speed were already caught via scroll patterns.) Heater setpoints and slot speeds were the only blind spots; now closed |
 | Canary-probe wedge skips power-cycle cooldown | Done | Fixed 2026-06-30: the active-canary-probe wedge path now also sets `wedge_detected_at`, so the 120s `_WEDGE_POWERCYCLE_COOLDOWN_S` engages (matching the "2 unconfirmed writes" path). The sidecar now blocks commands + defers probing for the reboot window instead of re-probing every 30s and racing the auto power-cycle plug |
 | Pool active-slot highlight | Done | Cockpit highlights the running pool speed from `vsp_active_slot`. Parsed from two confirmed panel formats: the idle scroll line `Filter Speed 50% Speed2` and the brief startup slot-selection window `Filter On:Spd2 +/- to change` (the WBON `<span>` is stripped first). Right after a restart the field is `None` until one of those scrolls past |
-| RS-485 backend: reads | Done | Verified on three TCP bridges; live state decodes cleanly (observer-confirmed) |
 | RS-485 smart bridge (writes) | **DONE — pad daemon: 100% keypress landing 2026-07-10** | Full architecture in §4.4. Direct serial from a pad Pi Zero 2 W solved the write problem the TCP bridge couldn't. Root cause of the residual ~33% landing was the **FTDI USB-serial `latency_timer` (16ms default)**, not the protocol or predelay — pinned to **1ms** via `deploy/99-ftdi-low-latency.rules` → **30/30 & 20/20 presses landed (100%)** vs the TCP bridge's ~60% single-shot. `aqualogic==3.4`'s `_write_to_serial()` `.send()`→`.write()` bug is patched in the daemon; `LONG_DISPLAY_UPDATE` capture added so menu-nav frames are visible. Daemon (`sidecar/rs485_bridge.py`, systemd `pool-bridge`) is autonomous + reboot-hardened; installer + runbook in `deploy/README-PAD.md`. Diagnostics kept: `rs485_bench.py`, `rs485_sniff.py`, `serial_smoketest.py`. **Open:** HEATER_1 (wireless-frame key) not yet sendable over REMOTE_WIRED; pin `aqualogic==3.4` in `requirements.txt`. |
 | rs485bridge backend (sidecar) | **DONE (piece 2b) — testing** | `RS485BridgeBackend` in `pool_service.py` drives the pad daemon over HTTP/Tailscale, mirroring `AquaConnectBackend` (`lcd` + `send_nav_key`) so `MenuNavigator` / `_ac_set_circuit` / prefetch work unchanged. `--backend rs485bridge --rs485bridge-host <tailnet-ip>`; token via `RS485_BRIDGE_TOKEN` (never persisted). §4.4. **Remaining (2c/2d):** plugin `config.schema.json` + `platform.ts` wiring for the bridge backend, HEATER_1 path, inter-press gap retune + measured speedup vs AquaConnect, production cutover. |
 | Pad-Pi network + security | **DONE — main network, tailnet-bound, no secrets** | **Reversed the guest-network plan:** the daemon binds the **tailnet IP only**, so nothing on the local Wi-Fi/LAN can reach it regardless of network — guest isolation added Wi-Fi friction without solving auth. Pad runs on the **main** network (lets Tailscale go direct WireGuard, lower latency than DERP). Auth: token-less by default behind the tailnet bind (a Tailscale ACL is the documented zero-secret option; optional pre-seeded bearer token for defense-in-depth). **No secrets in git** — only the env-var *name* `${RS485_BRIDGE_TOKEN}`; values live in `/etc/pool-bridge.env` (0600) on the pad. The Cloudflare-Tunnel-to-pad plumbing (`deploy/CLOUDFLARE-PAD.md`, plugin `sidecarBaseUrl`/`sidecarAccessClientId`/`sidecarAccessClientSecret`) was **removed** 2026-07-10 — Tailscale (plain `sidecarHost` host:port) is the path. (Caddy + Basic auth for the *cockpit* LAN access, §10.0a, is unrelated and stays.) |

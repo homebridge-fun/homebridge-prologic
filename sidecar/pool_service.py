@@ -67,6 +67,11 @@ class _AlertBuffer(logging.Handler):
     surface every sidecar error/warning (heater-not-confirmed, wedge, unconfirmed
     writes, prefetch failures, …) without instrumenting each call site."""
 
+    # Repeats of the SAME message within this window collapse into one entry
+    # with a bumped count (e.g. a menu pass that fires MENU 3× and each times
+    # out becomes one "…timed out (×3)" alert instead of three identical rows).
+    _COALESCE_WINDOW_S = 120
+
     def __init__(self, maxlen: int = 60):
         super().__init__(level=logging.WARNING)
         self._buf = []
@@ -75,10 +80,23 @@ class _AlertBuffer(logging.Handler):
 
     def emit(self, record):
         try:
+            msg = record.getMessage()
             with self._lock:
+                # Coalesce with the most recent same-message entry still inside
+                # the window: bump its count and slide its timestamp forward so
+                # the cockpit shows one row with a live "last seen" + a ×N badge.
+                for e in reversed(self._buf):
+                    if e['msg'] == msg:
+                        if record.created - e['t'] <= self._COALESCE_WINDOW_S:
+                            e['count'] += 1
+                            e['t'] = record.created
+                            e['level'] = record.levelname
+                            return
+                        break  # newest match is stale — fall through to append
                 self._buf.append({'t': record.created,
                                   'level': record.levelname,
-                                  'msg': record.getMessage()})
+                                  'msg': msg,
+                                  'count': 1})
                 if len(self._buf) > self._maxlen:
                     del self._buf[:-self._maxlen]
         except Exception:
@@ -168,6 +186,8 @@ class PoolState:
     valve_mode: Optional[str] = None   # 'pool' | 'spa'
     vsp_slot_pct: dict = field(default_factory=dict)  # {1: pct, 2: pct, 3: pct, 4: pct}
     vsp_active_slot: Optional[int] = None  # 1-4; set on activate, None = unknown
+    # Last ColorLogic scene selected per body ({'pool': n, 'spa': n}); open-loop.
+    light_program: dict = field(default_factory=dict)
     connected: bool = False
     last_update: float = 0.0
     # True when the AquaConnect box has entered read-only mode (commands ACKed
@@ -266,9 +286,8 @@ def _record_command_failure() -> None:
             state.wedge_detected_at = now
         log.warning(
             'Bridge command path appears wedged (%d consecutive unconfirmed writes). '
-            'HomeKit automation will power-cycle the AquaConnect box; '
-            'commands blocked for %.0fs cooldown.',
-            streak, _WEDGE_POWERCYCLE_COOLDOWN_S)
+            'Recovery: %s. Commands blocked for %.0fs cooldown.',
+            streak, _wedge_recovery_hint(), _WEDGE_POWERCYCLE_COOLDOWN_S)
 
 
 def _wedge_cooling_down() -> Optional[float]:
@@ -297,16 +316,28 @@ def _wedge_block_response() -> Optional[tuple]:
         remaining = _WEDGE_POWERCYCLE_COOLDOWN_S - (time.time() - detected_at)
     if remaining is not None and remaining > 0:
         return jsonify({
-            'error': f'AquaConnect power-cycling — commands blocked for {remaining:.0f}s cooldown',
+            'error': f'{_wedge_subject()} recovering — commands blocked for {remaining:.0f}s cooldown',
             'bridge_wedged': True,
             'cooling_down': True,
             'cooldown_remaining_s': round(remaining),
         }), 503
     return jsonify({
-        'error': 'Bridge command path wedged — power-cycle the AquaConnect box',
+        'error': f'Command path wedged — {_wedge_recovery_hint()}',
         'bridge_wedged': True,
         'cooling_down': False,
     }), 503
+
+
+def _wedge_subject() -> str:
+    """Backend-appropriate name for the thing that's wedged."""
+    return 'RS-485 bridge' if _active_backend == 'rs485bridge' else 'AquaConnect box'
+
+
+def _wedge_recovery_hint() -> str:
+    """Backend-appropriate recovery instruction shown in errors/logs."""
+    if _active_backend == 'rs485bridge':
+        return 'check the pad Pi / pool-bridge daemon (it clears itself once reachable)'
+    return 'power-cycle the AquaConnect box'
 
 def _immediate_wedge_probe() -> None:
     """Spawn a background daemon thread to probe wedge state right now.
@@ -663,6 +694,45 @@ def _install_key_burst(AquaLogic) -> None:
     AquaLogic.get_state = _get_state_safe
     log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms pad=%d',
              KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_PAD_BYTES)
+
+# Hayward Universal ColorLogic (UCL) light programs, in the panel's power-cycle
+# order (1..17). 'show' = color-changing/moving, 'fixed' = static color — the
+# only distinction reliably observable without color vision. Selected by the
+# absolute reset procedure (full off -> N power-restores) via the pad daemon's
+# /program. LIGHT_PROGRAM_OFFSET calibrates the count-to-program mapping if the
+# panel's first-restore isn't program 1 (see /lights/programs + calibration).
+LIGHT_PROGRAMS = [
+    ('Voodoo Lounge', 'show'),
+    ('Deep Blue Sea', 'fixed'),
+    ('Royal Blue', 'fixed'),
+    ('Afternoon Skies', 'fixed'),
+    ('Aqua Green', 'fixed'),
+    ('Emerald', 'fixed'),
+    ('Cloud White', 'fixed'),
+    ('Warm Red', 'fixed'),
+    ('Flamingo', 'fixed'),
+    ('Vivid Violet', 'fixed'),
+    ('Sangria', 'fixed'),
+    ('Twilight', 'show'),
+    ('Tranquility', 'show'),
+    ('Gemstone', 'show'),
+    ('USA', 'show'),
+    ('Mardi Gras', 'show'),
+    ('Cool Cabaret', 'show'),
+]
+
+# Which circuit each body's programmable light is on (pool light = LIGHTS,
+# spa light = AUX_1). Power-cycle timing + count offset are calibratable and
+# persisted in backend.json (key 'light_config').
+LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
+# Defaults; overridden by backend.json 'light_config' at startup.
+LIGHT_CFG = {
+    'offset': 0,        # daemon restore-count = program_number + offset
+    'reset_ms': 2000,   # full-off hold that resets the light to baseline (~2s)
+    'off_ms': 120,      # rapid off pulse between restores
+    'on_ms': 120,       # rapid on dwell between restores
+    'local': True,      # LOCAL_WIRED frames (replicate the physical keypad)
+}
 
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
@@ -1331,7 +1401,10 @@ class RS485BridgeBackend:
                  poll_s: float = 0.5):
         self._base = f'http://{host}:{port}'
         self._token = token or None
-        self.lcd = LcdCapture(hub=_get_hub('rs485'))
+        # Publish to the hub named after the ACTIVE backend ('rs485bridge') so
+        # the cockpit's /stream (which reads _get_hub(_active_backend)) shows the
+        # panel LCD. Using 'rs485' here left the Panel Display blank in bridge mode.
+        self.lcd = LcdCapture(hub=_get_hub('rs485bridge'))
         self._http_lock = threading.Lock()   # parity: nav-sweep/debug serialize here
         self._req_count = 0
         self._last_led: dict = {}
@@ -1372,6 +1445,31 @@ class RS485BridgeBackend:
                 return json.loads(r.read())
         except Exception as e:
             log.warning('rs485bridge /key(%s) error: %s', key_name, e)
+            return None
+
+    def select_program(self, key: str, n: int, reset_ms: float,
+                       off_ms: float, on_ms: float,
+                       start_on: Optional[bool] = None,
+                       local: bool = False) -> Optional[dict]:
+        """Drive the daemon's /program (absolute ColorLogic select) for a light
+        circuit. The daemon does the full reset + N-restore power-cycle; this is
+        a thin pass-through. `start_on` is our settled poll of the circuit so the
+        daemon's reset is deterministic (not a racy read). Longer HTTP timeout
+        since the sequence itself takes several seconds."""
+        self._req_count += 1
+        payload = {'key': key, 'n': n, 'reset_ms': reset_ms,
+                   'off_ms': off_ms, 'on_ms': on_ms, 'local': bool(local)}
+        if start_on is not None:
+            payload['start_on'] = bool(start_on)
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self._base + '/program', data=body,
+            headers=self._headers({'Content-Type': 'application/json'}))
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            log.warning('rs485bridge /program(%s n=%s) error: %s', key, n, e)
             return None
 
     # ── State mapping ─────────────────────────────────────────────────────────
@@ -1431,6 +1529,14 @@ class RS485BridgeBackend:
             snap = self._get_state()
             if snap:
                 self._apply(snap)
+                # For direct serial the daemon's reachability IS the liveness
+                # signal (see probe_wedge): a healthy /state means the bridge is
+                # back, so clear any stale wedge the AquaConnect-style command-
+                # failure path may have raised while the pad was unreachable.
+                # _record_command_success only logs/acts when actually wedged, so
+                # this is a cheap no-op in the common case.
+                if snap.get('connected') and state.bridge_wedged:
+                    _record_command_success()
                 with self._frame_cond:
                     self._frame_cond.notify_all()
             self._read_wake.wait(timeout=self._poll_s)
@@ -3346,7 +3452,7 @@ def toggle_backend() -> Response:
 # /stream/<name> and /benchmark/<name> forms target a specific backend by name
 # — needed for the parallel RS-485 validation where both buses run at once.
 
-_STREAM_BACKENDS = ('aquaconnect', 'rs485')
+_STREAM_BACKENDS = ('aquaconnect', 'rs485', 'rs485bridge')
 
 
 def _sse_response(hub: FrameHub) -> Response:
@@ -4149,7 +4255,7 @@ def _ac_canary_probe() -> dict:
                     # the box's reboot window and a fast "recovery" races the plug.
                     state.wedge_detected_at = time.time()
                 log.warning('Bridge command path wedged (active canary probe). '
-                            'Power-cycle the AquaConnect box to recover.')
+                            'Recovery: %s.', _wedge_recovery_hint())
         return result
     except Exception as e:
         log.error('Canary probe error: %s', e)
@@ -5028,6 +5134,161 @@ def set_heater_setpoint_legacy() -> Response:
     return set_heater_setpoint(which)
 
 
+@app.route('/lights/tester', methods=['GET'])
+def lights_tester() -> Response:
+    """Self-contained scene-tester page (served same-origin so it can call the
+    /lights API without CORS). Buttons for all 17 named scenes, a raw-count
+    calibration tester, timing controls, and a log — so lights can be tested by
+    clicking + watching, no curl."""
+    html = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Pool Light Scenes</title><style>
+body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#111;color:#eee}
+h2{margin:16px 0 8px}.row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+button{padding:12px 14px;font-size:15px;border:0;border-radius:10px;background:#2b6cb0;color:#fff}
+button:active{opacity:.6}.fixed{background:#4a5568}.show{background:#6b46c1}
+.cal button{background:#2f855a}input{width:70px;padding:8px;border-radius:8px;border:1px solid #444;background:#222;color:#eee}
+label{font-size:13px;margin-right:4px}#log{white-space:pre-wrap;background:#000;padding:10px;border-radius:8px;
+font-family:ui-monospace,monospace;font-size:12px;max-height:38vh;overflow:auto;margin-top:8px}
+.pill{font-size:11px;opacity:.7;margin-left:6px}
+</style></head><body>
+<h2>Pool Light Scenes <span class=pill>show=moving · fixed=static</span></h2>
+<div id=scenes class=row>loading…</div>
+<h2>Calibration</h2>
+<div class="row cal">
+<label>reset ms<input id=reset value=4000></label>
+<label>off ms<input id=off value=250></label>
+<label>on ms<input id=on value=250></label>
+<label>offset<input id=offset value=0></label>
+<button onclick=saveCal()>Save calibration</button>
+</div>
+<h2>Raw count (calibration)</h2>
+<div class=row>
+<label>count<input id=rawn value=3></label>
+<button onclick=fireRaw()>Fire raw count → watch light</button>
+</div>
+<h2>Log</h2><div id=log></div>
+<script>
+const B='/lights',body='pool';
+const timing=()=>({reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value});
+function log(m){const l=document.getElementById('log');l.textContent=new Date().toLocaleTimeString()+'  '+m+'\\n'+l.textContent}
+async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
+ try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
+  const j=await r.json();log('← '+JSON.stringify(j));return j}catch(e){log('!! '+e)}}
+function fire(n,name){post(B+'/'+body+'/program',Object.assign({program:n},timing())).then(()=>log('fired scene '+n+' '+name+' — WATCH: moving or static?'))}
+function fireRaw(){post(B+'/'+body+'/program',Object.assign({count:+rawn.value},timing())).then(()=>log('fired RAW count '+rawn.value+' — WATCH: moving or static?'))}
+function saveCal(){post(B+'/calibration',{offset:+offset.value,reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value})}
+fetch(B+'/programs').then(r=>r.json()).then(d=>{
+ const c=d.calibration||{};reset.value=c.reset_ms;off.value=c.off_ms;on.value=c.on_ms;offset.value=c.offset;
+ document.getElementById('scenes').innerHTML='';
+ d.programs.forEach(p=>{const b=document.createElement('button');b.className=p.type;
+  b.textContent=p.n+'. '+p.name;b.onclick=()=>fire(p.n,p.name);document.getElementById('scenes').appendChild(b)})
+}).catch(e=>document.getElementById('scenes').textContent='load failed: '+e)
+</script></body></html>"""
+    return Response(html, mimetype='text/html')
+
+
+@app.route('/lights/programs', methods=['GET'])
+def lights_programs() -> Response:
+    """The named ColorLogic scenes (1..17) with type (show=moving, fixed=static),
+    plus the current calibration. The plugin/cockpit renders this list."""
+    return jsonify({
+        'programs': [{'n': i + 1, 'name': name, 'type': typ}
+                     for i, (name, typ) in enumerate(LIGHT_PROGRAMS)],
+        'circuits': LIGHT_CIRCUITS,
+        'calibration': dict(LIGHT_CFG),
+    })
+
+
+@app.route('/lights/<body>/program', methods=['POST'])
+def lights_select(body: str) -> Response:
+    """Switch a body's light to a scene by number or name. Body:
+    {"program": 1..17} or {"name": "USA"}. Drives the pad daemon's absolute
+    reset+restore power-cycle. Requires the rs485bridge backend."""
+    body = body.lower()
+    circuit = LIGHT_CIRCUITS.get(body)
+    if circuit is None:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    if _ac_backend is None or not hasattr(_ac_backend, 'select_program'):
+        return jsonify({'error': 'light programming needs the rs485bridge backend'}), 501
+
+    req = request.get_json(force=True) or {}
+    reset_ms = float(req.get('reset_ms', LIGHT_CFG['reset_ms']))
+    off_ms = float(req.get('off_ms', LIGHT_CFG['off_ms']))
+    on_ms = float(req.get('on_ms', LIGHT_CFG['on_ms']))
+    local = bool(req['local']) if 'local' in req else bool(LIGHT_CFG['local'])
+
+    # The light's settled on/off state (our steady poll, not a racy read) makes
+    # the daemon's reset deterministic.
+    with state_lock:
+        start_on = state.circuits.get(circuit)
+
+    # Calibration mode: fire an explicit daemon restore-count, bypassing the
+    # name/offset mapping, so we can find which count lands on which scene.
+    if req.get('count') is not None:
+        raw = _clamp(int(req['count']), 1, 17)
+        with _nav_lock:
+            res = _ac_backend.select_program(circuit, raw, reset_ms, off_ms, on_ms,
+                                             start_on=start_on, local=local)
+        if res is None:
+            return jsonify({'error': 'bridge /program failed'}), 502
+        return jsonify({'ok': True, 'body': body, 'raw_count': raw, 'bridge': res})
+
+    n = req.get('program')
+    if n is None and req.get('name'):
+        want = str(req['name']).strip().lower()
+        for i, (name, _t) in enumerate(LIGHT_PROGRAMS):
+            if name.lower() == want:
+                n = i + 1
+                break
+        if n is None:
+            return jsonify({'error': f'unknown scene name: {req["name"]}'}), 400
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'program must be 1..17 or a valid name'}), 400
+    if not (1 <= n <= 17):
+        return jsonify({'error': 'program must be 1..17'}), 400
+
+    count = _clamp(n + int(LIGHT_CFG['offset']), 1, 17)
+
+    name = LIGHT_PROGRAMS[n - 1][0]
+    log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
+    with _nav_lock:      # serialize against menu nav — both drive the panel
+        res = _ac_backend.select_program(circuit, count, reset_ms, off_ms, on_ms,
+                                         start_on=start_on, local=local)
+    if res is None:
+        return jsonify({'error': 'bridge /program failed'}), 502
+    # Track last-selected scene per body (best-effort, open-loop).
+    with state_lock:
+        state.light_program[body] = n
+    return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                    'daemon_count': count, 'bridge': res})
+
+
+@app.route('/lights/calibration', methods=['GET', 'POST'])
+def lights_calibration() -> Response:
+    """GET returns the current light power-cycle calibration. POST updates any
+    of offset / reset_ms / off_ms / on_ms and persists to backend.json so the
+    dialed-in values survive restarts."""
+    if request.method == 'POST':
+        body = request.get_json(force=True) or {}
+        for k, lo, hi in (('offset', -17, 17), ('reset_ms', 500, 20000),
+                          ('off_ms', 20, 3000), ('on_ms', 20, 3000)):
+            if k in body:
+                LIGHT_CFG[k] = _clamp(float(body[k]) if 'ms' in k else int(body[k]), lo, hi)
+        if 'local' in body:
+            LIGHT_CFG['local'] = bool(body['local'])
+        try:
+            cfg = _load_backend_config()
+            cfg['light_config'] = dict(LIGHT_CFG)
+            _save_backend_config(cfg)
+        except Exception as e:
+            log.warning('persist light_config: %s', e)
+        log.info('Light calibration updated: %s', LIGHT_CFG)
+    return jsonify({'calibration': dict(LIGHT_CFG)})
+
+
 @app.route('/prefetch', methods=['POST'])
 def prefetch_all() -> Response:
     """Read every menu-navigable value (heater setpoints, chlorinator %, VSP
@@ -5546,6 +5807,13 @@ def main() -> None:
         _ui_circuit_labels = {str(k).upper(): str(v) for k, v in cfg['ui_circuit_labels'].items()}
     if _ui_circuits:
         log.info('Loaded persisted UI circuits: %s', _ui_circuits)
+
+    # Persisted ColorLogic light calibration (offset + power-cycle timing).
+    if isinstance(cfg.get('light_config'), dict):
+        for k in ('offset', 'reset_ms', 'off_ms', 'on_ms'):
+            if k in cfg['light_config']:
+                LIGHT_CFG[k] = cfg['light_config'][k]
+        log.info('Loaded persisted light calibration: %s', LIGHT_CFG)
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend

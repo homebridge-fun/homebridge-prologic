@@ -8,7 +8,11 @@
 # Install:
 #   sudo cp deploy/99-ftdi-low-latency.rules /etc/udev/rules.d/
 #   sudo udevadm control --reload-rules
-#   sudo udevadm trigger --attr-match=subsystem=usb-serial
+#   sudo udevadm trigger --action=add --attr-match=subsystem=usb-serial
 # Verify:
 #   cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer   # -> 1
-ACTION=="add", SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"
+#
+# No ACTION== match: applies on both the real "add" (boot/replug) AND a live
+# `udevadm trigger` (which defaults to action=change) — an ACTION=="add" rule
+# is silently skipped by the change-triggers used to apply it without a reboot.
+SUBSYSTEM=="usb-serial", DRIVER=="ftdi_sio", ATTR{latency_timer}="1"
