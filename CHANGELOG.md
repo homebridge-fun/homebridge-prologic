@@ -3,6 +3,52 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.6.0 — Heater clarity, pad hardening, observability
+
+Refines the heater UX, makes the pad Pi freeze-proof, and adds the tooling to
+diagnose anything that does slip through.
+
+**Heater controls**
+- **One mode-following thermostat.** Removed the dedicated pool/spa heater
+  thermostats — one physical `HEATER_1` rendered as three tiles could disagree
+  on heating/standby and on which setpoint was live. The config options
+  (`enablePoolHeaterThermostat` / `enableSpaHeaterThermostat`) are gone from the
+  schema so they can't be re-added; the single "Active Heat" tile mirrors the
+  active body. Stale tiles are unregistered on startup.
+- **Armed vs firing, separated.** The thermostat's `CurrentHeatingCoolingState`
+  now reflects the actual relay-firing signal (`heater_active`), not the armed
+  Auto-mode bit — so Heating/Idle means *firing*, and Auto/Off means *armed*.
+  The web cockpit mirrors the split: "Heater mode" (Auto/Off) and "Heating now"
+  (Running/Idle), plus per-body Auto/Off + Heating/Idle badges in the Heat card.
+- **Correct valve mode.** `valve_mode` is derived from the live POOL/SPA LED
+  bits instead of parsed LCD text, so it flips instantly.
+
+**Pad Pi reliability (512 MB Pi Zero 2 W)**
+- **Memory-pressure hardening**, folded into `install-pad.sh`: `earlyoom` (kills
+  a hog before a swap-thrash freeze), `vm.swappiness=10`, persistent+capped
+  journald, and a `MemoryMax` cap on the `pool-bridge` service. Traced three
+  field freezes to chronic low headroom the hardware watchdog couldn't catch.
+- **Clean re-image path.** `install-pad.sh` now bootstraps `python3-pip` (absent
+  on Pi OS Lite) and the FTDI udev rule applies `latency_timer=1` on a live
+  trigger (was `ACTION==add`-only, so it silently no-op'd until a reboot).
+- **30-day health sampler.** `pool-healthlog.timer` logs memory/swap, load, Pi
+  under-voltage/throttle flags, SoC temp, and daemon RSS to a rotating CSV — so
+  an intermittent freeze or a power/brownout issue is diagnosable after the fact.
+
+**Wedge + alerts**
+- **Backend-aware wedge.** Messages no longer say "power-cycle the AquaConnect
+  box" on the RS-485 bridge; the flag now **auto-clears** once the pad daemon is
+  reachable again (the AquaConnect-gated recovery probe never cleared it before).
+- **Coalesced alerts.** Repeated warnings collapse into one cockpit row with a
+  `×N` count instead of spamming three per menu pass.
+- Fixed a blank cockpit Panel Display on the rs485bridge backend (LCD stream hub
+  name mismatch).
+
+**Experimental (banked)**
+- ColorLogic light-scene control in the sidecar (named scenes, select-by-name
+  API, cockpit card, `/program` absolute select) plus full Hayward/Pentair
+  research — parked as experimental pending night testing.
+
 ## 0.5.0 — RS-485 smart bridge in production
 
 The big one: menu control moved off the AquaConnect HTTP box onto a **direct
