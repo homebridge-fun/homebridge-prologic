@@ -52,7 +52,9 @@ fi
 echo "==> installing FTDI latency_timer=1 udev rule"
 sudo cp "$REPO/deploy/99-ftdi-low-latency.rules" /etc/udev/rules.d/
 sudo udevadm control --reload-rules
-sudo udevadm trigger --attr-match=subsystem=usb-serial || true
+# --action=add: the rule applies on the "add" event; a bare `udevadm trigger`
+# defaults to action=change and would silently no-op for an add-scoped rule.
+sudo udevadm trigger --action=add --attr-match=subsystem=usb-serial || true
 if [ -e "/sys/bus/usb-serial/devices/$(basename "$PORT")/latency_timer" ]; then
   echo -n "    latency_timer now: "
   cat "/sys/bus/usb-serial/devices/$(basename "$PORT")/latency_timer"
