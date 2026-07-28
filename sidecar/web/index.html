@@ -874,14 +874,17 @@
     if (s.bridge_wedged) {
       const cd = s.wedge_cooldown_remaining_s;
       const bridge = s.backend === 'rs485bridge';
-      const subj = bridge ? 'RS-485 bridge' : 'AquaConnect box';
-      const hint = bridge
-        ? 'check the pad Pi / pool-bridge daemon — clears itself once reachable'
-        : 'power-cycle the AquaConnect box';
-      b.className = 'banner bad show';
-      b.textContent = cd > 0
-        ? `⚠ ${subj} recovering — cooldown, ${cd}s remaining`
-        : `⚠ Command path wedged — ${hint}`;
+      if (bridge) {
+        // Direct serial: 'offline' is transient + self-clearing (weak Wi-Fi
+        // blip), not a wedge needing a power-cycle. Milder wording + 'warn'.
+        b.className = 'banner show';   // base banner = amber (mild), not red '.bad'
+        b.textContent = '⚠ RS-485 bridge offline — reconnecting (clears itself automatically)';
+      } else {
+        b.className = 'banner bad show';
+        b.textContent = cd > 0
+          ? `⚠ AquaConnect box recovering — cooldown, ${cd}s remaining`
+          : '⚠ Command path wedged — power-cycle the AquaConnect box';
+      }
     } else { b.className = 'banner'; }
 
     txt('backend', s.backend || '—');

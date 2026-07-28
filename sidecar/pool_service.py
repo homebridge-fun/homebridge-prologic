@@ -214,6 +214,13 @@ _WEDGE_FAIL_THRESHOLD = 2
 _wedge_fail_streak: int = 0
 _wedge_lock = threading.Lock()
 
+# rs485bridge only: consecutive failed /state polls before flagging the bridge
+# 'offline'. At the 0.5s poll interval + a 5s per-poll timeout, 3 misses is a
+# few seconds of genuine unreachability — enough to ignore a single dropped
+# packet but fast enough to reflect a real outage. Reachability-driven and
+# self-clearing; there is no power-cycle cooldown for direct serial.
+_BRIDGE_OFFLINE_MISSES = 3
+
 
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
 _WEDGE_CANARY_KEY = 'AUX2'
@@ -275,6 +282,14 @@ def _rearm_wedge() -> bool:
 def _record_command_failure() -> None:
     """Call when a command was sent but produced no confirmed state change."""
     global _wedge_fail_streak
+    # Direct-serial bridge: a failed command means the pad was briefly
+    # unreachable (weak Wi-Fi), NOT that a box wedged and needs a power-cycle.
+    # There's nothing to power-cycle and no read-only mode to escape. Offline
+    # detection is owned by RS485BridgeBackend._poll_loop (reachability-driven,
+    # self-clearing). So don't engage the AquaConnect cooldown/block machinery
+    # here — it would turn a 2-second network blip into a sticky 120s wedge.
+    if _active_backend == 'rs485bridge':
+        return
     with _wedge_lock:
         _wedge_fail_streak += 1
         streak = _wedge_fail_streak
@@ -306,6 +321,12 @@ def _wedge_block_response() -> Optional[tuple]:
     - Still in power-cycle cooldown: box is rebooting, don't send anything yet.
     - Wedged but cooldown elapsed: still blocked until the probe confirms recovery.
     """
+    # Direct-serial bridge: never BLOCK commands. There's no power-cycle cooldown
+    # to wait out — the bridge is stateless, so a command during an outage just
+    # fails fast and the caller retries. Blocking here (the AquaConnect behavior)
+    # only compounds a transient blip. The 'offline' flag is informational.
+    if _active_backend == 'rs485bridge':
+        return None
     with state_lock:
         wedged = state.bridge_wedged
         detected_at = state.wedge_detected_at
@@ -345,6 +366,11 @@ def _immediate_wedge_probe() -> None:
     Called after any HomeKit-driven write fails so the bridge_wedged flag
     updates within seconds rather than waiting for the 300s/30s probe loop.
     """
+    # Direct-serial bridge owns its own reachability signal in the poll loop —
+    # the AquaConnect canary (which declares a wedge + cooldown on one failed
+    # probe) does not apply and would re-arm the sticky wedge we're removing.
+    if _active_backend == 'rs485bridge':
+        return
     threading.Thread(target=_ac_canary_probe, daemon=True,
                      name='wedge-probe-on-failure').start()
 
@@ -1525,20 +1551,37 @@ class RS485BridgeBackend:
 
     # ── Background state poll ──────────────────────────────────────────────────
     def _poll_loop(self) -> None:
+        # Reachability-driven offline flag. For direct serial the daemon's
+        # reachability IS the liveness signal: a healthy /state = online, a run
+        # of failed polls = offline. This OWNS state.bridge_wedged for the
+        # bridge (nothing else sets it now) — no power-cycle cooldown, no command
+        # blocking, self-clearing on the first good poll. A weak-Wi-Fi blip shows
+        # a brief 'offline' that heals itself instead of a sticky wedge.
+        fails = 0
         while not self._poll_stop.is_set():
-            snap = self._get_state()
-            if snap:
-                self._apply(snap)
-                # For direct serial the daemon's reachability IS the liveness
-                # signal (see probe_wedge): a healthy /state means the bridge is
-                # back, so clear any stale wedge the AquaConnect-style command-
-                # failure path may have raised while the pad was unreachable.
-                # _record_command_success only logs/acts when actually wedged, so
-                # this is a cheap no-op in the common case.
-                if snap.get('connected') and state.bridge_wedged:
-                    _record_command_success()
-                with self._frame_cond:
-                    self._frame_cond.notify_all()
+            try:
+                snap = self._get_state()
+                if snap:
+                    fails = 0
+                    self._apply(snap)
+                    if snap.get('connected') and state.bridge_wedged:
+                        _record_command_success()   # clears the offline flag
+                    with self._frame_cond:
+                        self._frame_cond.notify_all()
+                else:
+                    fails += 1
+                    # ~3 misses (poll interval + timeouts ≈ several seconds) before
+                    # flagging, so a single dropped packet doesn't flap the banner.
+                    if fails >= _BRIDGE_OFFLINE_MISSES and not state.bridge_wedged:
+                        with state_lock:
+                            state.bridge_wedged = True
+                            state.wedge_detected_at = None   # NO power-cycle cooldown
+                        log.warning('RS-485 bridge unreachable (%d consecutive polls) — '
+                                    'marking offline; self-clears on reconnect', fails)
+            except Exception as e:  # noqa: BLE001
+                # A malformed snapshot must NEVER kill this thread — a dead poll
+                # loop was what left the flag stuck with no way to self-heal.
+                log.debug('rs485bridge poll loop error (continuing): %s', e)
             self._read_wake.wait(timeout=self._poll_s)
             self._read_wake.clear()
 
@@ -3342,7 +3385,11 @@ def get_status() -> Response:
             'ui_circuits':         list(_ui_circuits),
             'circuit_labels':      dict(_ui_circuit_labels),
             'faults':              _current_faults(),
-            'alerts':              _alert_buffer.recent(window_s=1800, limit=8),
+            # Rolling 10-min window so transient alerts auto-age off the cockpit
+            # (a flaky link shows current activity, not a growing pile needing a
+            # manual Dismiss). Coalescing bumps a repeat's timestamp, so an
+            # actively-recurring alert stays visible until it actually stops.
+            'alerts':              _alert_buffer.recent(window_s=600, limit=8),
         })
 
 
