@@ -140,6 +140,7 @@
   .alerts li { padding: 3px 0; font-size: 13px; font-weight: 500; display: flex; gap: 8px; }
   .alerts li .at { color: var(--dim); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
   .alerts li.err { color: var(--bad); }
+  .alerts li .axn { color: var(--dim); font-variant-numeric: tabular-nums; font-weight: 700; }
   footer { text-align: center; color: var(--off); font-size: 12px; padding: 8px 0 18px; }
   /* Interactivity */
   .ctl { cursor: pointer; user-select: none; }
@@ -862,7 +863,8 @@
         + (alerts.length > 1 ? 's' : '') + '</span><button class="adismiss" id="alert_dismiss">Dismiss</button></div>'
         + '<ul>' + alerts.map(a => {
             const cls = a.level === 'ERROR' ? ' class="err"' : '';
-            return `<li${cls}><span class="at">${agoShort(a.t)}</span><span>${esc(a.msg)}</span></li>`;
+            const n = (a.count && a.count > 1) ? ` <span class="axn">×${a.count}</span>` : '';
+            return `<li${cls}><span class="at">${agoShort(a.t)}</span><span>${esc(a.msg)}${n}</span></li>`;
           }).join('') + '</ul>';
       $('alert_dismiss').onclick = dismissAlerts;
     } else { ax.className = 'alerts'; ax.innerHTML = ''; }

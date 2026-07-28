@@ -67,6 +67,11 @@ class _AlertBuffer(logging.Handler):
     surface every sidecar error/warning (heater-not-confirmed, wedge, unconfirmed
     writes, prefetch failures, …) without instrumenting each call site."""
 
+    # Repeats of the SAME message within this window collapse into one entry
+    # with a bumped count (e.g. a menu pass that fires MENU 3× and each times
+    # out becomes one "…timed out (×3)" alert instead of three identical rows).
+    _COALESCE_WINDOW_S = 120
+
     def __init__(self, maxlen: int = 60):
         super().__init__(level=logging.WARNING)
         self._buf = []
@@ -75,10 +80,23 @@ class _AlertBuffer(logging.Handler):
 
     def emit(self, record):
         try:
+            msg = record.getMessage()
             with self._lock:
+                # Coalesce with the most recent same-message entry still inside
+                # the window: bump its count and slide its timestamp forward so
+                # the cockpit shows one row with a live "last seen" + a ×N badge.
+                for e in reversed(self._buf):
+                    if e['msg'] == msg:
+                        if record.created - e['t'] <= self._COALESCE_WINDOW_S:
+                            e['count'] += 1
+                            e['t'] = record.created
+                            e['level'] = record.levelname
+                            return
+                        break  # newest match is stale — fall through to append
                 self._buf.append({'t': record.created,
                                   'level': record.levelname,
-                                  'msg': record.getMessage()})
+                                  'msg': msg,
+                                  'count': 1})
                 if len(self._buf) > self._maxlen:
                     del self._buf[:-self._maxlen]
         except Exception:
