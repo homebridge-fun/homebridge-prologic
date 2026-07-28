@@ -119,10 +119,23 @@ sudo systemctl --no-pager --lines=15 status pool-bridge.service || true
 echo "==> memory-pressure hardening (persistent journal + earlyoom + swappiness)"
 
 # Persistent journal (capped) so the NEXT freeze leaves a readable `-b -1` trail.
+# NOTE: Storage=persistent alone isn't enough — the dir needs correct ownership
+# (systemd-tmpfiles) and journald must FLUSH /run -> /var/log, or it silently
+# keeps logging to the volatile /run and every reboot wipes the evidence (this
+# bit us: a freeze's logs were lost even with Storage=persistent set).
 sudo mkdir -p /var/log/journal
 sudo sed -i 's/^#\?Storage=.*/Storage=persistent/'     /etc/systemd/journald.conf
 sudo sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
+sudo systemd-tmpfiles --create --prefix /var/log/journal
 sudo systemctl restart systemd-journald
+sudo journalctl --flush
+
+# Wi-Fi power-save OFF. The Pi Zero 2 W's brcmfmac drops off the network (and can
+# wedge) when power-save idles the radio — a healthy, idle box just goes
+# unreachable. `2` = disabled in NetworkManager; also set it live on wlan0.
+echo "==> disabling Wi-Fi power-save (brcmfmac idle-drop fix)"
+sudo cp "$REPO/deploy/wifi-powersave-off.conf" /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+sudo iw dev wlan0 set power_save off 2>/dev/null || true
 
 # earlyoom: kill the worst hog BEFORE the kernel thrashes to a freeze. The
 # bridge (its likely target) has Restart=on-failure, so it self-recovers.
