@@ -48,6 +48,7 @@ spike can't wedge the Pi.
 | `/etc/pool-bridge.env` | root-only (0600) | holds the bearer token + bind address (NOT committed) |
 | `pool-bridge.service` | `/etc/systemd/system/` | runs the daemon (MemoryMax cap), binds the tailnet IP, restarts on failure |
 | persistent journal + `earlyoom` + `swappiness=10` | `/etc/systemd/journald.conf`, `earlyoom.service`, `/etc/sysctl.d/` | 512MB memory-pressure guards — kill a hog before a swap-thrash freeze, and keep a readable crash trail |
+| health sampler (`pool-healthlog.timer`) | `/usr/local/bin/pad-healthlog.sh`, `/var/log/pad-health.csv` | 5-min CSV of memory/swap + Pi under-voltage, kept 30 days (logrotate) — makes an intermittent freeze or a power/brownout issue diagnosable after the fact |
 
 ## Day-to-day
 
@@ -63,6 +64,29 @@ curl -s http://$(tailscale ip -4 | head -1):8899/health
 
 # re-run install-pad.sh any time — it's idempotent and preserves the token
 ```
+
+## Health history (memory + power)
+
+A systemd timer samples the Pi every 5 min into `/var/log/pad-health.csv`
+(rotated daily, 30 kept). Columns: memory/swap MB, load, `throttled` bitmask,
+under-voltage flags, SoC temp, and the bridge daemon's RSS.
+
+```bash
+# last ~2 hours at a glance
+column -t -s, /var/log/pad-health.csv | tail -25
+
+# any under-voltage EVER since the log started? (uv_now / uv_since_boot columns)
+awk -F, 'NR>1 && ($8==1 || $9==1){print $1, "throttled="$7}' /var/log/pad-health.csv
+
+# lowest available-memory samples (spot a leak or a pressure spike)
+tail -n +2 /var/log/pad-health.csv | sort -t, -k4 -n | head
+
+# is the bridge daemon RSS creeping up over days? (last column)
+awk -F, 'NR>1{print $1, $11" MB"}' /var/log/pad-health.csv | tail -20
+```
+
+`throttled=0x0` and `uv_*` staying `0` means clean power. A non-zero
+under-voltage flag points at the USB supply / pad circuit, not software.
 
 ## Security posture
 

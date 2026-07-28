@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample pad Pi health every 5 min (memory + under-voltage trend)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Catch up one missed sample after downtime so gaps are visible, not silent.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

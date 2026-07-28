@@ -135,6 +135,19 @@ sudo systemctl enable --now earlyoom
 echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-pad-swappiness.conf >/dev/null
 sudo sysctl -p /etc/sysctl.d/99-pad-swappiness.conf >/dev/null
 
+# 7. Health sampler --------------------------------------------------------
+# 5-min CSV samples (memory/swap trend + Pi under-voltage) kept 30 days, so an
+# intermittent freeze or a power/brownout issue is diagnosable after the fact
+# instead of leaving us blind like the first three freezes did.
+echo "==> installing pad health sampler (5-min samples, 30-day CSV)"
+sudo install -m 0755 "$REPO/deploy/pad-healthlog.sh" /usr/local/bin/pad-healthlog.sh
+sudo cp "$REPO/deploy/pool-healthlog.service" /etc/systemd/system/
+sudo cp "$REPO/deploy/pool-healthlog.timer"   /etc/systemd/system/
+sudo cp "$REPO/deploy/pad-health.logrotate"   /etc/logrotate.d/pad-health
+sudo systemctl daemon-reload
+sudo systemctl enable --now pool-healthlog.timer
+sudo systemctl start pool-healthlog.service   # write the first row now
+
 echo
 echo "==================================================================="
 echo " Pad bridge installed. Bound: $LISTEN"
