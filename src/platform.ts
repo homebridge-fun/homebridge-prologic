@@ -227,12 +227,18 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private async reconcileBackend(): Promise<void> {
     try {
       const cur = await this.sidecar.getBackend();
-      if (cur.active === this.cfg.backend) {
-        this.log.debug(`Sidecar backend already '${this.cfg.backend}'.`);
-        return;
+      // Always push the full desired config, not just when the backend TYPE
+      // changed. Comparing only `cur.active === this.cfg.backend` missed a
+      // changed HOST/PORT (e.g. the pad Pi's tailnet IP changing after a
+      // re-image) — the sidecar kept polling the dead old address forever.
+      // setBackend is idempotent: it returns {unchanged:true} without a restart
+      // when nothing actually changed, so pushing unconditionally is safe.
+      if (cur.active !== this.cfg.backend) {
+        this.log.info(
+          `Sidecar backend is '${cur.active}', config wants '${this.cfg.backend}' — switching (sidecar will restart).`);
+      } else {
+        this.log.debug(`Reconciling sidecar '${this.cfg.backend}' config (host/port).`);
       }
-      this.log.info(
-        `Sidecar backend is '${cur.active}', config wants '${this.cfg.backend}' — switching (sidecar will restart).`);
       await this.sidecar.setBackend({
         backend: this.cfg.backend,
         aquaconnect_host: this.cfg.aquaconnectHost,
