@@ -161,6 +161,18 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pool-healthlog.timer
 sudo systemctl start pool-healthlog.service   # write the first row now
 
+# 8. Network watchdog ------------------------------------------------------
+# The Pi Zero 2 W's brcmfmac Wi-Fi can crash (radio dead, CPU alive) and not
+# rejoin without a reboot — the box stays up but goes network-dark, which used
+# to mean a physical power-cycle. This watchdog detects that and self-recovers
+# (restart Wi-Fi -> reload module -> reboot), so it heals unattended.
+echo "==> installing network watchdog (self-heal crashed Wi-Fi)"
+sudo install -m 0755 "$REPO/deploy/pad-netwatch.sh" /usr/local/bin/pad-netwatch.sh
+sudo cp "$REPO/deploy/pool-netwatch.service" /etc/systemd/system/
+sudo cp "$REPO/deploy/pool-netwatch.timer"   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pool-netwatch.timer
+
 echo
 echo "==================================================================="
 echo " Pad bridge installed. Bound: $LISTEN"

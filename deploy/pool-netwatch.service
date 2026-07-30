@@ -1,0 +1,8 @@
+[Unit]
+Description=Pad Pi network watchdog (recover crashed brcmfmac Wi-Fi without a power-cycle)
+Documentation=https://github.com/homebridge-fun/homebridge-prologic
+
+[Service]
+Type=oneshot
+# Runs as root: restarts NetworkManager, reloads the Wi-Fi module, and reboots.
+ExecStart=/usr/local/bin/pad-netwatch.sh
