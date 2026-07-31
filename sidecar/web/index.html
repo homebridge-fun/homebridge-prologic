@@ -71,7 +71,8 @@
   .slots { display: flex; gap: 8px; }
   .slot { flex: 1; min-width: 0; text-align: center; background: var(--panel2);
     border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; }
-  .slot.run { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+  .slot.run { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset;
+    background: rgba(52,211,153,.13); }
   .slot.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .slot .s { font-size: 11px; color: var(--dim); white-space: nowrap; } .slot .p { font-size: 18px; font-weight: 700; }
   .slot .p.pend { color: var(--accent); }
@@ -90,9 +91,10 @@
   .duo { display: flex; gap: 10px; }
   .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
     border-radius: 10px; padding: 8px 10px; }
-  /* Active body flagged by the green ring alone. Green = active state across the
-     UI; blue is reserved for "selected / being edited". */
-  .bd.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+  /* Active body: green tint fill + a 2px green ring. Green = active state across
+     the UI; blue is reserved for "selected / being edited". */
+  .bd.active { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset;
+    background: rgba(52,211,153,.13); }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
   /* Per-body heater status line: mode (Auto/Off) + firing (Heating/Idle) */
   .bd-stat { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
