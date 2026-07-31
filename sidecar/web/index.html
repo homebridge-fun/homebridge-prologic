@@ -243,6 +243,7 @@
     </div>
     <div class="condlist">
       <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
+      <div class="row"><span class="label">Pump speed</span><span class="pill" id="pump_now">—</span></div>
       <div class="row"><span class="label">Heater mode</span><span class="pill ctl" id="heat_mode">—</span></div>
       <div class="row"><span class="label">Heating now</span><span class="pill" id="heat_fire">—</span></div>
     </div>
@@ -794,6 +795,32 @@
     setPill('filter_state', effFilter, 'On', 'Off');
     $('filter_state').classList.toggle('staged', 'filter' in staged);
 
+    // At-a-glance PUMP SPEED — the live speed the bus reports is the source of
+    // truth. The slots are just presets. When the controller commands a speed
+    // that isn't one of them (heater min-flow override, spa), show the real %
+    // and name the cause rather than mis-mapping it onto a slot.
+    (function () {
+      const e = $('pump_now'); if (!e) return;
+      const runSpeed = spa ? s.spa_speed : s.pump_speed;   // live bus speed, current mode
+      if (!filterOn) { e.textContent = 'Off'; e.className = 'pill off'; return; }
+      if (runSpeed == null) { e.textContent = '—'; e.className = 'pill'; return; }
+      let tag = '';
+      if (spa) {
+        tag = (!!s.heater_active) ? 'spa · heat flow' : 'spa';
+      } else {
+        let match = null;
+        for (let i = 1; i <= 4; i++) {
+          const p = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
+          if (p != null && p === runSpeed) { match = i; break; }
+        }
+        if (match) tag = 'Speed ' + match;
+        else if (s.circuits && s.circuits.HEATER_1) tag = 'heat flow';
+        else tag = 'override';
+      }
+      e.textContent = runSpeed + '%' + (tag ? ' · ' + tag : '');
+      e.className = 'pill on';
+    })();
+
     // Speeds — tap a tile to edit (staged); running slot highlighted
     function slotTile(label, key, real, running) {
       const eff = (key in staged) ? staged[key] : real;
@@ -808,7 +835,12 @@
     const slots = $('slots'); slots.innerHTML = '';
     for (let i = 1; i <= 4; i++) {
       const pct = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
-      slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, !spa && s.vsp_active_slot === i));
+      // "Running" only when the panel selects this slot AND the live bus speed
+      // actually matches it — so a heater/override speed doesn't leave a slot
+      // falsely lit (the at-a-glance Pump row shows the real override instead).
+      const running = !spa && s.vsp_active_slot === i &&
+                      (s.pump_speed == null || s.pump_speed === pct);
+      slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, running));
     }
     const spaSlots = $('spa_slots'); spaSlots.innerHTML = '';
     spaSlots.appendChild(slotTile('Speed', 'spaSpeed', s.spa_speed, spa));
