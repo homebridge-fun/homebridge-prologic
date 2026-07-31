@@ -67,11 +67,11 @@
   .mode { display: flex; gap: 6px; }
   .mode .seg { flex: 1; text-align: center; padding: 11px; border-radius: 9px;
     background: var(--panel2); color: var(--dim); font-weight: 600; }
-  .mode .seg.active { background: var(--accent); color: #04263a; }
+  .mode .seg.active { background: var(--ok); color: #04263a; }
   .slots { display: flex; gap: 8px; }
   .slot { flex: 1; min-width: 0; text-align: center; background: var(--panel2);
     border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; }
-  .slot.run { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .slot.run { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
   .slot.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .slot .s { font-size: 11px; color: var(--dim); white-space: nowrap; } .slot .p { font-size: 18px; font-weight: 700; }
   .slot .p.pend { color: var(--accent); }
@@ -90,17 +90,17 @@
   .duo { display: flex; gap: 10px; }
   .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
     border-radius: 10px; padding: 8px 10px; }
-  /* Active body flagged by the blue-accent ring alone (colorblind-safe; blue is
-     the single "active" color across the UI). */
-  .bd.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  /* Active body flagged by the green ring alone. Green = active state across the
+     UI; blue is reserved for "selected / being edited". */
+  .bd.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
   /* Per-body heater status line: mode (Auto/Off) + firing (Heating/Idle) */
   .bd-stat { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
   .bd-stat .b { font-size: 11px; font-weight: 700; letter-spacing: .03em;
     padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); }
-  .bd-stat .b.on  { background: rgba(56,189,248,.16); color: var(--accent); border-color: var(--accent); }
+  .bd-stat .b.on  { background: rgba(52,211,153,.16); color: var(--ok); border-color: var(--ok); }
   .bd-stat .b.off { background: transparent; color: var(--dim); }
-  .bd-stat .b.fire{ background: var(--accent); color: #04263a; border-color: var(--accent); }
+  .bd-stat .b.fire{ background: var(--ok); color: #04263a; border-color: var(--ok); }
   .bd-v { flex: 1; text-align: center; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .bd-v.pend { color: var(--accent); }
   .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
