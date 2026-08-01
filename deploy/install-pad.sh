@@ -173,6 +173,17 @@ sudo cp "$REPO/deploy/pool-netwatch.timer"   /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now pool-netwatch.timer
 
+# 9. Bridge serial watchdog ------------------------------------------------
+# Covers the case pad-netwatch can't: the daemon is up + reachable but its
+# SERIAL link to the panel dropped (USB re-enumeration / loose cable), which
+# strands the cockpit at "no panel". Restarts pool-bridge to reopen the port.
+echo "==> installing bridge serial watchdog (reopen serial on drop)"
+sudo install -m 0755 "$REPO/deploy/pad-serialwatch.sh" /usr/local/bin/pad-serialwatch.sh
+sudo cp "$REPO/deploy/pool-serialwatch.service" /etc/systemd/system/
+sudo cp "$REPO/deploy/pool-serialwatch.timer"   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pool-serialwatch.timer
+
 echo
 echo "==================================================================="
 echo " Pad bridge installed. Bound: $LISTEN"
