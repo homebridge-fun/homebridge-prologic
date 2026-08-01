@@ -5387,7 +5387,9 @@ def lights_select(body: str) -> Response:
     if not (1 <= n <= nprog):
         return jsonify({'error': f'program must be 1..{nprog}'}), 400
 
-    count = _clamp(n + int(cfg['offset']), 1, nprog)
+    # Offset can push the restore-count past the program count (e.g. spa needs
+    # mode+1), so allow headroom above nprog for the daemon's raw restore count.
+    count = _clamp(n + int(cfg['offset']), 1, nprog + 5)
 
     name = progs[n - 1][0]
     log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
