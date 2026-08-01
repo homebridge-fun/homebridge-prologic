@@ -302,14 +302,17 @@
   </div>
 
   <style>
-    /* Scene picker = a dropdown + an Apply button; calibration in the ⚙ popup. */
-    .scene-row { display: flex; gap: 8px; align-items: stretch; }
-    .scene-sel { flex: 1; min-width: 0; padding: 12px; font-size: 16px; border-radius: 10px;
+    /* Scene picker = a dropdown; a Cancel/Apply row appears once you pick one.
+       Calibration lives in the ⚙ popup. */
+    .scene-sel { width: 100%; padding: 12px; font-size: 16px; border-radius: 10px;
       border: 1px solid var(--line); background: var(--panel2); color: var(--ink);
       -webkit-appearance: none; appearance: none; }
-    .scene-apply { padding: 0 18px; font-size: 15px; font-weight: 700; color: #04263a;
-      background: var(--accent); border: 0; border-radius: 10px; white-space: nowrap; }
-    .scene-apply[hidden] { display: none; }
+    .scene-actions { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+    .scene-actions[hidden] { display: none; }
+    .scene-apply { padding: 10px 20px; font-size: 15px; font-weight: 700; color: #04263a;
+      background: var(--accent); border: 0; border-radius: 10px; }
+    .scene-cancel { padding: 10px 18px; font-size: 15px; font-weight: 600; color: var(--dim);
+      background: transparent; border: 1px solid var(--line); border-radius: 10px; }
     .scene-msg { margin-top: 10px; min-height: 1.2em; font-size: 14px; color: var(--dim); }
     #light_modal { position: fixed; inset: 0; z-index: 41; display: none;
       background: rgba(2,8,16,.72); align-items: center; justify-content: center; padding: 16px; }
@@ -329,18 +332,20 @@
   </style>
   <div class="card">
     <h2 class="hrow">Spa Light <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
-    <div class="scene-row">
-      <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
-      <button class="scene-apply" id="spa_apply" hidden>Apply</button>
+    <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
+    <div class="scene-actions" id="spa_actions" hidden>
+      <button class="scene-cancel" id="spa_cancel">Cancel</button>
+      <button class="scene-apply" id="spa_apply">Apply</button>
     </div>
     <div class="scene-msg" id="spa_scene_msg"></div>
   </div>
 
   <div class="card">
     <h2 class="hrow">Pool Light <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
-    <div class="scene-row">
-      <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
-      <button class="scene-apply" id="pool_apply" hidden>Apply</button>
+    <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
+    <div class="scene-actions" id="pool_actions" hidden>
+      <button class="scene-cancel" id="pool_cancel">Cancel</button>
+      <button class="scene-apply" id="pool_apply">Apply</button>
     </div>
     <div class="scene-msg" id="scene_msg"></div>
   </div>
@@ -1109,12 +1114,14 @@
           o.textContent = p.name + (p.type === 'show' ? ' · show' : ' · static');
           sel.appendChild(o);
         });
-        el(ids.apply).hidden = true;
+        el(ids.actions).hidden = true;
       }).catch(e => setMsg('load failed: ' + e.message));
     }
-    // Selecting only stages the choice (keeps it shown); Apply confirms + fires,
-    // so a scroll/mis-tap can't trigger the light.
-    el(ids.sel).onchange = () => { el(ids.apply).hidden = !el(ids.sel).value; };
+    // Selecting only stages the choice (dropdown keeps showing it); the
+    // Cancel/Apply row appears. Apply fires; Cancel discards. So a scroll or
+    // mis-tap can't trigger the light.
+    el(ids.sel).onchange = () => { el(ids.actions).hidden = !el(ids.sel).value; };
+    el(ids.cancel).onclick = () => { el(ids.sel).value = ''; el(ids.actions).hidden = true; };
     el(ids.apply).onclick = () => {
       const p = programs.find(x => x.n === +el(ids.sel).value);
       if (p) fire(p);
@@ -1122,8 +1129,10 @@
     el(ids.gear).onclick = () => openModal(card);
     load();
   }
-  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear', apply: 'spa_apply' });
-  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear', apply: 'pool_apply' });
+  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear',
+    actions: 'spa_actions', apply: 'spa_apply', cancel: 'spa_cancel' });
+  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear',
+    actions: 'pool_actions', apply: 'pool_apply', cancel: 'pool_cancel' });
 })();
 </script>
 </body>
