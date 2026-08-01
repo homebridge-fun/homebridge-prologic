@@ -730,7 +730,7 @@ def _install_key_burst(AquaLogic) -> None:
 # absolute reset procedure (full off -> N power-restores) via the pad daemon's
 # /program. LIGHT_PROGRAM_OFFSET calibrates the count-to-program mapping if the
 # panel's first-restore isn't program 1 (see /lights/programs + calibration).
-LIGHT_PROGRAMS = [
+LIGHT_PROGRAMS_POOL = [
     ('Voodoo Lounge', 'show'),
     ('Deep Blue Sea', 'fixed'),
     ('Royal Blue', 'fixed'),
@@ -749,6 +749,34 @@ LIGHT_PROGRAMS = [
     ('Mardi Gras', 'show'),
     ('Cool Cabaret', 'show'),
 ]
+
+# Spa light = Pentair IntelliBrite 5G (on AUX_1). Absolute count per the
+# IntelliBrite manual: from power-on, off/on N times selects mode N. 1-7 are
+# color shows, 8-12 fixed colors. (13 Hold / 14 Recall are save/recall
+# functions, not selectable modes, so not listed here.)
+LIGHT_PROGRAMS_SPA = [
+    ('SAm', 'show'),
+    ('Party', 'show'),
+    ('Romance', 'show'),
+    ('Caribbean', 'show'),
+    ('American', 'show'),
+    ('California Sunset', 'show'),
+    ('Royal', 'show'),
+    ('Blue', 'fixed'),
+    ('Green', 'fixed'),
+    ('Red', 'fixed'),
+    ('White', 'fixed'),
+    ('Magenta', 'fixed'),
+]
+
+LIGHT_PROGRAMS_BY_BODY = {'pool': LIGHT_PROGRAMS_POOL, 'spa': LIGHT_PROGRAMS_SPA}
+# Back-compat default (pool) for any caller that doesn't specify a body.
+LIGHT_PROGRAMS = LIGHT_PROGRAMS_POOL
+
+
+def _light_programs(body: str):
+    """Program list for a body: Pentair (spa) vs Hayward UCL (pool)."""
+    return LIGHT_PROGRAMS_BY_BODY.get(body, LIGHT_PROGRAMS_POOL)
 
 # Which circuit each body's programmable light is on (pool light = LIGHTS,
 # spa light = AUX_1). Power-cycle timing + count offset are calibratable and
@@ -5251,7 +5279,15 @@ const B='/lights';let body='spa';
 function setBody(b){body=b;document.getElementById('bodylbl').textContent=b;
  document.getElementById('bpool').style.opacity=(b==='pool')?1:.45;
  document.getElementById('bspa').style.opacity=(b==='spa')?1:.45;
- log('target = '+b+' light ('+(b==='spa'?'AUX_1 · Pentair':'LIGHTS · Hayward UCL')+')');}
+ log('target = '+b+' light ('+(b==='spa'?'AUX_1 · Pentair':'LIGHTS · Hayward UCL')+')');
+ loadPrograms();}
+function loadPrograms(){
+ fetch(B+'/programs?body='+body).then(r=>r.json()).then(d=>{
+  const c=d.calibration||{};reset.value=c.reset_ms;off.value=c.off_ms;on.value=c.on_ms;offset.value=c.offset;
+  const s=document.getElementById('scenes');s.innerHTML='';
+  d.programs.forEach(p=>{const btn=document.createElement('button');btn.className=p.type;
+   btn.textContent=p.n+'. '+p.name;btn.onclick=()=>fire(p.n,p.name);s.appendChild(btn)})
+ }).catch(e=>document.getElementById('scenes').textContent='load failed: '+e)}
 const timing=()=>({reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value});
 function log(m){const l=document.getElementById('log');l.textContent=new Date().toLocaleTimeString()+'  '+m+'\\n'+l.textContent}
 async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
@@ -5260,24 +5296,26 @@ async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
 function fire(n,name){post(B+'/'+body+'/program',Object.assign({program:n},timing())).then(()=>log('fired scene '+n+' '+name+' — WATCH: moving or static?'))}
 function fireRaw(){post(B+'/'+body+'/program',Object.assign({count:+rawn.value},timing())).then(()=>log('fired RAW count '+rawn.value+' — WATCH: moving or static?'))}
 function saveCal(){post(B+'/calibration',{offset:+offset.value,reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value})}
-setBody(body);
-fetch(B+'/programs').then(r=>r.json()).then(d=>{
- const c=d.calibration||{};reset.value=c.reset_ms;off.value=c.off_ms;on.value=c.on_ms;offset.value=c.offset;
- document.getElementById('scenes').innerHTML='';
- d.programs.forEach(p=>{const b=document.createElement('button');b.className=p.type;
-  b.textContent=p.n+'. '+p.name;b.onclick=()=>fire(p.n,p.name);document.getElementById('scenes').appendChild(b)})
-}).catch(e=>document.getElementById('scenes').textContent='load failed: '+e)
+setBody(body);   // inits highlight + loads this body's program list
 </script></body></html>"""
     return Response(html, mimetype='text/html')
 
 
 @app.route('/lights/programs', methods=['GET'])
 def lights_programs() -> Response:
-    """The named ColorLogic scenes (1..17) with type (show=moving, fixed=static),
-    plus the current calibration. The plugin/cockpit renders this list."""
+    """Named light scenes with type (show=moving, fixed=static) + calibration.
+    Per-body: ?body=spa -> Pentair IntelliBrite (12), else Hayward UCL pool (17).
+    Also returns both lists under 'by_body' so a UI can render each."""
+    body = request.args.get('body', 'pool')
+
+    def _fmt(progs):
+        return [{'n': i + 1, 'name': name, 'type': typ}
+                for i, (name, typ) in enumerate(progs)]
+
     return jsonify({
-        'programs': [{'n': i + 1, 'name': name, 'type': typ}
-                     for i, (name, typ) in enumerate(LIGHT_PROGRAMS)],
+        'body': body,
+        'programs': _fmt(_light_programs(body)),
+        'by_body': {b: _fmt(p) for b, p in LIGHT_PROGRAMS_BY_BODY.items()},
         'circuits': LIGHT_CIRCUITS,
         'calibration': dict(LIGHT_CFG),
     })
@@ -5317,10 +5355,12 @@ def lights_select(body: str) -> Response:
             return jsonify({'error': 'bridge /program failed'}), 502
         return jsonify({'ok': True, 'body': body, 'raw_count': raw, 'bridge': res})
 
+    progs = _light_programs(body)
+    nprog = len(progs)
     n = req.get('program')
     if n is None and req.get('name'):
         want = str(req['name']).strip().lower()
-        for i, (name, _t) in enumerate(LIGHT_PROGRAMS):
+        for i, (name, _t) in enumerate(progs):
             if name.lower() == want:
                 n = i + 1
                 break
@@ -5329,13 +5369,13 @@ def lights_select(body: str) -> Response:
     try:
         n = int(n)
     except (TypeError, ValueError):
-        return jsonify({'error': 'program must be 1..17 or a valid name'}), 400
-    if not (1 <= n <= 17):
-        return jsonify({'error': 'program must be 1..17'}), 400
+        return jsonify({'error': f'program must be 1..{nprog} or a valid name'}), 400
+    if not (1 <= n <= nprog):
+        return jsonify({'error': f'program must be 1..{nprog}'}), 400
 
-    count = _clamp(n + int(LIGHT_CFG['offset']), 1, 17)
+    count = _clamp(n + int(LIGHT_CFG['offset']), 1, nprog)
 
-    name = LIGHT_PROGRAMS[n - 1][0]
+    name = progs[n - 1][0]
     log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
     with _nav_lock:      # serialize against menu nav — both drive the panel
         res = _ac_backend.select_program(circuit, count, reset_ms, off_ms, on_ms,
