@@ -302,70 +302,59 @@
   </div>
 
   <style>
-    #scene_btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .scene-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
-      background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
-      border-left: 4px solid var(--off); border-radius: 12px; padding: 12px 14px;
-      font-size: 16px; font-weight: 600; text-align: left; line-height: 1.2; }
-    .scene-btn:active { background: var(--line); }
-    .scene-btn.show { border-left-color: var(--accent); }
-    .scene-btn .tag { font-size: 12px; font-weight: 600; color: var(--dim);
-      text-transform: uppercase; letter-spacing: .05em; }
-    .scene-btn.show .tag { color: var(--accent); }
-    #scene_msg { margin-top: 12px; min-height: 1.3em; font-size: 15px; color: var(--ink); }
-    #scene_cal { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
-    #scene_cal .crow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
-    #scene_cal label { color: var(--dim); font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
-    #scene_cal input { width: 72px; padding: 8px 10px; font-size: 15px; color: var(--ink);
-      background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; }
-    #scene_cal button { padding: 10px 16px; font-size: 15px; font-weight: 600; color: #04263a;
-      background: var(--accent); border: 0; border-radius: 10px; align-self: flex-end; }
-    #scene_cal .hint { font-size: 13px; color: var(--dim); }
+    /* Scene picker = a dropdown; calibration lives in a popup (the ⚙ gear). */
+    .scene-sel { width: 100%; padding: 12px; font-size: 16px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--panel2); color: var(--ink);
+      -webkit-appearance: none; appearance: none; }
+    .scene-msg { margin-top: 10px; min-height: 1.2em; font-size: 14px; color: var(--dim); }
+    #light_modal { position: fixed; inset: 0; z-index: 41; display: none;
+      background: rgba(2,8,16,.72); align-items: center; justify-content: center; padding: 16px; }
+    #light_modal.show { display: flex; }
+    .lm-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+    .lm-grid label, .lm-raw label { display: flex; flex-direction: column; gap: 3px;
+      font-size: 13px; color: var(--dim); }
+    .lm-grid input[type=number], .lm-raw input { width: 78px; padding: 8px 10px; font-size: 15px;
+      color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; }
+    .lm-check { flex-direction: row !important; align-items: center; gap: 6px !important; }
+    .lm-check input { width: auto; }
+    .lm-btn { padding: 10px 16px; font-size: 15px; font-weight: 600; color: #04263a;
+      background: var(--accent); border: 0; border-radius: 8px; }
+    .lm-raw { display: flex; align-items: flex-end; gap: 10px; margin-top: 12px;
+      padding-top: 12px; border-top: 1px solid var(--line); }
+    .lm-hint { font-size: 13px; color: var(--dim); margin-top: 10px; }
   </style>
   <div class="card">
-    <h2 class="hrow">Spa Light Scenes</h2>
-    <div id="spa_scene_btns">loading…</div>
-    <div id="spa_scene_msg"></div>
-    <div id="scene_cal">
-      <div class="crow">
-        <label>reset ms<input id="spa_sc_reset" type="number"></label>
-        <label>off ms<input id="spa_sc_off" type="number"></label>
-        <label>on ms<input id="spa_sc_on" type="number"></label>
-        <label>offset<input id="spa_sc_offset" type="number"></label>
-        <label style="flex-direction:row;align-items:center;gap:6px">
-          <input id="spa_sc_local" type="checkbox" style="width:auto">LOCAL frames</label>
-        <button id="spa_sc_save">Save</button>
-      </div>
-      <div class="crow">
-        <label>raw count<input id="spa_sc_rawn" type="number" value="3"></label>
-        <button id="spa_sc_fireraw">Fire raw</button>
-      </div>
-      <div class="hint">Pentair IntelliBrite (AUX_1). Fire a raw count, watch the spa, find where each mode lands.</div>
-    </div>
+    <h2 class="hrow">Spa Light <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
+    <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
+    <div class="scene-msg" id="spa_scene_msg"></div>
   </div>
 
   <div class="card">
-    <h2 class="hrow">Pool Light Scenes</h2>
-    <div id="scene_btns">loading…</div>
-    <div id="scene_msg"></div>
-    <div id="scene_cal">
-      <div class="crow">
-        <label>reset ms<input id="sc_reset" type="number"></label>
-        <label>off ms<input id="sc_off" type="number"></label>
-        <label>on ms<input id="sc_on" type="number"></label>
-        <label>offset<input id="sc_offset" type="number"></label>
-        <label style="flex-direction:row;align-items:center;gap:6px">
-          <input id="sc_local" type="checkbox" style="width:auto">LOCAL frames</label>
-        <button id="sc_save">Save</button>
-      </div>
-      <div class="crow">
-        <label>raw count<input id="sc_rawn" type="number" value="3"></label>
-        <button id="sc_fireraw">Fire raw</button>
-      </div>
-      <div class="hint">Hayward UCL (LIGHTS). Fire a raw count, watch the pool, and find where it flips static → moving.</div>
-    </div>
+    <h2 class="hrow">Pool Light <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
+    <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
+    <div class="scene-msg" id="scene_msg"></div>
   </div>
 </main>
+
+<div id="light_modal">
+  <div class="modal-card">
+    <div class="modal-hd"><span class="t" id="lm_title">Light settings</span>
+      <button class="xbtn" id="lm_close">✕</button></div>
+    <div class="lm-grid">
+      <label>offset<input id="lm_offset" type="number"></label>
+      <label>off ms<input id="lm_off" type="number"></label>
+      <label>on ms<input id="lm_on" type="number"></label>
+      <label>reset ms<input id="lm_reset" type="number"></label>
+      <label class="lm-check"><input id="lm_local" type="checkbox">LOCAL frames</label>
+    </div>
+    <button class="lm-btn" id="lm_save">Save calibration</button>
+    <div class="lm-raw">
+      <label>raw count<input id="lm_rawn" type="number" value="3"></label>
+      <button class="lm-btn" id="lm_fireraw">Fire raw</button>
+    </div>
+    <div class="lm-hint">Fire a raw count to find where each mode lands, then set the offset so the names line up.</div>
+  </div>
+</div>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
 
 <div id="chart_modal">
@@ -1031,76 +1020,98 @@
 })();
 </script>
 <script>
-// Light Scenes — one setup fn per body (spa = Pentair, pool = Hayward UCL).
-// Each card has its own program list + per-body calibration.
-function setupLightCard(k) {
+// Light Scenes — a dropdown per body; calibration lives in a shared popup.
+(function () {
   const el = id => document.getElementById(id);
-  const msg = m => { const e = el(k.msg); if (e) e.textContent = m; };
-  const timing = () => ({
-    reset_ms: +el(k.reset).value || 2000,
-    off_ms: +el(k.off).value || 120,
-    on_ms: +el(k.on).value || 120,
-    local: el(k.local).checked,
+  let active = null;   // the card whose settings the modal is editing
+
+  function openModal(card) {
+    active = card;
+    el('lm_title').textContent = (card.body === 'spa' ? 'Spa' : 'Pool') + ' light settings';
+    const c = card.cal || {};
+    el('lm_offset').value = c.offset ?? 0;
+    el('lm_off').value = c.off_ms ?? 150;
+    el('lm_on').value = c.on_ms ?? 150;
+    el('lm_reset').value = c.reset_ms ?? 2000;
+    el('lm_local').checked = c.local !== false;
+    el('light_modal').classList.add('show');
+  }
+  const closeModal = () => { el('light_modal').classList.remove('show'); active = null; };
+  el('lm_close').onclick = closeModal;
+  el('light_modal').onclick = e => { if (e.target.id === 'light_modal') closeModal(); };
+
+  const modalTiming = () => ({
+    reset_ms: +el('lm_reset').value || 2000,
+    off_ms: +el('lm_off').value || 150,
+    on_ms: +el('lm_on').value || 150,
+    local: el('lm_local').checked,
   });
-  async function post(obj, note) {
-    msg('… ' + note);
+  el('lm_save').onclick = async () => {
+    if (!active) return;
     try {
-      const r = await fetch('/lights/' + k.body + '/program', {
+      await fetch('/lights/calibration', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ body: active.body, offset: +el('lm_offset').value }, modalTiming())) });
+      active.setMsg('✓ calibration saved');
+      active.reload();
+    } catch (e) { active.setMsg('⚠ save failed: ' + e.message); }
+  };
+  el('lm_fireraw').onclick = async () => {
+    if (!active) return;
+    const n = +el('lm_rawn').value;
+    active.setMsg('… raw count ' + n + ' — watch the light');
+    try {
+      const r = await fetch('/lights/' + active.body + '/program', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(obj) });
+        body: JSON.stringify(Object.assign({ count: n }, modalTiming())) });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      const b = j.bridge || {};
-      const detail = 'presses=' + (b.presses ?? '?')
-        + ' reset_off=' + (b.reset_confirmed_off ?? '?')
-        + ' start_on=' + (b.start_on ?? '?') + ' frame=' + (b.frame ?? '?');
-      msg('✓ ' + note + '  [' + detail + ']. Saw: moving or static?');
-    } catch (e) { msg('⚠ ' + note + ' failed: ' + e.message); }
-  }
-  const fire = (n, name, type) => {
-    const expect = type === 'show' ? 'EXPECT: moving show' : 'EXPECT: static color';
-    post(Object.assign({ program: n }, timing()), name + ' (#' + n + ', ' + (type === 'show' ? 'show' : 'fixed') + ') — ' + expect);
+      active.setMsg('✓ raw count ' + n + ' fired — moving or static?');
+    } catch (e) { active.setMsg('⚠ raw ' + n + ' failed: ' + e.message); }
   };
-  const fireRaw = () => post(Object.assign({ count: +el(k.rawn).value }, timing()), 'raw count ' + el(k.rawn).value);
-  async function saveCal() {
-    try {
-      const r = await fetch('/lights/calibration', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: k.body, offset: +el(k.offset).value, reset_ms: +el(k.reset).value,
-          off_ms: +el(k.off).value, on_ms: +el(k.on).value, local: el(k.local).checked }) });
-      await r.json(); msg('✓ calibration saved');
-    } catch (e) { msg('⚠ save failed: ' + e.message); }
+
+  function setupLightCard(body, ids) {
+    const setMsg = m => { const e = el(ids.msg); if (e) e.textContent = m; };
+    const card = { body, cal: {}, setMsg, reload: load };
+    let programs = [];
+    async function fire(p) {
+      setMsg('… ' + p.name);
+      try {
+        const r = await fetch('/lights/' + body + '/program', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({ program: p.n }, {
+            reset_ms: card.cal.reset_ms, off_ms: card.cal.off_ms,
+            on_ms: card.cal.on_ms, local: card.cal.local })) });
+        const j = await r.json();
+        if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+        setMsg('✓ ' + p.name + ' (' + (p.type === 'show' ? 'show' : 'fixed') + ')');
+      } catch (e) { setMsg('⚠ ' + p.name + ' failed: ' + e.message); }
+    }
+    function load() {
+      fetch('/lights/programs?body=' + body).then(r => r.json()).then(d => {
+        card.cal = d.calibration || {};
+        programs = d.programs || [];
+        const sel = el(ids.sel);
+        sel.innerHTML = '<option value="">Choose a scene…</option>';
+        programs.forEach(p => {
+          const o = document.createElement('option');
+          o.value = p.n;
+          o.textContent = p.name + (p.type === 'show' ? ' · show' : ' · static');
+          sel.appendChild(o);
+        });
+      }).catch(e => setMsg('load failed: ' + e.message));
+    }
+    el(ids.sel).onchange = () => {
+      const n = +el(ids.sel).value;
+      const p = programs.find(x => x.n === n);
+      if (p) fire(p);
+    };
+    el(ids.gear).onclick = () => openModal(card);
+    load();
   }
-  fetch('/lights/programs?body=' + k.body).then(r => r.json()).then(d => {
-    const c = d.calibration || {};
-    el(k.reset).value = c.reset_ms ?? 2000;
-    el(k.off).value = c.off_ms ?? 120;
-    el(k.on).value = c.on_ms ?? 120;
-    el(k.offset).value = c.offset ?? 0;
-    el(k.local).checked = c.local !== false;
-    const box = el(k.btns); box.innerHTML = '';
-    (d.programs || []).forEach(p => {
-      const b = document.createElement('button');
-      b.className = 'scene-btn' + (p.type === 'show' ? ' show' : '');
-      const name = document.createElement('span');
-      name.textContent = p.name;
-      const tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = p.type === 'show' ? '◆ show' : 'static';
-      b.append(name, tag);
-      b.onclick = () => fire(p.n, p.name, p.type);
-      box.appendChild(b);
-    });
-  }).catch(e => { const b = el(k.btns); if (b) b.textContent = 'load failed: ' + e.message; });
-  el(k.save).onclick = saveCal;
-  el(k.fireraw).onclick = fireRaw;
-}
-setupLightCard({ body: 'spa', btns: 'spa_scene_btns', msg: 'spa_scene_msg',
-  reset: 'spa_sc_reset', off: 'spa_sc_off', on: 'spa_sc_on', offset: 'spa_sc_offset',
-  local: 'spa_sc_local', save: 'spa_sc_save', rawn: 'spa_sc_rawn', fireraw: 'spa_sc_fireraw' });
-setupLightCard({ body: 'pool', btns: 'scene_btns', msg: 'scene_msg',
-  reset: 'sc_reset', off: 'sc_off', on: 'sc_on', offset: 'sc_offset',
-  local: 'sc_local', save: 'sc_save', rawn: 'sc_rawn', fireraw: 'sc_fireraw' });
+  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear' });
+  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear' });
+})();
 </script>
 </body>
 </html>
