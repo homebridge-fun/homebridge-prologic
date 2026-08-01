@@ -1103,6 +1103,7 @@
     }
     el(ids.sel).onchange = () => {
       const n = +el(ids.sel).value;
+      el(ids.sel).value = '';   // back to placeholder so re-picking the same scene re-applies
       const p = programs.find(x => x.n === n);
       if (p) fire(p);
     };
