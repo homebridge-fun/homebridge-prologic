@@ -333,20 +333,12 @@
   <div class="card">
     <h2 class="hrow">Spa Light <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
     <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
-    <div class="scene-actions" id="spa_actions" hidden>
-      <button class="scene-cancel" id="spa_cancel">Cancel</button>
-      <button class="scene-apply" id="spa_apply">Apply</button>
-    </div>
     <div class="scene-msg" id="spa_scene_msg"></div>
   </div>
 
   <div class="card">
     <h2 class="hrow">Pool Light <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
     <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
-    <div class="scene-actions" id="pool_actions" hidden>
-      <button class="scene-cancel" id="pool_cancel">Cancel</button>
-      <button class="scene-apply" id="pool_apply">Apply</button>
-    </div>
     <div class="scene-msg" id="scene_msg"></div>
   </div>
 </main>
@@ -459,6 +451,13 @@
     $('apply').classList.toggle('show', n > 0 && !busy);
     if (n > 0) txt('apply_n', n + (n === 1 ? ' pending change' : ' pending changes'));
   }
+  // Bridge for the light-scene cards (separate script scope): stage a light
+  // pick into the SAME apply bar as everything else. pick={n,name} or null.
+  window.stageLight = (body, pick) => {
+    const key = body + 'Light';
+    if (pick) staged[key] = pick; else delete staged[key];
+    updateApplyBar();
+  };
   function chlorStep(cur, dir) {
     cur = cur || 0;
     if (dir > 0) return cur < 10 ? Math.min(10, cur + 1) : Math.min(100, cur + 5);
@@ -532,6 +531,7 @@
     for (const k in staged) delete staged[k];
     selectedSlot = null;
     setEditing(null);
+    document.querySelectorAll('.scene-sel').forEach(s => { s.value = ''; });
     reRender();
   }
   // Apply — send each staged change in sequence (the panel is single-lane).
@@ -548,6 +548,8 @@
     for (let n = 1; n <= 4; n++)
       if (('slot' + n) in staged) items.push([`Set Speed ${n} to ${staged['slot' + n]}%`, `/vsp/slot/${n}`, { speed_pct: staged['slot' + n] }]);
     if ('spaSpeed' in staged) items.push([`Set Spa Speed to ${staged.spaSpeed}%`, '/vsp/spa', { speed_pct: staged.spaSpeed }]);
+    if ('spaLight' in staged) items.push(['Spa light → ' + staged.spaLight.name, '/lights/spa/program', { program: staged.spaLight.n }]);
+    if ('poolLight' in staged) items.push(['Pool light → ' + staged.poolLight.name, '/lights/pool/program', { program: staged.poolLight.n }]);
     for (const [name, dflt] of SWITCHES) {
       const key = 'ckt:' + name;
       if (key in staged) {
@@ -558,6 +560,7 @@
     for (const k in staged) delete staged[k];
     selectedSlot = null;
     setEditing(null);
+    document.querySelectorAll('.scene-sel').forEach(s => { s.value = ''; });
     setBusy(true, items[0][0]);
     try {
       for (let i = 0; i < items.length; i++) {
@@ -1089,19 +1092,6 @@
     const setMsg = m => { const e = el(ids.msg); if (e) e.textContent = m; };
     const card = { body, cal: {}, setMsg, reload: load };
     let programs = [];
-    async function fire(p) {
-      setMsg('… ' + p.name);
-      try {
-        const r = await fetch('/lights/' + body + '/program', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign({ program: p.n }, {
-            reset_ms: card.cal.reset_ms, off_ms: card.cal.off_ms,
-            on_ms: card.cal.on_ms, local: card.cal.local })) });
-        const j = await r.json();
-        if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-        setMsg('✓ ' + p.name + ' (' + (p.type === 'show' ? 'show' : 'fixed') + ')');
-      } catch (e) { setMsg('⚠ ' + p.name + ' failed: ' + e.message); }
-    }
     function load() {
       fetch('/lights/programs?body=' + body).then(r => r.json()).then(d => {
         card.cal = d.calibration || {};
@@ -1114,25 +1104,19 @@
           o.textContent = p.name + (p.type === 'show' ? ' · show' : ' · static');
           sel.appendChild(o);
         });
-        el(ids.actions).hidden = true;
       }).catch(e => setMsg('load failed: ' + e.message));
     }
-    // Selecting only stages the choice (dropdown keeps showing it); the
-    // Cancel/Apply row appears. Apply fires; Cancel discards. So a scroll or
-    // mis-tap can't trigger the light.
-    el(ids.sel).onchange = () => { el(ids.actions).hidden = !el(ids.sel).value; };
-    el(ids.cancel).onclick = () => { el(ids.sel).value = ''; el(ids.actions).hidden = true; };
-    el(ids.apply).onclick = () => {
+    // Picking a scene only STAGES it into the shared apply bar (Cancel/Apply at
+    // the bottom, same as everything else) — nothing fires until Apply.
+    el(ids.sel).onchange = () => {
       const p = programs.find(x => x.n === +el(ids.sel).value);
-      if (p) fire(p);
+      window.stageLight(body, p ? { n: p.n, name: p.name } : null);
     };
     el(ids.gear).onclick = () => openModal(card);
     load();
   }
-  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear',
-    actions: 'spa_actions', apply: 'spa_apply', cancel: 'spa_cancel' });
-  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear',
-    actions: 'pool_actions', apply: 'pool_apply', cancel: 'pool_cancel' });
+  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear' });
+  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear' });
 })();
 </script>
 </body>
