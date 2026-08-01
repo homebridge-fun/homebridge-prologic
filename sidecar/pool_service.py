@@ -177,6 +177,9 @@ class PoolState:
     spa_chlorinator_percent: Optional[float] = None  # spa chlorinator %
     pump_speed: Optional[int] = None
     spa_speed: Optional[int] = None                  # VSP Spa Speed setting %
+    # True during the post-power-up pump prime (panel runs 100% on a "start
+    # delay" before resuming schedule) — so the cockpit shows "100% startup".
+    pump_startup: bool = False
     # populated by menu navigator reads; None = not yet read
     pool_setpoint_f: Optional[int] = None
     spa_setpoint_f: Optional[int] = None
@@ -1524,6 +1527,9 @@ class RS485BridgeBackend:
                 state.circuits[name] = bool(val)
             if snap.get('heater_active') is not None:
                 state.heater_active = bool(snap['heater_active'])
+            su = _pump_startup_from_lcd(lcd)
+            if su is not None:
+                state.pump_startup = su
             vm = snap.get('valve_mode')
             if vm is not None:               # None = current frame isn't a mode
                 state.valve_mode = vm        # screen; keep last-known otherwise
@@ -1629,6 +1635,22 @@ _AC_HEATER_STATE_RE = re.compile(
 _AC_HEATER_SETPOINT_RE = re.compile(r'(Pool|Spa) Heater1[^0-9]*(\d{2,3})\s*\xb0?\s*F', re.I)
 _AC_VSP_SLOT_RE = re.compile(r'Filter Speed([1-4])[^0-9]+(\d{1,3})\s*%', re.I)
 
+# Post-power-up pump prime: the panel runs the filter at 100% for a "start
+# delay" ("Filter Speed 100% St dly M:SS") before resuming the schedule. Detect
+# it so the cockpit shows "100% startup" instead of mislabeling the off-slot
+# 100% as a heater/override speed. Set/cleared only on filter-speed frames: a
+# filter-speed frame with "St dly" -> priming; one without -> not priming.
+_AC_FILTER_SPEED_RE = re.compile(r'Filter Speed\s+\d+\s*%', re.I)
+_AC_STARTUP_RE = re.compile(r'St\s*dly', re.I)
+
+
+def _pump_startup_from_lcd(lcd: str) -> Optional[bool]:
+    """Return True/False if `lcd` is a filter-speed frame (priming or not), else
+    None to leave the flag unchanged (this frame doesn't speak to it)."""
+    if not lcd or not _AC_FILTER_SPEED_RE.search(lcd):
+        return None
+    return bool(_AC_STARTUP_RE.search(lcd))
+
 # Fault/alert phrases the panel interleaves into the status scroll. Matched
 # case-insensitively as substrings. Each match records a last-seen time; a fault
 # is considered active until it stops appearing for _FAULT_TTL_S (it resolves by
@@ -1731,6 +1753,9 @@ def _apply_ac_scroll_to_state(lcd: str) -> None:
             if m:
                 setattr(state, field, int(m.group(1)))
                 state.last_update = time.time()
+        su = _pump_startup_from_lcd(lcd)
+        if su is not None:
+            state.pump_startup = su
         hm = _AC_HEATER_STATE_RE.search(lcd)
         if hm:
             prefix = (hm.group(1) or '').strip().lower()
@@ -3367,6 +3392,7 @@ def get_status() -> Response:
             'chlorinator_percent':     state.chlorinator_percent,
             'spa_chlorinator_percent': state.spa_chlorinator_percent,
             'pump_speed':              state.pump_speed,
+            'pump_startup':            state.pump_startup,
             'spa_speed':               state.spa_speed,
             # heater setpoints are read via menu navigation, cached here after reads
             'pool_setpoint_f':     state.pool_setpoint_f,

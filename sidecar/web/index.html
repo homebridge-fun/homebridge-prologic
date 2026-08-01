@@ -810,7 +810,11 @@
       if (!filterOn) { e.textContent = 'Off'; e.className = 'pill off'; return; }
       if (runSpeed == null) { e.textContent = '—'; e.className = 'pill'; return; }
       let tag = '';
-      if (spa) {
+      if (s.pump_startup) {
+        // Post-power-up prime: panel forces 100% on a "start delay" — takes
+        // priority so it isn't mislabeled a heater/override speed.
+        tag = 'startup';
+      } else if (spa) {
         tag = (!!s.heater_active) ? 'spa · heat' : 'spa';
       } else {
         let match = null;
