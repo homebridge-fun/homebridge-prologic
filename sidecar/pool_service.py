@@ -5225,7 +5225,12 @@ label{font-size:13px;margin-right:4px}#log{white-space:pre-wrap;background:#000;
 font-family:ui-monospace,monospace;font-size:12px;max-height:38vh;overflow:auto;margin-top:8px}
 .pill{font-size:11px;opacity:.7;margin-left:6px}
 </style></head><body>
-<h2>Pool Light Scenes <span class=pill>show=moving · fixed=static</span></h2>
+<h2>Light target: <span id=bodylbl>spa</span></h2>
+<div class=row>
+<button id=bpool onclick="setBody('pool')">Pool light (LIGHTS)</button>
+<button id=bspa onclick="setBody('spa')">Spa light (AUX_1)</button>
+</div>
+<h2>Named scenes <span class=pill>Hayward UCL names = POOL light. Spa is Pentair — use Raw count below.</span></h2>
 <div id=scenes class=row>loading…</div>
 <h2>Calibration</h2>
 <div class="row cal">
@@ -5242,7 +5247,11 @@ font-family:ui-monospace,monospace;font-size:12px;max-height:38vh;overflow:auto;
 </div>
 <h2>Log</h2><div id=log></div>
 <script>
-const B='/lights',body='pool';
+const B='/lights';let body='spa';
+function setBody(b){body=b;document.getElementById('bodylbl').textContent=b;
+ document.getElementById('bpool').style.opacity=(b==='pool')?1:.45;
+ document.getElementById('bspa').style.opacity=(b==='spa')?1:.45;
+ log('target = '+b+' light ('+(b==='spa'?'AUX_1 · Pentair':'LIGHTS · Hayward UCL')+')');}
 const timing=()=>({reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value});
 function log(m){const l=document.getElementById('log');l.textContent=new Date().toLocaleTimeString()+'  '+m+'\\n'+l.textContent}
 async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
@@ -5251,6 +5260,7 @@ async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
 function fire(n,name){post(B+'/'+body+'/program',Object.assign({program:n},timing())).then(()=>log('fired scene '+n+' '+name+' — WATCH: moving or static?'))}
 function fireRaw(){post(B+'/'+body+'/program',Object.assign({count:+rawn.value},timing())).then(()=>log('fired RAW count '+rawn.value+' — WATCH: moving or static?'))}
 function saveCal(){post(B+'/calibration',{offset:+offset.value,reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value})}
+setBody(body);
 fetch(B+'/programs').then(r=>r.json()).then(d=>{
  const c=d.calibration||{};reset.value=c.reset_ms;off.value=c.off_ms;on.value=c.on_ms;offset.value=c.offset;
  document.getElementById('scenes').innerHTML='';
