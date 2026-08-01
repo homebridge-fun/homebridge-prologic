@@ -323,6 +323,28 @@
     #scene_cal .hint { font-size: 13px; color: var(--dim); }
   </style>
   <div class="card">
+    <h2 class="hrow">Spa Light Scenes</h2>
+    <div id="spa_scene_btns">loading…</div>
+    <div id="spa_scene_msg"></div>
+    <div id="scene_cal">
+      <div class="crow">
+        <label>reset ms<input id="spa_sc_reset" type="number"></label>
+        <label>off ms<input id="spa_sc_off" type="number"></label>
+        <label>on ms<input id="spa_sc_on" type="number"></label>
+        <label>offset<input id="spa_sc_offset" type="number"></label>
+        <label style="flex-direction:row;align-items:center;gap:6px">
+          <input id="spa_sc_local" type="checkbox" style="width:auto">LOCAL frames</label>
+        <button id="spa_sc_save">Save</button>
+      </div>
+      <div class="crow">
+        <label>raw count<input id="spa_sc_rawn" type="number" value="3"></label>
+        <button id="spa_sc_fireraw">Fire raw</button>
+      </div>
+      <div class="hint">Pentair IntelliBrite (AUX_1). Fire a raw count, watch the spa, find where each mode lands.</div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2 class="hrow">Pool Light Scenes</h2>
     <div id="scene_btns">loading…</div>
     <div id="scene_msg"></div>
@@ -340,7 +362,7 @@
         <label>raw count<input id="sc_rawn" type="number" value="3"></label>
         <button id="sc_fireraw">Fire raw</button>
       </div>
-      <div class="hint">Fire a raw count, watch the pool, and find where it flips static → moving.</div>
+      <div class="hint">Hayward UCL (LIGHTS). Fire a raw count, watch the pool, and find where it flips static → moving.</div>
     </div>
   </div>
 </main>
@@ -1009,21 +1031,21 @@
 })();
 </script>
 <script>
-// Pool Light Scenes — self-contained (own fetch + inline feedback line).
-(function () {
-  const body = 'pool';
+// Light Scenes — one setup fn per body (spa = Pentair, pool = Hayward UCL).
+// Each card has its own program list + per-body calibration.
+function setupLightCard(k) {
   const el = id => document.getElementById(id);
-  const msg = m => { const e = el('scene_msg'); if (e) e.textContent = m; };
+  const msg = m => { const e = el(k.msg); if (e) e.textContent = m; };
   const timing = () => ({
-    reset_ms: +el('sc_reset').value || 2000,
-    off_ms: +el('sc_off').value || 120,
-    on_ms: +el('sc_on').value || 120,
-    local: el('sc_local').checked,
+    reset_ms: +el(k.reset).value || 2000,
+    off_ms: +el(k.off).value || 120,
+    on_ms: +el(k.on).value || 120,
+    local: el(k.local).checked,
   });
   async function post(obj, note) {
     msg('… ' + note);
     try {
-      const r = await fetch('/lights/' + body + '/program', {
+      const r = await fetch('/lights/' + k.body + '/program', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(obj) });
       const j = await r.json();
@@ -1032,31 +1054,31 @@
       const detail = 'presses=' + (b.presses ?? '?')
         + ' reset_off=' + (b.reset_confirmed_off ?? '?')
         + ' start_on=' + (b.start_on ?? '?') + ' frame=' + (b.frame ?? '?');
-      msg('✓ ' + note + '  [' + detail + ']. Saw: moving or static? how many dark→on?');
+      msg('✓ ' + note + '  [' + detail + ']. Saw: moving or static?');
     } catch (e) { msg('⚠ ' + note + ' failed: ' + e.message); }
   }
   const fire = (n, name, type) => {
     const expect = type === 'show' ? 'EXPECT: moving show' : 'EXPECT: static color';
     post(Object.assign({ program: n }, timing()), name + ' (#' + n + ', ' + (type === 'show' ? 'show' : 'fixed') + ') — ' + expect);
   };
-  const fireRaw = () => post(Object.assign({ count: +el('sc_rawn').value }, timing()), 'raw count ' + el('sc_rawn').value);
+  const fireRaw = () => post(Object.assign({ count: +el(k.rawn).value }, timing()), 'raw count ' + el(k.rawn).value);
   async function saveCal() {
     try {
       const r = await fetch('/lights/calibration', { method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ offset: +el('sc_offset').value, reset_ms: +el('sc_reset').value,
-          off_ms: +el('sc_off').value, on_ms: +el('sc_on').value, local: el('sc_local').checked }) });
+        body: JSON.stringify({ body: k.body, offset: +el(k.offset).value, reset_ms: +el(k.reset).value,
+          off_ms: +el(k.off).value, on_ms: +el(k.on).value, local: el(k.local).checked }) });
       await r.json(); msg('✓ calibration saved');
     } catch (e) { msg('⚠ save failed: ' + e.message); }
   }
-  fetch('/lights/programs').then(r => r.json()).then(d => {
+  fetch('/lights/programs?body=' + k.body).then(r => r.json()).then(d => {
     const c = d.calibration || {};
-    el('sc_reset').value = c.reset_ms ?? 4000;
-    el('sc_off').value = c.off_ms ?? 250;
-    el('sc_on').value = c.on_ms ?? 250;
-    el('sc_offset').value = c.offset ?? 0;
-    el('sc_local').checked = c.local !== false;
-    const box = el('scene_btns'); box.innerHTML = '';
+    el(k.reset).value = c.reset_ms ?? 2000;
+    el(k.off).value = c.off_ms ?? 120;
+    el(k.on).value = c.on_ms ?? 120;
+    el(k.offset).value = c.offset ?? 0;
+    el(k.local).checked = c.local !== false;
+    const box = el(k.btns); box.innerHTML = '';
     (d.programs || []).forEach(p => {
       const b = document.createElement('button');
       b.className = 'scene-btn' + (p.type === 'show' ? ' show' : '');
@@ -1069,10 +1091,16 @@
       b.onclick = () => fire(p.n, p.name, p.type);
       box.appendChild(b);
     });
-  }).catch(e => { const b = el('scene_btns'); if (b) b.textContent = 'load failed: ' + e.message; });
-  el('sc_save').onclick = saveCal;
-  el('sc_fireraw').onclick = fireRaw;
-})();
+  }).catch(e => { const b = el(k.btns); if (b) b.textContent = 'load failed: ' + e.message; });
+  el(k.save).onclick = saveCal;
+  el(k.fireraw).onclick = fireRaw;
+}
+setupLightCard({ body: 'spa', btns: 'spa_scene_btns', msg: 'spa_scene_msg',
+  reset: 'spa_sc_reset', off: 'spa_sc_off', on: 'spa_sc_on', offset: 'spa_sc_offset',
+  local: 'spa_sc_local', save: 'spa_sc_save', rawn: 'spa_sc_rawn', fireraw: 'spa_sc_fireraw' });
+setupLightCard({ body: 'pool', btns: 'scene_btns', msg: 'scene_msg',
+  reset: 'sc_reset', off: 'sc_off', on: 'sc_on', offset: 'sc_offset',
+  local: 'sc_local', save: 'sc_save', rawn: 'sc_rawn', fireraw: 'sc_fireraw' });
 </script>
 </body>
 </html>

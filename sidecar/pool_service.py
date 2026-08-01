@@ -782,14 +782,27 @@ def _light_programs(body: str):
 # spa light = AUX_1). Power-cycle timing + count offset are calibratable and
 # persisted in backend.json (key 'light_config').
 LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
-# Defaults; overridden by backend.json 'light_config' at startup.
-LIGHT_CFG = {
+# Power-cycle timing is PER BODY — the pool (Hayward UCL) and spa (Pentair
+# IntelliBrite) lights use different reset/pulse timing, so calibrating one must
+# not disturb the other. Defaults; overridden by backend.json 'light_config'.
+_LIGHT_CFG_DEFAULTS = {
     'offset': 0,        # daemon restore-count = program_number + offset
     'reset_ms': 2000,   # full-off hold that resets the light to baseline (~2s)
     'off_ms': 120,      # rapid off pulse between restores
     'on_ms': 120,       # rapid on dwell between restores
     'local': True,      # LOCAL_WIRED frames (replicate the physical keypad)
 }
+LIGHT_CFG_BY_BODY = {
+    'pool': dict(_LIGHT_CFG_DEFAULTS),
+    'spa':  dict(_LIGHT_CFG_DEFAULTS),
+}
+# Back-compat alias (pool) for any caller not yet body-aware.
+LIGHT_CFG = LIGHT_CFG_BY_BODY['pool']
+
+
+def _light_cfg(body: str) -> dict:
+    """Power-cycle calibration for a body (pool vs spa)."""
+    return LIGHT_CFG_BY_BODY.get(body, LIGHT_CFG_BY_BODY['pool'])
 
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
@@ -5295,7 +5308,7 @@ async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
   const j=await r.json();log('← '+JSON.stringify(j));return j}catch(e){log('!! '+e)}}
 function fire(n,name){post(B+'/'+body+'/program',Object.assign({program:n},timing())).then(()=>log('fired scene '+n+' '+name+' — WATCH: moving or static?'))}
 function fireRaw(){post(B+'/'+body+'/program',Object.assign({count:+rawn.value},timing())).then(()=>log('fired RAW count '+rawn.value+' — WATCH: moving or static?'))}
-function saveCal(){post(B+'/calibration',{offset:+offset.value,reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value})}
+function saveCal(){post(B+'/calibration',{body:body,offset:+offset.value,reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value})}
 setBody(body);   // inits highlight + loads this body's program list
 </script></body></html>"""
     return Response(html, mimetype='text/html')
@@ -5317,7 +5330,7 @@ def lights_programs() -> Response:
         'programs': _fmt(_light_programs(body)),
         'by_body': {b: _fmt(p) for b, p in LIGHT_PROGRAMS_BY_BODY.items()},
         'circuits': LIGHT_CIRCUITS,
-        'calibration': dict(LIGHT_CFG),
+        'calibration': dict(_light_cfg(body)),
     })
 
 
@@ -5334,10 +5347,11 @@ def lights_select(body: str) -> Response:
         return jsonify({'error': 'light programming needs the rs485bridge backend'}), 501
 
     req = request.get_json(force=True) or {}
-    reset_ms = float(req.get('reset_ms', LIGHT_CFG['reset_ms']))
-    off_ms = float(req.get('off_ms', LIGHT_CFG['off_ms']))
-    on_ms = float(req.get('on_ms', LIGHT_CFG['on_ms']))
-    local = bool(req['local']) if 'local' in req else bool(LIGHT_CFG['local'])
+    cfg = _light_cfg(body)
+    reset_ms = float(req.get('reset_ms', cfg['reset_ms']))
+    off_ms = float(req.get('off_ms', cfg['off_ms']))
+    on_ms = float(req.get('on_ms', cfg['on_ms']))
+    local = bool(req['local']) if 'local' in req else bool(cfg['local'])
 
     # The light's settled on/off state (our steady poll, not a racy read) makes
     # the daemon's reset deterministic.
@@ -5373,7 +5387,7 @@ def lights_select(body: str) -> Response:
     if not (1 <= n <= nprog):
         return jsonify({'error': f'program must be 1..{nprog}'}), 400
 
-    count = _clamp(n + int(LIGHT_CFG['offset']), 1, nprog)
+    count = _clamp(n + int(cfg['offset']), 1, nprog)
 
     name = progs[n - 1][0]
     log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
@@ -5391,25 +5405,29 @@ def lights_select(body: str) -> Response:
 
 @app.route('/lights/calibration', methods=['GET', 'POST'])
 def lights_calibration() -> Response:
-    """GET returns the current light power-cycle calibration. POST updates any
-    of offset / reset_ms / off_ms / on_ms and persists to backend.json so the
-    dialed-in values survive restarts."""
+    """Per-body light power-cycle calibration. GET ?body=spa returns that body's
+    values; POST {"body":"spa", ...} updates offset/reset_ms/off_ms/on_ms/local
+    for that body and persists to backend.json. Body defaults to 'pool'."""
     if request.method == 'POST':
-        body = request.get_json(force=True) or {}
+        req = request.get_json(force=True) or {}
+        which = str(req.get('body', 'pool')).lower()
+        cfg = _light_cfg(which)
         for k, lo, hi in (('offset', -17, 17), ('reset_ms', 500, 20000),
                           ('off_ms', 20, 3000), ('on_ms', 20, 3000)):
-            if k in body:
-                LIGHT_CFG[k] = _clamp(float(body[k]) if 'ms' in k else int(body[k]), lo, hi)
-        if 'local' in body:
-            LIGHT_CFG['local'] = bool(body['local'])
+            if k in req:
+                cfg[k] = _clamp(float(req[k]) if 'ms' in k else int(req[k]), lo, hi)
+        if 'local' in req:
+            cfg['local'] = bool(req['local'])
         try:
-            cfg = _load_backend_config()
-            cfg['light_config'] = dict(LIGHT_CFG)
-            _save_backend_config(cfg)
+            bconf = _load_backend_config()
+            bconf['light_config'] = {b: dict(c) for b, c in LIGHT_CFG_BY_BODY.items()}
+            _save_backend_config(bconf)
         except Exception as e:
             log.warning('persist light_config: %s', e)
-        log.info('Light calibration updated: %s', LIGHT_CFG)
-    return jsonify({'calibration': dict(LIGHT_CFG)})
+        log.info('Light calibration (%s) updated: %s', which, cfg)
+        return jsonify({'body': which, 'calibration': dict(cfg)})
+    which = str(request.args.get('body', 'pool')).lower()
+    return jsonify({'body': which, 'calibration': dict(_light_cfg(which))})
 
 
 @app.route('/prefetch', methods=['POST'])
@@ -5931,12 +5949,23 @@ def main() -> None:
     if _ui_circuits:
         log.info('Loaded persisted UI circuits: %s', _ui_circuits)
 
-    # Persisted ColorLogic light calibration (offset + power-cycle timing).
-    if isinstance(cfg.get('light_config'), dict):
-        for k in ('offset', 'reset_ms', 'off_ms', 'on_ms'):
-            if k in cfg['light_config']:
-                LIGHT_CFG[k] = cfg['light_config'][k]
-        log.info('Loaded persisted light calibration: %s', LIGHT_CFG)
+    # Persisted light calibration. New form is per-body {'pool':{...},'spa':{...}};
+    # the old flat form {offset,reset_ms,...} is migrated onto BOTH bodies.
+    lc = cfg.get('light_config')
+    if isinstance(lc, dict):
+        keys = ('offset', 'reset_ms', 'off_ms', 'on_ms', 'local')
+        if 'pool' in lc or 'spa' in lc:                 # new per-body form
+            for b in ('pool', 'spa'):
+                if isinstance(lc.get(b), dict):
+                    for k in keys:
+                        if k in lc[b]:
+                            LIGHT_CFG_BY_BODY[b][k] = lc[b][k]
+        else:                                            # old flat form -> both
+            for b in ('pool', 'spa'):
+                for k in keys:
+                    if k in lc:
+                        LIGHT_CFG_BY_BODY[b][k] = lc[k]
+        log.info('Loaded persisted light calibration: %s', LIGHT_CFG_BY_BODY)
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend
