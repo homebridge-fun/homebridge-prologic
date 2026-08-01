@@ -60,6 +60,8 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableSaltSensor: config['enableSaltSensor'] ?? true,
       enableSpaLightScenes: config['enableSpaLightScenes'] ?? false,
       enablePoolLightScenes: config['enablePoolLightScenes'] ?? false,
+      spaLightSceneList: config['spaLightSceneList'] ?? [],
+      poolLightSceneList: config['poolLightSceneList'] ?? [],
       circuitLabels: config['circuitLabels'] ?? {},
     };
 
@@ -284,10 +286,27 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
     for (const body of bodies) {
       try {
-        const programs = await this.sidecar.getLightPrograms(body);
-        if (programs.length === 0) {
+        const all = await this.sidecar.getLightPrograms(body);
+        if (all.length === 0) {
           this.log.warn(`No light scenes reported for ${body} — skipping its TV tile `
             + '(needs the rs485bridge backend).');
+          continue;
+        }
+        // Config list (if any) curates + orders + renames; else all, in order.
+        const custom = body === 'spa' ? this.cfg.spaLightSceneList : this.cfg.poolLightSceneList;
+        const programs = (custom && custom.length > 0)
+          ? custom
+            .map(c => {
+              const found = all.find(p => p.n === c.program);
+              return found
+                ? { n: found.n, name: (c.name || found.name), type: found.type }
+                : null;
+            })
+            .filter((p): p is NonNullable<typeof p> => p !== null)
+          : all;
+        if (programs.length === 0) {
+          this.log.warn(`Configured ${body} light scenes matched none of the `
+            + `${all.length} available — skipping.`);
           continue;
         }
         const circuit = body === 'spa' ? 'AUX_1' : 'LIGHTS';

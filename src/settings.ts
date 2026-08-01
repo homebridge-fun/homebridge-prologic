@@ -54,10 +54,18 @@ export interface PlatformConfig {
   enableActiveHeaterThermostat: boolean;
   enableSpaLightScenes: boolean;
   enablePoolLightScenes: boolean;
+  spaLightSceneList: LightSceneConfig[];
+  poolLightSceneList: LightSceneConfig[];
   enableTemperatureSensors: boolean;
   enableChlorinatorFan: boolean;
   enableSaltSensor: boolean;
   circuitLabels: Partial<Record<Circuit, string>>;
+}
+
+/** One HomeKit light-scene entry (config array is ordered + renamable). */
+export interface LightSceneConfig {
+  program: number;   // 1..N scene number (per the Pentair/Hayward manual)
+  name?: string;     // optional custom HomeKit label; falls back to the real name
 }
 
 export function celsiusToFahrenheit(c: number): number {

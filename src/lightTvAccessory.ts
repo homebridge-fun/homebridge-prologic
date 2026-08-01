@@ -70,6 +70,17 @@ export class LightTvAccessory {
         .setCharacteristic(C.CurrentVisibilityState, C.CurrentVisibilityState.SHOWN);
       this.tv.addLinkedService(input);
     }
+
+    // HomeKit lets you rename inputs but NOT reorder them — so pin the order
+    // here. DisplayOrder is a TLV8 list of identifiers in the desired sequence;
+    // each entry is 0x01,0x04,<4-byte LE id>,0x00,0x00. We use program order
+    // (matches the Pentair/Hayward manual and the cockpit dropdown).
+    const order: number[] = [];
+    for (const p of programs) {
+      order.push(0x01, 0x04, p.n & 0xff, (p.n >> 8) & 0xff,
+        (p.n >> 16) & 0xff, (p.n >> 24) & 0xff, 0x00, 0x00);
+    }
+    this.tv.setCharacteristic(C.DisplayOrder, Buffer.from(order).toString('base64'));
   }
 
   private async handleActive(value: CharacteristicValue): Promise<void> {

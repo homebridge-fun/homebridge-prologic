@@ -99,6 +99,32 @@
         "default": false,
         "description": "Expose the pool light (LIGHTS, Hayward ColorLogic) as a Television-style tile whose input picker selects a color scene. Added as a separate accessory you pair in the Home app. Requires the RS-485 Smart Bridge backend."
       },
+      "spaLightSceneList": {
+        "title": "Spa Light Scenes — order & names",
+        "type": "array",
+        "description": "Optional: choose which spa scenes appear in HomeKit, in what order (drag to reorder), with custom names. Leave empty to show all 12 in default order. Spa program numbers: 1 SAm, 2 Party, 3 Romance, 4 Caribbean, 5 American, 6 California Sunset, 7 Royal, 8 Blue, 9 Green, 10 Red, 11 White, 12 Magenta.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "program": { "title": "Scene #", "type": "integer", "minimum": 1, "maximum": 12 },
+            "name": { "title": "Name in HomeKit", "type": "string", "placeholder": "(default name)" }
+          },
+          "required": ["program"]
+        }
+      },
+      "poolLightSceneList": {
+        "title": "Pool Light Scenes — order & names",
+        "type": "array",
+        "description": "Optional: choose which pool scenes appear in HomeKit, in what order (drag to reorder), with custom names. Leave empty to show all in default order. Pool program numbers: 1 Voodoo Lounge, 2 Deep Blue Sea, 3 Royal Blue, 4 Afternoon Skies, 5 Aqua Green, 6 Emerald, 7 Cloud White, 8 Warm Red, 9 Flamingo, 10 Vivid Violet, 11 Sangria, 12 Twilight, 13 Tranquility, 14 Gemstone, 15 USA, 16 Mardi Gras, 17 Cool Cabaret.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "program": { "title": "Scene #", "type": "integer", "minimum": 1, "maximum": 17 },
+            "name": { "title": "Name in HomeKit", "type": "string", "placeholder": "(default name)" }
+          },
+          "required": ["program"]
+        }
+      },
       "enableTemperatureSensors": {
         "title": "Temperature Sensors",
         "type": "boolean",
