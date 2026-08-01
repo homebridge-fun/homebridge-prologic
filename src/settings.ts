@@ -52,6 +52,8 @@ export interface PlatformConfig {
   circuits: Circuit[];
   activeBodies: ('pool' | 'spa' | 'spillover')[];
   enableActiveHeaterThermostat: boolean;
+  enableSpaLightScenes: boolean;
+  enablePoolLightScenes: boolean;
   enableTemperatureSensors: boolean;
   enableChlorinatorFan: boolean;
   enableSaltSensor: boolean;

@@ -87,6 +87,18 @@
         "default": true,
         "description": "Expose the single mode-following thermostat that mirrors whichever heater setpoint is active for the current valve mode (name shows 'Heat — Pool' or 'Heat — Spa'). One physical heater = one tile."
       },
+      "enableSpaLightScenes": {
+        "title": "Spa Light Scenes (HomeKit tile)",
+        "type": "boolean",
+        "default": false,
+        "description": "Expose the spa light (AUX_1, Pentair IntelliBrite) as a Television-style tile whose input picker selects a color scene. Added as a separate accessory you pair in the Home app. Requires the RS-485 Smart Bridge backend."
+      },
+      "enablePoolLightScenes": {
+        "title": "Pool Light Scenes (HomeKit tile)",
+        "type": "boolean",
+        "default": false,
+        "description": "Expose the pool light (LIGHTS, Hayward ColorLogic) as a Television-style tile whose input picker selects a color scene. Added as a separate accessory you pair in the Home app. Requires the RS-485 Smart Bridge backend."
+      },
       "enableTemperatureSensors": {
         "title": "Temperature Sensors",
         "type": "boolean",

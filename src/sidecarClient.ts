@@ -81,9 +81,31 @@ export class SidecarClient {
     await this.http.post(`/chlorinator/${which}`, { percent: Math.round(percent) });
   }
 
+  // ── Lights ────────────────────────────────────────────────────────────────
+
+  /** The named ColorLogic/IntelliBrite scenes for a body (spa=Pentair 12,
+   * pool=Hayward UCL 17), used to build the HomeKit input-source list. */
+  async getLightPrograms(body: 'pool' | 'spa'): Promise<LightProgram[]> {
+    const res = await this.http.get<{ programs?: LightProgram[] }>(
+      `/lights/programs?body=${body}`);
+    return res.data.programs ?? [];
+  }
+
+  /** Select a scene by number (1..N). The sidecar power-cycles the light using
+   * the saved per-body calibration; open-loop (no confirmation). */
+  async setLightProgram(body: 'pool' | 'spa', program: number): Promise<void> {
+    await this.http.post(`/lights/${body}/program`, { program });
+  }
+
   // ── Misc ──────────────────────────────────────────────────────────────────
 
   async setSuperChlorinate(on: boolean): Promise<void> {
     await this.http.post('/superchlorinate', { on });
   }
+}
+
+export interface LightProgram {
+  n: number;
+  name: string;
+  type: 'show' | 'fixed';
 }
