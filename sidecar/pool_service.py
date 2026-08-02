@@ -5464,8 +5464,34 @@ def lights_select(body: str) -> Response:
     # Track last-selected scene per body (best-effort, open-loop).
     with state_lock:
         state.light_program[body] = n
+    corrected = _ensure_light_on_after_program(circuit, body)
     return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
-                    'daemon_count': count, 'bridge': res})
+                    'daemon_count': count, 're_asserted_on': corrected, 'bridge': res})
+
+
+def _ensure_light_on_after_program(circuit: str, body: str) -> bool:
+    """Parity guard for ABSOLUTE (spa) lights: a dropped/added toggle can leave
+    the light OFF when a program change should end ON. Poll the settled circuit
+    state and, if it ended off, do one CONFIRMED toggle to turn it back on
+    (Pentair resumes the last program on power-up). Returns True if corrected.
+
+    NOT applied to relative (pool) lights: turning a Hayward light on within
+    ~10 s ADVANCES a program, which would desync the tracked position."""
+    if _light_mechanic(body) != 'absolute' or _ac_backend is None:
+        return False
+    time.sleep(1.0)   # let the relay settle + the background poll reflect it
+    with state_lock:
+        on = state.circuits.get(circuit)
+    if on is not False:
+        return False
+    try:
+        with _nav_lock:
+            _ac_backend.send_nav_key(_bridge_key_name(circuit))
+        log.info('Light %s ended OFF after program change — re-asserted ON', body)
+        return True
+    except Exception as e:   # noqa: BLE001
+        log.warning('re-assert light on (%s) failed: %s', body, e)
+        return False
 
 
 @app.route('/lights/<body>/step', methods=['POST'])
