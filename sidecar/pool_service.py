@@ -5441,11 +5441,13 @@ def lights_select(body: str) -> Response:
 
     name = progs[n - 1][0]
 
-    # RELATIVE (Hayward pool, CL 4.0): the light gives no state feedback and the
-    # user can't observe it, so don't rely on a tracked position. Anchor
-    # deterministically every time: a single 11-14s off re-syncs the light to
-    # program 1 (Voodoo Lounge) per the ColorLogic manual, then step (n-1) quick
-    # off/on cycles to reach program n. Fully blind-safe — no sync, no needs-on.
+    # RELATIVE (Hayward pool, CL 4.0). Two paths:
+    #  • Position known AND light on -> MINIMAL forward steps: (n-current) mod
+    #    nprog quick off/on cycles. This is the normal case after a sync and is
+    #    the fewest possible presses (e.g. #2->#3 = a single off/on).
+    #  • Position unknown or light off -> anchor first: one 11-14s off re-syncs
+    #    the light to program 1 (Voodoo Lounge) per the manual, then step (n-1).
+    #    Slower, but works blind when we have no reliable current position.
     if _light_mechanic(body) == 'relative':
         if not hasattr(_ac_backend, 'send_nav_key'):
             return jsonify({'error': 'needs the rs485bridge backend'}), 501
@@ -5461,6 +5463,26 @@ def lights_select(body: str) -> Response:
             with state_lock:
                 return state.circuits.get(circuit) == target
 
+        with state_lock:
+            current = state.light_program.get(body)
+
+        if current is not None and start_on:
+            steps = (n - current) % nprog
+            if steps == 0:
+                return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                                'steps': 0, 'note': 'already on this program'})
+            log.info('Light %s -> program %d (%s): relative +%d from %d',
+                     body, n, name, steps, current)
+            with _nav_lock:      # serialize against menu nav — both drive the panel
+                res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
+            if res is None:
+                return jsonify({'error': 'bridge /cycle failed'}), 502
+            with state_lock:
+                state.light_program[body] = n
+            return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                            'steps': steps, 'from': current, 'bridge': res})
+
+        # Unknown position (or light off): anchor to #1, then step (n-1).
         steps = (n - 1) % nprog
         log.info('Light %s -> program %d (%s): anchor to #1 then +%d',
                  body, n, name, steps)

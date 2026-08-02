@@ -310,6 +310,10 @@
       border: 1px solid var(--line); background: var(--panel2); color: var(--ink);
       -webkit-appearance: none; appearance: none; }
     .scene-msg { margin-top: 10px; min-height: 1.2em; font-size: 14px; color: var(--dim); }
+    /* Current program badge in the light card header (driven by the status poll). */
+    .scene-now { font-size: 12px; font-weight: 700; color: #04263a; background: var(--ok);
+      padding: 3px 11px; border-radius: 999px; margin-left: auto; margin-right: 10px; }
+    .scene-now:empty { display: none; }
     #light_modal { position: fixed; inset: 0; z-index: 41; display: none;
       background: rgba(2,8,16,.72); align-items: center; justify-content: center; padding: 16px; }
     #light_modal.show { display: flex; }
@@ -335,13 +339,15 @@
     .lm-hint { font-size: 13px; color: var(--dim); margin-top: 10px; }
   </style>
   <div class="card">
-    <h2 class="hrow">Spa Light <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
+    <h2 class="hrow">Spa Light <span class="scene-now" id="spa_scene_now"></span>
+      <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
     <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
     <div class="scene-msg" id="spa_scene_msg"></div>
   </div>
 
   <div class="card">
-    <h2 class="hrow">Pool Light <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
+    <h2 class="hrow">Pool Light <span class="scene-now" id="scene_now"></span>
+      <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
     <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
     <div class="scene-msg" id="scene_msg"></div>
   </div>
@@ -814,6 +820,8 @@
     $('chlor_spa_v').classList.toggle('pend', 'chlorSpa' in staged);
     $('chlor_pool').classList.toggle('active', s.valve_mode === 'pool');
     $('chlor_spa').classList.toggle('active', s.valve_mode === 'spa');
+    // Reflect each light's current program in its card header.
+    if (window.updateLightCurrent) window.updateLightCurrent(s.light_program);
 
     // Water — running speed calls out the active speed slot
     const filterOn = s.circuits && s.circuits.FILTER;   // real, drives the speed running flag
@@ -1237,10 +1245,24 @@
       window.stageLight(body, p ? { n: p.n, name: p.name } : null);
     };
     el(ids.gear).onclick = () => openModal(card);
+    card.showCurrent = (n) => {
+      card.current = n ?? null;
+      const p = (card.programs || []).find(x => x.n === n);
+      const e = el(ids.now);
+      if (e) e.textContent = p ? p.name : '';
+    };
+    lightCards[body] = card;
     load();
   }
-  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear' });
-  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear' });
+  const lightCards = {};
+  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear', now: 'spa_scene_now' });
+  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear', now: 'scene_now' });
+  // Driven by the main status poll: reflect each light's current program in its
+  // card header (and keep the settings' tracked position in sync).
+  window.updateLightCurrent = (lp) => {
+    lp = lp || {};
+    for (const body in lightCards) lightCards[body].showCurrent(lp[body]);
+  };
 })();
 </script>
 </body>
