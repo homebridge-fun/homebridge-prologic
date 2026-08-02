@@ -337,6 +337,7 @@
     .lm-raw { display: flex; align-items: flex-end; gap: 10px; margin-top: 12px;
       padding-top: 12px; border-top: 1px solid var(--line); }
     .lm-hint { font-size: 13px; color: var(--dim); margin-top: 10px; }
+    #lm_resyncrow { margin: 6px 0 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
   </style>
   <div class="card">
     <h2 class="hrow">Spa Light <span class="scene-now" id="spa_scene_now"></span>
@@ -357,6 +358,10 @@
   <div class="modal-card">
     <div class="modal-hd"><span class="t" id="lm_title">Light settings</span>
       <button class="xbtn" id="lm_close">✕</button></div>
+    <div id="lm_resyncrow" hidden>
+      <button class="lm-btn" id="lm_resync">Resync colors</button>
+      <div class="lm-hint" id="lm_resynchint">Re-syncs the light to program&nbsp;1 (Voodoo Lounge) via a single 11–14&nbsp;s off. Use it if scene selection drifts — takes ~13&nbsp;s.</div>
+    </div>
     <div class="lm-grid">
       <label id="lm_offset_l">offset<input id="lm_offset" type="number"></label>
       <label>off ms<input id="lm_off" type="number"></label>
@@ -365,15 +370,6 @@
       <label class="lm-check"><input id="lm_local" type="checkbox">LOCAL frames</label>
     </div>
     <button class="lm-btn" id="lm_save">Save calibration</button>
-    <div class="lm-raw" id="lm_rawrow">
-      <label>raw count<input id="lm_rawn" type="number" value="3"></label>
-      <button class="lm-btn" id="lm_fireraw">Fire raw</button>
-    </div>
-    <div class="lm-hint" id="lm_rawhint">Fire a raw count to find where each mode lands, then set the offset so the names line up.</div>
-    <div class="lm-raw" id="lm_resyncrow" hidden>
-      <button class="lm-btn" id="lm_resync">Resync colors</button>
-    </div>
-    <div class="lm-hint" id="lm_resynchint" hidden>Re-syncs the light to program&nbsp;1 (Voodoo Lounge) via a single 11–14&nbsp;s off. Use it if scene selection drifts — takes ~13&nbsp;s.</div>
   </div>
 </div>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
@@ -1073,11 +1069,8 @@
     // and the raw-count calibration are absolute-count concepts, shown for spa.
     el('lm_offset_l').hidden = rel;
     el('lm_reset_l').hidden = rel;
-    el('lm_rawrow').hidden = rel;
-    el('lm_rawhint').hidden = rel;
-    // Relative (pool) only: one-tap resync to program 1.
+    // Relative (pool) only: one-tap resync to program 1, shown at the top.
     el('lm_resyncrow').hidden = !rel;
-    el('lm_resynchint').hidden = !rel;
     el('light_modal').classList.add('show');
   }
   const closeModal = () => { el('light_modal').classList.remove('show'); active = null; };
@@ -1107,19 +1100,6 @@
       active.setMsg('✓ calibration saved');
       active.reload();
     } catch (e) { active.setMsg('⚠ save failed: ' + e.message); }
-  };
-  el('lm_fireraw').onclick = async () => {
-    if (!active) return;
-    const n = +el('lm_rawn').value;
-    active.setMsg('… raw count ' + n + ' — watch the light');
-    try {
-      const r = await fetch('/lights/' + active.body + '/program', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Object.assign({ count: n }, modalTiming())) });
-      const j = await r.json();
-      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      active.setMsg('✓ raw count ' + n + ' fired — moving or static?');
-    } catch (e) { active.setMsg('⚠ raw ' + n + ' failed: ' + e.message); }
   };
   // Resync a relative light to program 1 (Voodoo Lounge) — single 11-14s off.
   el('lm_resync').onclick = async () => {
