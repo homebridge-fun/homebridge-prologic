@@ -3435,6 +3435,7 @@ def get_status() -> Response:
             'pump_speed':              state.pump_speed,
             'pump_startup':            state.pump_startup,
             'spa_speed':               state.spa_speed,
+            'light_program':           dict(state.light_program),
             # heater setpoints are read via menu navigation, cached here after reads
             'pool_setpoint_f':     state.pool_setpoint_f,
             'spa_setpoint_f':      state.spa_setpoint_f,

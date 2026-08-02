@@ -385,10 +385,13 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.saltSensor?.updateSaltLevel(status.salt_level);
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
 
-        // Light scene TVs: reconcile power from the real circuit state (scene
-        // selection itself is open-loop).
-        this.lightTvs.get('spa')?.updateState(status.circuits['AUX_1'] ?? false);
-        this.lightTvs.get('pool')?.updateState(status.circuits['LIGHTS'] ?? false);
+        // Light scene TVs: reconcile power from the real circuit state, and the
+        // selected scene from the sidecar's last-sent program (survives plugin
+        // restarts; scene selection itself is open-loop).
+        this.lightTvs.get('spa')?.updateState(
+          status.circuits['AUX_1'] ?? false, status.light_program?.['spa']);
+        this.lightTvs.get('pool')?.updateState(
+          status.circuits['LIGHTS'] ?? false, status.light_program?.['pool']);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);
       }

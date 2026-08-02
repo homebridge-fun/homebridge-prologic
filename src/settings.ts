@@ -34,6 +34,7 @@ export interface PoolStatus {
   valve_mode: 'pool' | 'spa' | null;
   vsp_slot_pct: Record<string, number>;  // keys "1"–"4"
   vsp_active_slot: number | null;
+  light_program?: Record<string, number>;  // last-selected scene # per body (open-loop)
   connected: boolean;
   last_update: number;
   bridge_wedged: boolean;

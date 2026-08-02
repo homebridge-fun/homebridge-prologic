@@ -108,11 +108,21 @@ export class LightTvAccessory {
     }
   }
 
-  /** Reconcile power from the light circuit's real state (open-loop on scene). */
-  updateState(circuitOn: boolean): void {
+  /**
+   * Reconcile from the sidecar poll: power from the real circuit state, and the
+   * selected scene from the sidecar's last-sent program (so HomeKit shows the
+   * last scene instead of resetting to a default input after a plugin restart —
+   * scene selection is otherwise open-loop).
+   */
+  updateState(circuitOn: boolean, lastProgram?: number): void {
     if (this.isOn !== circuitOn) {
       this.isOn = circuitOn;
       this.tv.updateCharacteristic(this.platform.Characteristic.Active, circuitOn ? 1 : 0);
+    }
+    if (lastProgram && lastProgram !== this.activeId
+        && this.programs.some(p => p.n === lastProgram)) {
+      this.activeId = lastProgram;
+      this.tv.updateCharacteristic(this.platform.Characteristic.ActiveIdentifier, lastProgram);
     }
   }
 }
