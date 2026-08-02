@@ -5673,6 +5673,47 @@ def lights_sync(body: str) -> Response:
     return jsonify({'ok': True, 'body': body, 'program': n, 'synced': True})
 
 
+@app.route('/lights/<body>/resync', methods=['POST'])
+def lights_resync(body: str) -> Response:
+    """Re-synchronize a relative (Hayward pool) light to program 1 (Voodoo
+    Lounge): a single 11-14s off then on, per the ColorLogic manual's Light
+    Synchronization. Sets the tracked position to 1 so subsequent selections
+    step minimally from a known anchor — no need to eyeball a color and Set
+    current by hand. Takes ~13s (blocks until done)."""
+    body = body.lower()
+    circuit = LIGHT_CIRCUITS.get(body)
+    if circuit is None:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    if _light_mechanic(body) != 'relative':
+        return jsonify({'error': f'{body} light is absolute (no resync needed)'}), 400
+    if _ac_backend is None or not hasattr(_ac_backend, 'send_nav_key'):
+        return jsonify({'error': 'needs the rs485bridge backend'}), 501
+    key = _bridge_key_name(circuit)
+
+    def _set(target: bool) -> bool:
+        for _ in range(4):
+            with state_lock:
+                if state.circuits.get(circuit) == target:
+                    return True
+            _ac_backend.send_nav_key(key)
+            time.sleep(1.0)
+        with state_lock:
+            return state.circuits.get(circuit) == target
+
+    with _nav_lock:
+        _set(True)                     # ensure ON
+        time.sleep(0.5)
+        _set(False)                    # begin the resync off
+        time.sleep(POOL_RESYNC_OFF_S)  # 11-14s -> re-sync to program 1
+        _set(True)                     # back ON -> program 1 (Voodoo Lounge)
+        time.sleep(1.0)
+    with state_lock:
+        state.light_program[body] = 1
+    name = _light_programs(body)[0][0]
+    log.info('Light %s re-synced to program 1 (%s)', body, name)
+    return jsonify({'ok': True, 'body': body, 'program': 1, 'name': name})
+
+
 @app.route('/lights/calibration', methods=['GET', 'POST'])
 def lights_calibration() -> Response:
     """Per-body light power-cycle calibration. GET ?body=spa returns that body's

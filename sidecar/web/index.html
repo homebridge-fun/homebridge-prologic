@@ -370,6 +370,10 @@
       <button class="lm-btn" id="lm_fireraw">Fire raw</button>
     </div>
     <div class="lm-hint" id="lm_rawhint">Fire a raw count to find where each mode lands, then set the offset so the names line up.</div>
+    <div class="lm-raw" id="lm_resyncrow" hidden>
+      <button class="lm-btn" id="lm_resync">Resync colors</button>
+    </div>
+    <div class="lm-hint" id="lm_resynchint" hidden>Re-syncs the light to program&nbsp;1 (Voodoo Lounge) via a single 11–14&nbsp;s off. Use it if scene selection drifts — takes ~13&nbsp;s.</div>
   </div>
 </div>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
@@ -1071,6 +1075,9 @@
     el('lm_reset_l').hidden = rel;
     el('lm_rawrow').hidden = rel;
     el('lm_rawhint').hidden = rel;
+    // Relative (pool) only: one-tap resync to program 1.
+    el('lm_resyncrow').hidden = !rel;
+    el('lm_resynchint').hidden = !rel;
     el('light_modal').classList.add('show');
   }
   const closeModal = () => { el('light_modal').classList.remove('show'); active = null; };
@@ -1113,6 +1120,20 @@
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
       active.setMsg('✓ raw count ' + n + ' fired — moving or static?');
     } catch (e) { active.setMsg('⚠ raw ' + n + ' failed: ' + e.message); }
+  };
+  // Resync a relative light to program 1 (Voodoo Lounge) — single 11-14s off.
+  el('lm_resync').onclick = async () => {
+    if (!active) return;
+    const card = active;
+    card.setMsg('… resyncing to Voodoo Lounge (~13s) — don’t touch the light');
+    try {
+      const r = await fetch('/lights/' + card.body + '/resync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      card.showCurrent(1);
+      card.setMsg('✓ resynced to ' + (j.name || 'program 1'));
+    } catch (e) { card.setMsg('⚠ resync failed: ' + e.message); }
   };
   function setupLightCard(body, ids) {
     const setMsg = m => { const e = el(ids.msg); if (e) e.textContent = m; };
