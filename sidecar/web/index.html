@@ -245,7 +245,7 @@
     <div class="condlist">
       <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
       <div class="row"><span class="label">Pump speed</span><span class="pill" id="pump_now">—</span></div>
-      <div class="row"><span class="label">Heater mode</span><span class="pill ctl" id="heat_mode">—</span></div>
+      <div class="row"><span class="label">Heater</span><span class="pill ctl" id="heat_mode">—</span></div>
       <div class="row"><span class="label">Heating now</span><span class="pill" id="heat_fire">—</span></div>
     </div>
   </div>
@@ -801,7 +801,7 @@
     const aw = spa ? 'spa' : 'pool';
     const realHeat = spa ? !!s.spa_heater_enabled : !!s.pool_heater_enabled;
     const effHeat = ('heat' in staged && staged.heatWhich === aw) ? staged.heat : realHeat;
-    setPill('heat_mode', effHeat, 'Auto', 'Off');
+    setPill('heat_mode', effHeat, 'Enabled', 'Off');
     $('heat_mode').classList.toggle('staged', 'heat' in staged);
     setPill('heat_fire', !!s.heater_active, 'Running', 'Idle');
 
