@@ -352,18 +352,18 @@
     <div class="modal-hd"><span class="t" id="lm_title">Light settings</span>
       <button class="xbtn" id="lm_close">✕</button></div>
     <div class="lm-grid">
-      <label>offset<input id="lm_offset" type="number"></label>
+      <label id="lm_offset_l">offset<input id="lm_offset" type="number"></label>
       <label>off ms<input id="lm_off" type="number"></label>
       <label>on ms<input id="lm_on" type="number"></label>
-      <label>reset ms<input id="lm_reset" type="number"></label>
+      <label id="lm_reset_l">reset ms<input id="lm_reset" type="number"></label>
       <label class="lm-check"><input id="lm_local" type="checkbox">LOCAL frames</label>
     </div>
     <button class="lm-btn" id="lm_save">Save calibration</button>
-    <div class="lm-raw">
+    <div class="lm-raw" id="lm_rawrow">
       <label>raw count<input id="lm_rawn" type="number" value="3"></label>
       <button class="lm-btn" id="lm_fireraw">Fire raw</button>
     </div>
-    <div class="lm-hint">Fire a raw count to find where each mode lands, then set the offset so the names line up.</div>
+    <div class="lm-hint" id="lm_rawhint">Fire a raw count to find where each mode lands, then set the offset so the names line up.</div>
     <div class="lm-raw" id="lm_syncrow" hidden>
       <label>light is currently on<select id="lm_syncsel"></select></label>
       <button class="lm-btn" id="lm_syncbtn">Set current</button>
@@ -1069,10 +1069,17 @@
     el('lm_local').checked = c.local !== false;
     // Relative (Hayward pool) light: show the "currently on" position sync.
     const rel = card.mechanic === 'relative';
+    // Relative (pool): position sync, manual toggle, UCL reset. No offset/reset/
+    // raw — those are absolute-count concepts the relative path ignores.
     el('lm_syncrow').hidden = !rel;
     el('lm_synchint').hidden = !rel;
     el('lm_togglerow').hidden = !rel;
     el('lm_togglehint').hidden = !rel;
+    // Absolute (spa): offset, reset ms, raw-count calibration. Never UCL.
+    el('lm_offset_l').hidden = rel;
+    el('lm_reset_l').hidden = rel;
+    el('lm_rawrow').hidden = rel;
+    el('lm_rawhint').hidden = rel;
     if (rel) {
       const sel = el('lm_syncsel');
       sel.innerHTML = '';
