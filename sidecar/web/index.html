@@ -321,7 +321,15 @@
     .lm-check { flex-direction: row !important; align-items: center; gap: 6px !important; }
     .lm-check input { width: auto; }
     .lm-btn { padding: 10px 16px; font-size: 15px; font-weight: 600; color: #04263a;
-      background: var(--accent); border: 0; border-radius: 8px; }
+      background: var(--accent); border: 0; border-radius: 8px;
+      transition: transform .08s ease, filter .08s ease, box-shadow .08s ease; }
+    /* Press feedback: sink + brighten while held, then a brief confirm flash so
+       a quick tap still shows it registered. */
+    #light_modal button:active { transform: scale(.94); filter: brightness(1.25); }
+    #light_modal button.flashed { animation: btnflash .4s ease; }
+    @keyframes btnflash {
+      0%   { box-shadow: 0 0 0 0 var(--ok); filter: brightness(1.5); }
+      100% { box-shadow: 0 0 0 6px rgba(0,0,0,0); filter: brightness(1); } }
     .lm-raw { display: flex; align-items: flex-end; gap: 10px; margin-top: 12px;
       padding-top: 12px; border-top: 1px solid var(--line); }
     .lm-hint { font-size: 13px; color: var(--dim); margin-top: 10px; }
@@ -363,10 +371,9 @@
       <button class="scene-cancel" id="lm_uclbtn">Reset to UCL mode</button>
     </div>
     <div class="lm-raw" id="lm_togglerow" hidden>
-      <button class="lm-btn" id="lm_lighton">Light ON</button>
-      <button class="lm-btn" id="lm_lightoff">Light OFF</button>
+      <button class="lm-btn" id="lm_lighttoggle">Toggle light</button>
     </div>
-    <div class="lm-hint" id="lm_togglehint" hidden>Direct on/off — fires immediately, no Apply. Use these to hand-reprogram the light (e.g. off 11–14&nbsp;s ×4 then on = force UCL mode).</div>
+    <div class="lm-hint" id="lm_togglehint" hidden>Direct toggle — fires immediately, no Apply. Use it to hand-reprogram the light (e.g. off 11–14&nbsp;s then on = re-sync to program&nbsp;1).</div>
     <div class="lm-hint" id="lm_synchint" hidden>This light steps relative to its current program. If you can tell what it's on, pick it and Set current. If not, use <b>motion</b> (color-blind safe): tap <b>Step +1</b> slowly and watch for the moment the light <b>stops moving and holds one steady color</b> — that's <b>Deep Blue Sea #2</b> (the only spot a show is followed by a static color). Set current to <b>Deep Blue Sea #2</b>.</div>
   </div>
 </div>
@@ -1080,6 +1087,14 @@
   }
   const closeModal = () => { el('light_modal').classList.remove('show'); active = null; };
   el('lm_close').onclick = closeModal;
+  // Visual confirmation that a settings button registered a tap: brief flash.
+  el('light_modal').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    b.classList.remove('flashed');
+    void b.offsetWidth;            // restart the animation on rapid re-taps
+    b.classList.add('flashed');
+  });
   el('light_modal').onclick = e => { if (e.target.id === 'light_modal') closeModal(); };
 
   const modalTiming = () => ({
@@ -1138,12 +1153,15 @@
       active.setMsg('✓ stepped +1 — did motion just STOP into a steady color? that’s Deep Blue Sea #2');
     } catch (e) { active.setMsg('⚠ step failed: ' + e.message); }
   };
-  // Direct light on/off — immediate, no Apply. For hand-reprogramming the light.
+  // Direct light toggle — immediate, no Apply. For hand-reprogramming the light.
+  // Reads the current circuit state from /status and sends the opposite.
   const lightCircuit = () => (active && active.body === 'pool') ? 'LIGHTS' : 'AUX_1';
-  const directLight = async (on) => {
+  el('lm_lighttoggle').onclick = async () => {
     if (!active) return;
-    active.setMsg(on ? '… turning light ON' : '… turning light OFF');
+    active.setMsg('… toggling light');
     try {
+      const st = await (await fetch('/status')).json();
+      const on = !((st.circuits || {})[lightCircuit()]);
       const r = await fetch('/circuit/' + lightCircuit(), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ on }) });
@@ -1152,8 +1170,6 @@
       active.setMsg(on ? '✓ light ON' : '✓ light OFF');
     } catch (e) { active.setMsg('⚠ toggle failed: ' + e.message); }
   };
-  el('lm_lighton').onclick = () => directLight(true);
-  el('lm_lightoff').onclick = () => directLight(false);
   // Force the Hayward light back to UCL compatibility mode (~1 min, then save).
   el('lm_uclbtn').onclick = async () => {
     if (!active) return;
