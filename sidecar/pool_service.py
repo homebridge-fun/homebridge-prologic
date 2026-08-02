@@ -5546,6 +5546,11 @@ def lights_mode_reset(body: str) -> Response:
     circuit = LIGHT_CIRCUITS.get(body)
     if circuit is None:
         return jsonify({'error': f'unknown body: {body}'}), 400
+    # UCL is a Hayward compat-mode concept — the reset ritual only makes sense for
+    # the relative (pool) light. Refuse it for absolute lights (spa/Pentair) so an
+    # accidental click can't power-cycle the spa.
+    if _light_mechanic(body) != 'relative':
+        return jsonify({'error': f'{body} light is absolute (no UCL modes)'}), 400
     if _ac_backend is None or not hasattr(_ac_backend, 'send_nav_key'):
         return jsonify({'error': 'needs the rs485bridge backend'}), 501
     key = _bridge_key_name(circuit)

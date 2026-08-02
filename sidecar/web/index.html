@@ -362,6 +362,11 @@
       <button class="lm-btn" id="lm_stepbtn">Step +1</button>
       <button class="scene-cancel" id="lm_uclbtn">Reset to UCL mode</button>
     </div>
+    <div class="lm-raw" id="lm_togglerow" hidden>
+      <button class="lm-btn" id="lm_lighton">Light ON</button>
+      <button class="lm-btn" id="lm_lightoff">Light OFF</button>
+    </div>
+    <div class="lm-hint" id="lm_togglehint" hidden>Direct on/off — fires immediately, no Apply. Use these to hand-reprogram the light (e.g. off 11–14&nbsp;s ×4 then on = force UCL mode).</div>
     <div class="lm-hint" id="lm_synchint" hidden>This light steps relative to its current program. If you can tell what it's on, pick it and Set current. If not, use <b>motion</b> (color-blind safe): tap <b>Step +1</b> slowly and watch for the moment the light <b>stops moving and holds one steady color</b> — that's <b>Deep Blue Sea #2</b> (the only spot a show is followed by a static color). Set current to <b>Deep Blue Sea #2</b>.</div>
   </div>
 </div>
@@ -1059,6 +1064,8 @@
     const rel = card.mechanic === 'relative';
     el('lm_syncrow').hidden = !rel;
     el('lm_synchint').hidden = !rel;
+    el('lm_togglerow').hidden = !rel;
+    el('lm_togglehint').hidden = !rel;
     if (rel) {
       const sel = el('lm_syncsel');
       sel.innerHTML = '';
@@ -1131,12 +1138,29 @@
       active.setMsg('✓ stepped +1 — did motion just STOP into a steady color? that’s Deep Blue Sea #2');
     } catch (e) { active.setMsg('⚠ step failed: ' + e.message); }
   };
+  // Direct light on/off — immediate, no Apply. For hand-reprogramming the light.
+  const lightCircuit = () => (active && active.body === 'pool') ? 'LIGHTS' : 'AUX_1';
+  const directLight = async (on) => {
+    if (!active) return;
+    active.setMsg(on ? '… turning light ON' : '… turning light OFF');
+    try {
+      const r = await fetch('/circuit/' + lightCircuit(), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ on }) });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      active.setMsg(on ? '✓ light ON' : '✓ light OFF');
+    } catch (e) { active.setMsg('⚠ toggle failed: ' + e.message); }
+  };
+  el('lm_lighton').onclick = () => directLight(true);
+  el('lm_lightoff').onclick = () => directLight(false);
   // Force the Hayward light back to UCL compatibility mode (~1 min, then save).
   el('lm_uclbtn').onclick = async () => {
     if (!active) return;
     if (!confirm('Reset the light to UCL mode? It runs ~1 minute of slow off/on '
-        + 'cycles, then leaves the light OFF — leave it off ~2 minutes to save, '
-        + 'then re-sync. Continue?')) return;
+        + 'cycles, then ENDS WITH THE LIGHT ON showing its mode color. When you\'re '
+        + 'done, turn it off yourself and leave it off ~2 minutes to save, then '
+        + 're-sync. Continue?')) return;
     const card = active;
     card.setMsg('… UCL reset running (~1 min) — don’t touch the light');
     try {
