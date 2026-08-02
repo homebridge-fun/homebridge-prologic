@@ -5526,14 +5526,23 @@ def lights_step(body: str) -> Response:
     return jsonify({'ok': True, 'body': body, 'steps': steps, 'current_program': newpos})
 
 
-@app.route('/lights/<body>/mode-reset', methods=['POST'])
+_ucl_reset_state: dict = {}   # body -> {'running': bool, 'done': bool}
+_ucl_reset_lock = threading.Lock()
+
+
+@app.route('/lights/<body>/mode-reset', methods=['GET', 'POST'])
 def lights_mode_reset(body: str) -> Response:
     """Force a Hayward ColorLogic light back into UCL compatibility mode:
     4× [off ~12s, on], then leave it OFF (the caller waits ~2 min to save). Runs
     in the background (~1 min) with CONFIRMED on/off toggles so a dropped press
     can't skew the sequence. Clears the tracked position (unknown after a mode
-    change). Only meaningful for the relative (Hayward pool) light."""
+    change). Only meaningful for the relative (Hayward pool) light.
+
+    GET returns {'running', 'done'} so a UI can show progress without watching."""
     body = body.lower()
+    if request.method == 'GET':
+        with _ucl_reset_lock:
+            return jsonify(_ucl_reset_state.get(body, {'running': False, 'done': False}))
     circuit = LIGHT_CIRCUITS.get(body)
     if circuit is None:
         return jsonify({'error': f'unknown body: {body}'}), 400
@@ -5553,6 +5562,8 @@ def lights_mode_reset(body: str) -> Response:
             return state.circuits.get(circuit) == target
 
     def _run() -> None:
+        with _ucl_reset_lock:
+            _ucl_reset_state[body] = {'running': True, 'done': False}
         try:
             with _nav_lock:      # serialize the whole ~1-min sequence
                 _set(True)                    # ensure ON
@@ -5568,6 +5579,9 @@ def lights_mode_reset(body: str) -> Response:
             log.info('UCL mode-reset done for %s — leave off ~2 min to save, then sync', body)
         except Exception as e:   # noqa: BLE001
             log.warning('UCL mode-reset (%s) failed: %s', body, e)
+        finally:
+            with _ucl_reset_lock:
+                _ucl_reset_state[body] = {'running': False, 'done': True}
 
     threading.Thread(target=_run, daemon=True, name=f'ucl-reset-{body}').start()
     return jsonify({'ok': True, 'body': body, 'started': True,

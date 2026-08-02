@@ -1137,14 +1137,29 @@
     if (!confirm('Reset the light to UCL mode? It runs ~1 minute of slow off/on '
         + 'cycles, then leaves the light OFF — leave it off ~2 minutes to save, '
         + 'then re-sync. Continue?')) return;
-    active.setMsg('… UCL reset running (~1 min) — don’t touch the light');
+    const card = active;
+    card.setMsg('… UCL reset running (~1 min) — don’t touch the light');
     try {
-      const r = await fetch('/lights/' + active.body + '/mode-reset', { method: 'POST',
+      const r = await fetch('/lights/' + card.body + '/mode-reset', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      active.setMsg('✓ UCL reset started — wait ~1 min, then leave the light OFF ~2 min to save, then Step +1 to sync');
-    } catch (e) { active.setMsg('⚠ UCL reset failed: ' + e.message); }
+      // Poll until the background sequence finishes, then tell the user.
+      let ticks = 0;
+      const iv = setInterval(async () => {
+        ticks++;
+        try {
+          const s = await (await fetch('/lights/' + card.body + '/mode-reset')).json();
+          if (s.done) {
+            clearInterval(iv);
+            card.setMsg('✓ UCL reset DONE — now leave the light OFF ~2 min to save, then Step +1 to sync');
+          } else {
+            card.setMsg('… UCL reset running (' + (ticks * 3) + 's) — don’t touch the light');
+          }
+        } catch (_) { /* keep polling */ }
+        if (ticks > 40) clearInterval(iv);   // safety stop (~2 min)
+      }, 3000);
+    } catch (e) { card.setMsg('⚠ UCL reset failed: ' + e.message); }
   };
 
   function setupLightCard(body, ids) {
