@@ -361,7 +361,7 @@
       <button class="lm-btn" id="lm_syncbtn">Set current</button>
       <button class="lm-btn" id="lm_stepbtn">Step +1</button>
     </div>
-    <div class="lm-hint" id="lm_synchint" hidden>This light steps relative to its current program. If you can tell what it's on, pick it and Set current. If not: tap <b>Step +1</b> until you see plain <b>white</b> (that's Cloud White #7), then set current to Cloud White #7 — now it's calibrated.</div>
+    <div class="lm-hint" id="lm_synchint" hidden>This light steps relative to its current program. If you can tell what it's on, pick it and Set current. If not, use <b>motion</b> (color-blind safe): tap <b>Step +1</b> slowly and watch for the moment the light <b>stops moving and holds one steady color</b> — that's <b>Deep Blue Sea #2</b> (the only spot a show is followed by a static color). Set current to <b>Deep Blue Sea #2</b>.</div>
   </div>
 </div>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
@@ -1127,7 +1127,7 @@
         body: JSON.stringify({ steps: 1 }) });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      active.setMsg('✓ stepped +1 — is it white yet? if so, set current to Cloud White #7');
+      active.setMsg('✓ stepped +1 — did motion just STOP into a steady color? that’s Deep Blue Sea #2');
     } catch (e) { active.setMsg('⚠ step failed: ' + e.message); }
   };
 
