@@ -320,6 +320,8 @@
     .lm-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
     .lm-grid label, .lm-raw label { display: flex; flex-direction: column; gap: 3px;
       font-size: 13px; color: var(--dim); }
+    /* The flex rule above beats the default [hidden]{display:none}, so restore it. */
+    .lm-grid label[hidden], .lm-raw label[hidden] { display: none; }
     .lm-grid input[type=number], .lm-raw input { width: 78px; padding: 8px 10px; font-size: 15px;
       color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; }
     .lm-check { flex-direction: row !important; align-items: center; gap: 6px !important; }
