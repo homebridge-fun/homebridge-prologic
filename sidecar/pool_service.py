@@ -5468,6 +5468,38 @@ def lights_select(body: str) -> Response:
                     'daemon_count': count, 'bridge': res})
 
 
+@app.route('/lights/<body>/step', methods=['POST'])
+def lights_step(body: str) -> Response:
+    """Relative-advance a light by `steps` (default 1) quick off/on cycles, blind
+    — used to walk a Hayward pool light to a recognizable landmark (e.g. plain
+    White) so it can then be synced. Requires the light ON. Body: {"steps": 1}."""
+    body = body.lower()
+    circuit = LIGHT_CIRCUITS.get(body)
+    if circuit is None:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    if _ac_backend is None or not hasattr(_ac_backend, 'cycle'):
+        return jsonify({'error': 'light stepping needs the rs485bridge backend'}), 501
+    req = request.get_json(force=True) or {}
+    steps = _clamp(int(req.get('steps', 1)), 1, 30)
+    cfg = _light_cfg(body)
+    with state_lock:
+        start_on = state.circuits.get(circuit)
+    if not start_on:
+        return jsonify({'error': f'{body} light must be ON to step it', 'needs_on': True}), 409
+    with _nav_lock:
+        res = _ac_backend.cycle(circuit, steps, float(cfg['off_ms']), float(cfg['on_ms']))
+    if res is None:
+        return jsonify({'error': 'bridge /cycle failed'}), 502
+    # Advance the tracked position too, if we had one.
+    with state_lock:
+        cur = state.light_program.get(body)
+        if cur is not None:
+            nprog = len(_light_programs(body))
+            state.light_program[body] = ((cur - 1 + steps) % nprog) + 1
+        newpos = state.light_program.get(body)
+    return jsonify({'ok': True, 'body': body, 'steps': steps, 'current_program': newpos})
+
+
 @app.route('/lights/<body>/sync', methods=['POST'])
 def lights_sync(body: str) -> Response:
     """Tell the sidecar which program a light is CURRENTLY on, without moving it.
