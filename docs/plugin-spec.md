@@ -318,8 +318,17 @@ heater is in Auto mode and will call for heat when the pump runs and temp is bel
 from the LED broadcast on both backends (`led['heater']`) — note `get_state(States.HEATER_1)`
 throws on AquaConnect because the `_states` bitmap is RS-485-only.
 
+**Enabled is inferred from the relay.** The armed (Auto/Off) state is scraped from LCD menu
+text that isn't always on screen, so it can go stale. Because a firing relay *only* happens
+when the heater is armed, the sidecar sets `<body>_heater_enabled = True` whenever
+`heater_active` is true (using the active body's `valve_mode`). This makes "enabled Off while
+running" impossible — the contradiction the cockpit used to show. (There is no forced/manual
+heater on this system: you enable the heater and the setpoint drives whether it runs.)
+
 The plugin surfaces these as two switches (see §7.4): "Heater Auto" (armed) and
-"Heater Running" (active).
+"Heater Running" (active). The **cockpit** labels them **Heater: Enabled / Off** (armed) and
+**Heating now: Running / Idle** (relay) — "Enabled" avoids implying a manual mode or that the
+element is firing.
 
 ### 5.6 Bridge Wedge Detection — forked by backend
 
@@ -430,6 +439,24 @@ uses Settings menu navigation on both backends.
 | POST | `/chlorinator/{which}` | `{"percent": int}` |
 | POST | `/superchlorinate` | `{"on": bool}` |
 
+### 6.5a Lights (ColorLogic / IntelliBrite scenes)
+
+`{body}` = `pool` (Hayward ColorLogic, `LIGHTS`, relative) or `spa` (Pentair
+IntelliBrite, `AUX_1`, absolute). Requires the `rs485bridge` backend. See
+`docs/colorlogic-research.md` for the mechanics.
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| GET | `/lights/programs?body=` | — | Program list, `mechanic`, `calibration`, `current_program` |
+| POST | `/lights/{body}/program` | `{"program": N}` or `{"name": "…"}` | Select a scene. Pool: minimal steps from tracked position, else anchor+step. Spa: absolute count `N + offset`. |
+| POST | `/lights/pool/resync` | — | Pool only: one 11–14 s off → resync to program 1 (Voodoo Lounge), sets tracked position = 1 (~13 s) |
+| GET/POST | `/lights/calibration` | `{"body","off_ms","on_ms","reset_ms","local"}` | Per-body timing; persisted to `backend.json`. (`offset` is baked in; spa uses `reset_ms`, pool does not.) |
+
+`light_program` (per-body current position, tracked open-loop) is exposed in
+`/status` and drives the cockpit badge and HomeKit tile. Legacy `/lights/{body}/`
+`sync`, `step`, and `mode-reset` endpoints still exist but are no longer used by
+any UI (superseded by resync + auto-tracking).
+
 ### 6.6 Bridge Health
 
 | Method | Path | Notes |
@@ -510,6 +537,10 @@ muddies measurements and doesn't reflect the swapped end-state.
   "enableTemperatureSensors": true,
   "enableChlorinatorFan": true,
   "enableSaltSensor": true,
+  "enableSpaLightScenes": true,
+  "enablePoolLightScenes": true,
+  "spaLightSceneList": [{ "program": 8, "name": "Blue" }, { "program": 11, "name": "White" }],
+  "poolLightSceneList": [{ "program": 2, "name": "Deep Blue Sea" }, { "program": 6, "name": "Cloud White" }],
   "circuitLabels": {
     "SPA": "Spa Mode",
     "AUX_1": "Spa Light"
@@ -539,10 +570,23 @@ cockpit, which reads/writes the sidecar directly.
 | TemperatureSensor | Air Temperature | `enableTemperatureSensors` |
 | AirQualitySensor | Salt Level | `enableSaltSensor` — VOCDensity = raw PPM, quality pinned to Excellent |
 | Fan | Chlorinator | `enableChlorinatorFan` — spins when filter on AND chlorinator % > 0 |
+| Television | Pool Light | `enablePoolLightScenes` — scene picker for the pool ColorLogic light (external accessory) |
+| Television | Spa Light | `enableSpaLightScenes` — scene picker for the spa IntelliBrite light (external accessory) |
 | Switch | Bridge Needs Rebooting | Always registered |
 
 Pump/VSP speed fan tiles were removed from HomeKit — those speeds are managed in the web
 cockpit. The chlorinator is the only fan accessory.
+
+### 7.2a Light scene tiles (Television)
+
+Each enabled light is published as a **Television** external accessory (HomeKit shows only
+one TV per bridge, so they must be external): the power button toggles the light circuit and
+the input picker selects a named scene. `enableSpaLightScenes` / `enablePoolLightScenes` turn
+them on; `spaLightSceneList` / `poolLightSceneList` choose which programs appear and in what
+order (each entry `{ "program": N, "name": "…" }`, drag-reorderable in the Homebridge UI —
+HomeKit itself only allows renaming inputs, so order is pinned via a `DisplayOrder` TLV).
+Selection is open-loop and optimistic; see `docs/colorlogic-research.md` for the pool
+(relative + resync anchor) vs spa (absolute count) mechanics.
 
 ### 7.3 Circuit Label Overrides
 
@@ -824,6 +868,7 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 | VSP slot floor guard | Done | Per-slot `vspSlotMinPct` (slot 1 defaults to 35%) sets the HomeKit slider's `minValue` so it can't target a speed the panel clamps; sidecar `_step_to` also stops stepping once a value stalls at a hardware floor/ceiling instead of burning the full press budget |
 | Pump tile live speed | Done | Reads `pump_speed` (scroll); labeled "Filter Speed" |
 | LIGHTS / AUX_1 write | Verified | Tested on hardware; keycodes and LED confirmation correct |
+| ColorLogic / IntelliBrite scene selection | Done (2026-08) | Both lights work — see `docs/colorlogic-research.md` (authoritative). **Pool** = Hayward 12-program ColorLogic (CL 4.0), **relative** advance; absolute anchor is a single 11–14 s off → **resync to program 1 (Voodoo Lounge)**, hardware-confirmed. Selection steps minimally from the tracked position, or anchors+steps when position is unknown; cockpit **Resync colors** button. **Spa** = Pentair IntelliBrite, **absolute** count with `offset=+1` baked in. Each light is a HomeKit Television tile (scenes = inputs, `DisplayOrder` pinned, config-editable lists) and a cockpit card (staged Apply + current-program badge). Earlier 17-program UCL/mode-maze model was wrong for this install (superseded — see appendix). |
 | Super Chlorinate | Done | Settings menu nav; add to `circuits` config to expose |
 | Salt level sensor | Done | `enableSaltSensor`; AirQualitySensor/VOCDensity, `maxValue` raised to 4000 PPM (HAP default of 1000 was clamping the ~3200 reading) |
 | Fan spinning | Done | `CurrentFanState` set explicitly per tile on each poll; `Active=1` re-pushed every poll so HomeKit's reconnect reset doesn't stop the animation |
@@ -839,7 +884,6 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 
 | Item | Priority | Notes |
 |---|---|---|
-| **ColorLogic light scene selection (EXPERIMENTAL — paused 2026-07-11)** | Med | Goal: list the 17 named UCL scenes and reliably switch to one by name (pool light = `LIGHTS`, spa = `AUX_1`). **Built (rs485bridge only):** daemon `POST /program` (reset→N power-restores→leave on), `/cycle`, `/fastcycle` (burst pair in one keep-alive window), `/keys`; `select_program(local=)`; sidecar `LIGHT_PROGRAMS`, `GET /lights/programs`, `POST /lights/<body>/program` (name/number/raw count), `GET/POST /lights/calibration` (persisted offset+timing+local); cockpit "Pool Light Scenes" card. **NOT working: reliable exact landing.** Key findings: (1) **Mechanic is correct** — full off ~2s (reset to baseline), then **N power-ons ending on = program N** (confirmed vs user's Royal Blue=3). (2) **The light must stay in its startup PAUSE (dark) for the whole on/off sequence** — it counts cycles while unlit and only illuminates on the final leave-on; **if you can see it flashing, the cycles are too slow** and it escapes the pause → miscount. Finger speed stays inside the pause; our timing doesn't. (3) **Bus reality (measured at `latency_timer=1`):** keep-alives arrive in **pairs ~4ms apart, ~200ms between pairs**; aqualogic sends **one queued frame per keep-alive**. So sleep-based `off_ms/on_ms` queuing is **jittery/unreliable** (presses land 2-per-pair then 200ms gap; likely also tripping panel keypad debounce), and the "~150ms floor" I originally cited was a **FTDI-16ms-latency artifact** — corrected. Observed severity: selecting program 3 landed anywhere from ending-off with ~2 visible flashes to **~13 cycles landing on a show** — the count is essentially random with the current timing. **UPDATE 2026-07-11 (session 2):** the dominant cause of the wild overshoot was a **calibration bug — `offset` stuck at 17** (persisted in `backend.json`), so every scene ran `n = program + 17 → clamped 17` (≈34 presses, always program 17 / a show). **With `offset=0`, low counts (Royal Blue #3, Deep Blue #2, Voodoo #1) now work reliably.** Remaining open: **high counts drift** (USA #15 landed green/purple ~5–10 = *under*count) — likely per-cycle drops from panel keypad debounce at ~250ms (near the keep-alive rhythm). **Mechanic still uncertain:** possibly ABSOLUTE (full-power-down reset then N power-ons — the board runs on a capacitor + a small charge per on-pulse, counts while cycling, and **locks in a fixed delay after the LAST on**, so there's *no* finish-window to beat) OR RELATIVE (each off/on advances one from current). Test-condition blocker: calibrating needs reliable observation, which is hard in **daylight + red-green CVD** (bulb color ≠ in-water night color). **Next-session setup:** test **at night**, calibrate purely on the **motion cue** (show=moving 1/12–17, fixed=static 2–11 — CVD-safe), optionally a one-time sighted/phone-hex color map; try **slower** cleanly-separated cycles (off/on ~400–500ms, no time pressure) to see if the high-count undercount closes. (4) Use **LOCAL_WIRED** frames (replicate the physical keypad), not REMOTE — though a clean A/B (`rs485_bench.py --local`, AUX_2 ×40 each) found **LOCAL and REMOTE equivalent**: both 100% landing, ~same latency (~200ms, which is confirm-overhead, not frame type). So **frame type is NOT the lights lever** — the timing/keep-alive-sync is. LOCAL is proven reliable for a circuit toggle either way. (Nav *arrow* keys as LOCAL remain untested — they were REMOTE-only over the TCP bridge — so core nav stays REMOTE.) **Right approach next time:** rebuild the cycle as **deterministic keep-alive-synced tight pulses** (daemon fires one clean minimal off/on per keep-alive pair, locked to the bus rhythm — not `time.sleep`), so every cycle stays inside the startup pause and the count is exact. Then calibrate the count→scene offset via the static→show motion boundary (color-blind-safe: show=moving, fixed=static). Core pool control is unaffected; this is isolated to the `/lights/*` + `/program|/cycle|/fastcycle` paths. |
 | **Remove legacy `rs485` backend from the sidecar** | Med | Plugin UI/config already removed it (2026-07-10); production is on `rs485bridge`. Sidecar-internal excision is a ~400-line refactor entangled with key-timing globals (`KEY_BURST`/`KEY_PREDELAY_MS`), the wedge-probe machinery, and the `/benchmark/rs485` + `/debug/nav-sweep`/`nav-benchmark`/`rawkey`/`taptest` + `/keytiming` tooling — and touches the `/status` path. Do it as its OWN pass with a sidecar **boot-test on `rs485bridge` + `aquaconnect` + `--simulate`** before deploy (a `/status` regression takes HomeKit + cockpit offline). Remove: `panel_thread`, `RealPanel`, `rs485_observer_thread`, `_install_key_burst`, the `observe_rs485` args/config, and the rs485 debug/benchmark routes. KEEP: `SimPanel`/`--simulate`, `_get_panel`, `_get_navigator`. |
 | **Code-review follow-ups (COMPLETE 2026-07-10)** | Done | Full 3-way code review done (sidecar/plugin/cockpit). HTML-escaping of fault/label innerHTML; FILTER-off-during-heater-cooldown cry-wolf guard; #1 removed pump/VSP speeds from HomeKit (plugin side — commit `366d259`); sidecar + cockpit dead-code cleanup; spec fixes; heater switch ⇄ thermostat sync — all done (sub-rows below). |
 | ↳ Sidecar dead-code cleanup | Done | Removed `activate_vsp_slot` + `/vsp/slot4*` compat routes + `read_vsp_slot4`/`set_vsp_slot4`/`activate_vsp_slot4` aliases; `keypad_press` (unreachable), `_wait_key_sent` (unused), `_AC_SETTLE_S` (unused const). Renamed module-level `_pct` → `_percentile`. Kept `/vsp/slot/<n>` set + `/vsp/spa` (cockpit uses them). |
