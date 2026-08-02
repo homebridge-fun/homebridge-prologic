@@ -5568,11 +5568,14 @@ def lights_mode_reset(body: str) -> Response:
             with _nav_lock:      # serialize the whole ~1-min sequence
                 _set(True)                    # ensure ON
                 time.sleep(0.5)
-                for _ in range(4):            # 4× [off ~12s, on] -> UCL
+                for i in range(4):            # 4× [off ~12s, on] -> UCL
                     _set(False)
                     time.sleep(12.0)
                     _set(True)
-                    time.sleep(1.0)
+                    # Hold the LAST power-up long enough to read the mode-ID
+                    # blink (UCL = red+white). ON duration doesn't affect the
+                    # mode; only the OFF holds do, so a long dwell here is safe.
+                    time.sleep(20.0 if i == 3 else 1.0)
                 _set(False)                   # OFF -> begins the 2-min UCL save
             with state_lock:
                 state.light_program.pop(body, None)   # position unknown now
@@ -5585,8 +5588,9 @@ def lights_mode_reset(body: str) -> Response:
 
     threading.Thread(target=_run, daemon=True, name=f'ucl-reset-{body}').start()
     return jsonify({'ok': True, 'body': body, 'started': True,
-                    'note': ('Resetting to UCL (~1 min). It ends with the light OFF — '
-                             'leave it off ~2 min to save, then Step +1 to sync.')})
+                    'note': ('Resetting to UCL (~1.5 min). WATCH the final power-up: '
+                             'UCL blinks RED+WHITE (any other color = not UCL, run again). '
+                             'It then ends OFF — leave it off ~2 min to save, then sync.')})
 
 
 @app.route('/lights/<body>/sync', methods=['POST'])
