@@ -730,24 +730,28 @@ def _install_key_burst(AquaLogic) -> None:
 # absolute reset procedure (full off -> N power-restores) via the pad daemon's
 # /program. LIGHT_PROGRAM_OFFSET calibrates the count-to-program mapping if the
 # panel's first-restore isn't program 1 (see /lights/programs + calibration).
-# Pool light = Hayward ColorLogic (on LIGHTS). Per the user's actual light
-# manual (2026-08, IMG_2927/2928): this is the 12-program ColorLogic, NOT the
-# 17-program Universal ColorLogic (UCL). 5 fixed (#2-6, one green = Emerald),
-# 7 shows (#1, 7-12). Advance = off/on <10s (+1). Absolute anchor: off 11-14s
-# then on re-synchronizes to program 1 (Voodoo Lounge).
+# Pool light = Hayward ColorLogic (on LIGHTS). 17-program Universal ColorLogic
+# (UCL) list — kept as the target while the user manually forces the light into
+# UCL mode. (The user's light currently reports as the 12-program ColorLogic per
+# IMG_2927/2928; once it's confirmed in UCL this list matches.)
 LIGHT_PROGRAMS_POOL = [
-    ('Voodoo Lounge', 'show'),    # 1  fast color wash
-    ('Deep Blue Sea', 'fixed'),   # 2
-    ('Afternoon Skies', 'fixed'), # 3
-    ('Emerald', 'fixed'),         # 4  (the only green)
-    ('Sangria', 'fixed'),         # 5
-    ('Cloud White', 'fixed'),     # 6
-    ('Twilight', 'show'),         # 7  slow color wash
-    ('Tranquility', 'show'),      # 8  blue/cyan/white fade
-    ('Gemstone', 'show'),         # 9  blue/green/magenta fade
-    ('USA', 'show'),              # 10 red/white/blue switch
-    ('Mardi Gras', 'show'),       # 11 fast random fade
-    ('Cool Cabaret', 'show'),     # 12 random fade
+    ('Voodoo Lounge', 'show'),
+    ('Deep Blue Sea', 'fixed'),
+    ('Royal Blue', 'fixed'),
+    ('Afternoon Skies', 'fixed'),
+    ('Aqua Green', 'fixed'),
+    ('Emerald', 'fixed'),
+    ('Cloud White', 'fixed'),
+    ('Warm Red', 'fixed'),
+    ('Flamingo', 'fixed'),
+    ('Vivid Violet', 'fixed'),
+    ('Sangria', 'fixed'),
+    ('Twilight', 'show'),
+    ('Tranquility', 'show'),
+    ('Gemstone', 'show'),
+    ('USA', 'show'),
+    ('Mardi Gras', 'show'),
+    ('Cool Cabaret', 'show'),
 ]
 
 # Spa light = Pentair IntelliBrite 5G (on AUX_1). Absolute count per the
