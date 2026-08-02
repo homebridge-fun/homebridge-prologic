@@ -5526,6 +5526,55 @@ def lights_step(body: str) -> Response:
     return jsonify({'ok': True, 'body': body, 'steps': steps, 'current_program': newpos})
 
 
+@app.route('/lights/<body>/mode-reset', methods=['POST'])
+def lights_mode_reset(body: str) -> Response:
+    """Force a Hayward ColorLogic light back into UCL compatibility mode:
+    4× [off ~12s, on], then leave it OFF (the caller waits ~2 min to save). Runs
+    in the background (~1 min) with CONFIRMED on/off toggles so a dropped press
+    can't skew the sequence. Clears the tracked position (unknown after a mode
+    change). Only meaningful for the relative (Hayward pool) light."""
+    body = body.lower()
+    circuit = LIGHT_CIRCUITS.get(body)
+    if circuit is None:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    if _ac_backend is None or not hasattr(_ac_backend, 'send_nav_key'):
+        return jsonify({'error': 'needs the rs485bridge backend'}), 501
+    key = _bridge_key_name(circuit)
+
+    def _set(target: bool) -> bool:
+        """Toggle until the circuit reaches `target` (confirmed via the poll)."""
+        for _ in range(4):
+            with state_lock:
+                if state.circuits.get(circuit) == target:
+                    return True
+            _ac_backend.send_nav_key(key)
+            time.sleep(1.0)
+        with state_lock:
+            return state.circuits.get(circuit) == target
+
+    def _run() -> None:
+        try:
+            with _nav_lock:      # serialize the whole ~1-min sequence
+                _set(True)                    # ensure ON
+                time.sleep(0.5)
+                for _ in range(4):            # 4× [off ~12s, on] -> UCL
+                    _set(False)
+                    time.sleep(12.0)
+                    _set(True)
+                    time.sleep(1.0)
+                _set(False)                   # OFF -> begins the 2-min UCL save
+            with state_lock:
+                state.light_program.pop(body, None)   # position unknown now
+            log.info('UCL mode-reset done for %s — leave off ~2 min to save, then sync', body)
+        except Exception as e:   # noqa: BLE001
+            log.warning('UCL mode-reset (%s) failed: %s', body, e)
+
+    threading.Thread(target=_run, daemon=True, name=f'ucl-reset-{body}').start()
+    return jsonify({'ok': True, 'body': body, 'started': True,
+                    'note': ('Resetting to UCL (~1 min). It ends with the light OFF — '
+                             'leave it off ~2 min to save, then Step +1 to sync.')})
+
+
 @app.route('/lights/<body>/sync', methods=['POST'])
 def lights_sync(body: str) -> Response:
     """Tell the sidecar which program a light is CURRENTLY on, without moving it.

@@ -360,6 +360,7 @@
       <label>light is currently on<select id="lm_syncsel"></select></label>
       <button class="lm-btn" id="lm_syncbtn">Set current</button>
       <button class="lm-btn" id="lm_stepbtn">Step +1</button>
+      <button class="scene-cancel" id="lm_uclbtn">Reset to UCL mode</button>
     </div>
     <div class="lm-hint" id="lm_synchint" hidden>This light steps relative to its current program. If you can tell what it's on, pick it and Set current. If not, use <b>motion</b> (color-blind safe): tap <b>Step +1</b> slowly and watch for the moment the light <b>stops moving and holds one steady color</b> — that's <b>Deep Blue Sea #2</b> (the only spot a show is followed by a static color). Set current to <b>Deep Blue Sea #2</b>.</div>
   </div>
@@ -1129,6 +1130,21 @@
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
       active.setMsg('✓ stepped +1 — did motion just STOP into a steady color? that’s Deep Blue Sea #2');
     } catch (e) { active.setMsg('⚠ step failed: ' + e.message); }
+  };
+  // Force the Hayward light back to UCL compatibility mode (~1 min, then save).
+  el('lm_uclbtn').onclick = async () => {
+    if (!active) return;
+    if (!confirm('Reset the light to UCL mode? It runs ~1 minute of slow off/on '
+        + 'cycles, then leaves the light OFF — leave it off ~2 minutes to save, '
+        + 'then re-sync. Continue?')) return;
+    active.setMsg('… UCL reset running (~1 min) — don’t touch the light');
+    try {
+      const r = await fetch('/lights/' + active.body + '/mode-reset', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      active.setMsg('✓ UCL reset started — wait ~1 min, then leave the light OFF ~2 min to save, then Step +1 to sync');
+    } catch (e) { active.setMsg('⚠ UCL reset failed: ' + e.message); }
   };
 
   function setupLightCard(body, ids) {
