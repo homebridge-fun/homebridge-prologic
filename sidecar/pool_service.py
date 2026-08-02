@@ -5568,15 +5568,15 @@ def lights_mode_reset(body: str) -> Response:
             with _nav_lock:      # serialize the whole ~1-min sequence
                 _set(True)                    # ensure ON
                 time.sleep(0.5)
-                for i in range(4):            # 4× [off ~12s, on] -> UCL
+                for _ in range(4):            # 4× [off ~12s, on] -> UCL
                     _set(False)
                     time.sleep(12.0)
                     _set(True)
-                    # Hold the LAST power-up long enough to read the mode-ID
-                    # blink (UCL = red+white). ON duration doesn't affect the
-                    # mode; only the OFF holds do, so a long dwell here is safe.
-                    time.sleep(20.0 if i == 3 else 1.0)
-                _set(False)                   # OFF -> begins the 2-min UCL save
+                    time.sleep(1.0)
+                # Leave the light ON at the end so the user can read the mode-ID
+                # blink (UCL = red+white) at their own pace, then turn it off
+                # themselves. ON duration doesn't affect the mode; only the OFF
+                # holds do. The user's manual off begins the 2-min UCL save.
             with state_lock:
                 state.light_program.pop(body, None)   # position unknown now
             log.info('UCL mode-reset done for %s — leave off ~2 min to save, then sync', body)
@@ -5588,9 +5588,10 @@ def lights_mode_reset(body: str) -> Response:
 
     threading.Thread(target=_run, daemon=True, name=f'ucl-reset-{body}').start()
     return jsonify({'ok': True, 'body': body, 'started': True,
-                    'note': ('Resetting to UCL (~1.5 min). WATCH the final power-up: '
-                             'UCL blinks RED+WHITE (any other color = not UCL, run again). '
-                             'It then ends OFF — leave it off ~2 min to save, then sync.')})
+                    'note': ('Resetting to UCL (~1 min). It ENDS WITH THE LIGHT ON and '
+                             'blinking its mode color: RED+WHITE = UCL (any other color = '
+                             'not UCL, run again). When done reading it, turn the light OFF '
+                             'yourself and leave it off ~2 min to save, then sync.')})
 
 
 @app.route('/lights/<body>/sync', methods=['POST'])
