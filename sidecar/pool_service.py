@@ -730,28 +730,24 @@ def _install_key_burst(AquaLogic) -> None:
 # absolute reset procedure (full off -> N power-restores) via the pad daemon's
 # /program. LIGHT_PROGRAM_OFFSET calibrates the count-to-program mapping if the
 # panel's first-restore isn't program 1 (see /lights/programs + calibration).
-# Pool light = Hayward ColorLogic (on LIGHTS). 17-program Universal ColorLogic
-# (UCL) list — kept as the target while the user manually forces the light into
-# UCL mode. (The user's light currently reports as the 12-program ColorLogic per
-# IMG_2927/2928; once it's confirmed in UCL this list matches.)
+# Pool light = Hayward ColorLogic (on LIGHTS). Per the user's actual light
+# manual (IMG_2927/2928), this is the 12-program ColorLogic (CL 4.0): 5 fixed
+# (#2-6, one green = Emerald), 7 shows (#1, 7-12). Advance = quick off/on <10s
+# (+1). Absolute anchor: a single 11-14s off then on re-synchronizes to program
+# 1 (Voodoo Lounge) — used by scene selection to anchor without observing state.
 LIGHT_PROGRAMS_POOL = [
-    ('Voodoo Lounge', 'show'),
-    ('Deep Blue Sea', 'fixed'),
-    ('Royal Blue', 'fixed'),
-    ('Afternoon Skies', 'fixed'),
-    ('Aqua Green', 'fixed'),
-    ('Emerald', 'fixed'),
-    ('Cloud White', 'fixed'),
-    ('Warm Red', 'fixed'),
-    ('Flamingo', 'fixed'),
-    ('Vivid Violet', 'fixed'),
-    ('Sangria', 'fixed'),
-    ('Twilight', 'show'),
-    ('Tranquility', 'show'),
-    ('Gemstone', 'show'),
-    ('USA', 'show'),
-    ('Mardi Gras', 'show'),
-    ('Cool Cabaret', 'show'),
+    ('Voodoo Lounge', 'show'),    # 1  fast color wash
+    ('Deep Blue Sea', 'fixed'),   # 2
+    ('Afternoon Skies', 'fixed'), # 3
+    ('Emerald', 'fixed'),         # 4  (the only green)
+    ('Sangria', 'fixed'),         # 5
+    ('Cloud White', 'fixed'),     # 6
+    ('Twilight', 'show'),         # 7  slow color wash
+    ('Tranquility', 'show'),      # 8  blue/cyan/white fade
+    ('Gemstone', 'show'),         # 9  blue/green/magenta fade
+    ('USA', 'show'),              # 10 red/white/blue switch
+    ('Mardi Gras', 'show'),       # 11 fast random fade
+    ('Cool Cabaret', 'show'),     # 12 random fade
 ]
 
 # Spa light = Pentair IntelliBrite 5G (on AUX_1). Absolute count per the
@@ -796,6 +792,11 @@ LIGHT_MECHANIC = {'pool': 'relative', 'spa': 'absolute'}
 
 def _light_mechanic(body: str) -> str:
     return LIGHT_MECHANIC.get(body, 'absolute')
+# A single off in the 11-14s band re-synchronizes a Hayward ColorLogic light to
+# program 1 (per the manual's Light Synchronization section). 12s sits safely in
+# band and below the 60s cold-start threshold. Repeating this 3-4x in a row would
+# change the compatibility mode, so selection only ever does ONE per call.
+POOL_RESYNC_OFF_S = 12.0
 # Power-cycle timing is PER BODY — the pool (Hayward UCL) and spa (Pentair
 # IntelliBrite) lights use different reset/pulse timing, so calibrating one must
 # not disturb the other. Defaults; overridden by backend.json 'light_config'.
@@ -5425,36 +5426,45 @@ def lights_select(body: str) -> Response:
 
     name = progs[n - 1][0]
 
-    # RELATIVE (Hayward pool): step (target - current) mod nprog quick off/on
-    # cycles from the tracked current program. Hayward has no absolute color
-    # reset, so the position must be known — synced once via
-    # POST /lights/<body>/sync — and the light must be ON to step it.
+    # RELATIVE (Hayward pool, CL 4.0): the light gives no state feedback and the
+    # user can't observe it, so don't rely on a tracked position. Anchor
+    # deterministically every time: a single 11-14s off re-syncs the light to
+    # program 1 (Voodoo Lounge) per the ColorLogic manual, then step (n-1) quick
+    # off/on cycles to reach program n. Fully blind-safe — no sync, no needs-on.
     if _light_mechanic(body) == 'relative':
-        with state_lock:
-            current = state.light_program.get(body)
-        if current is None:
-            return jsonify({
-                'error': (f'{body} light position unknown — sync the current program '
-                          f'first: POST /lights/{body}/sync {{"program": N}}'),
-                'needs_sync': True}), 409
-        if not start_on:
-            return jsonify({
-                'error': f'{body} light must be ON to change its scene (relative advance)',
-                'needs_on': True}), 409
-        steps = (n - current) % nprog
-        if steps == 0:
-            return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
-                            'steps': 0, 'note': 'already on this program'})
-        log.info('Light %s -> program %d (%s): relative +%d from %d',
-                 body, n, name, steps, current)
+        if not hasattr(_ac_backend, 'send_nav_key'):
+            return jsonify({'error': 'needs the rs485bridge backend'}), 501
+        key = _bridge_key_name(circuit)
+
+        def _set(target: bool) -> bool:
+            for _ in range(4):
+                with state_lock:
+                    if state.circuits.get(circuit) == target:
+                        return True
+                _ac_backend.send_nav_key(key)
+                time.sleep(1.0)
+            with state_lock:
+                return state.circuits.get(circuit) == target
+
+        steps = (n - 1) % nprog
+        log.info('Light %s -> program %d (%s): anchor to #1 then +%d',
+                 body, n, name, steps)
         with _nav_lock:      # serialize against menu nav — both drive the panel
-            res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
-        if res is None:
-            return jsonify({'error': 'bridge /cycle failed'}), 502
+            _set(True)                 # ensure ON
+            time.sleep(0.5)
+            _set(False)                # begin the resync off
+            time.sleep(POOL_RESYNC_OFF_S)  # 11-14s -> re-sync to program 1
+            _set(True)                 # back ON -> program 1 (Voodoo Lounge)
+            time.sleep(1.0)
+            res = None
+            if steps:
+                res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
+                if res is None:
+                    return jsonify({'error': 'bridge /cycle failed'}), 502
         with state_lock:
             state.light_program[body] = n
         return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
-                        'steps': steps, 'from': current, 'bridge': res})
+                        'steps': steps, 'anchored_to': 1, 'bridge': res})
 
     # ABSOLUTE (Pentair spa): reset + N restores. Offset can push the count past
     # nprog (spa needs mode+1), so allow headroom for the daemon's raw count.
