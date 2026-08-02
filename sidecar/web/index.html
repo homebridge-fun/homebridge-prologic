@@ -370,17 +370,6 @@
       <button class="lm-btn" id="lm_fireraw">Fire raw</button>
     </div>
     <div class="lm-hint" id="lm_rawhint">Fire a raw count to find where each mode lands, then set the offset so the names line up.</div>
-    <div class="lm-raw" id="lm_syncrow" hidden>
-      <label>light is currently on<select id="lm_syncsel"></select></label>
-      <button class="lm-btn" id="lm_syncbtn">Set current</button>
-      <button class="lm-btn" id="lm_stepbtn">Step +1</button>
-      <button class="scene-cancel" id="lm_uclbtn">Reset to UCL mode</button>
-    </div>
-    <div class="lm-raw" id="lm_togglerow" hidden>
-      <button class="lm-btn" id="lm_lighttoggle">Toggle light</button>
-    </div>
-    <div class="lm-hint" id="lm_togglehint" hidden>Direct toggle — fires immediately, no Apply. Use it to hand-reprogram the light (e.g. off 11–14&nbsp;s then on = re-sync to program&nbsp;1).</div>
-    <div class="lm-hint" id="lm_synchint" hidden>This light steps relative to its current program. If you can tell what it's on, pick it and Set current. If not, use <b>motion</b> (color-blind safe): tap <b>Step +1</b> slowly and watch for the moment the light <b>stops moving and holds one steady color</b> — that's <b>Deep Blue Sea #2</b> (the only spot a show is followed by a static color). Set current to <b>Deep Blue Sea #2</b>.</div>
   </div>
 </div>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
@@ -1075,29 +1064,13 @@
     el('lm_on').value = c.on_ms ?? 150;
     el('lm_reset').value = c.reset_ms ?? 2000;
     el('lm_local').checked = c.local !== false;
-    // Relative (Hayward pool) light: show the "currently on" position sync.
     const rel = card.mechanic === 'relative';
-    // Relative (pool): position sync, manual toggle, UCL reset. No offset/reset/
-    // raw — those are absolute-count concepts the relative path ignores.
-    el('lm_syncrow').hidden = !rel;
-    el('lm_synchint').hidden = !rel;
-    el('lm_togglerow').hidden = !rel;
-    el('lm_togglehint').hidden = !rel;
-    // Absolute (spa): offset, reset ms, raw-count calibration. Never UCL.
+    // Pool (relative) keeps only timing (off/on ms) + LOCAL. Offset, reset ms,
+    // and the raw-count calibration are absolute-count concepts, shown for spa.
     el('lm_offset_l').hidden = rel;
     el('lm_reset_l').hidden = rel;
     el('lm_rawrow').hidden = rel;
     el('lm_rawhint').hidden = rel;
-    if (rel) {
-      const sel = el('lm_syncsel');
-      sel.innerHTML = '';
-      (card.programs || []).forEach(p => {
-        const o = document.createElement('option');
-        o.value = p.n; o.textContent = p.n + '. ' + p.name;
-        if (p.n === card.current) o.selected = true;
-        sel.appendChild(o);
-      });
-    }
     el('light_modal').classList.add('show');
   }
   const closeModal = () => { el('light_modal').classList.remove('show'); active = null; };
@@ -1141,82 +1114,6 @@
       active.setMsg('✓ raw count ' + n + ' fired — moving or static?');
     } catch (e) { active.setMsg('⚠ raw ' + n + ' failed: ' + e.message); }
   };
-  // Tell the sidecar which program the (relative/pool) light is on now — no move.
-  el('lm_syncbtn').onclick = async () => {
-    if (!active) return;
-    const n = +el('lm_syncsel').value;
-    try {
-      const r = await fetch('/lights/' + active.body + '/sync', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ program: n }) });
-      const j = await r.json();
-      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      active.current = n;
-      active.setMsg('✓ current program set to ' + n + ' — now pick a scene');
-    } catch (e) { active.setMsg('⚠ sync failed: ' + e.message); }
-  };
-  // Nudge a relative light one program at a time to reach a landmark (white).
-  el('lm_stepbtn').onclick = async () => {
-    if (!active) return;
-    active.setMsg('… stepping +1 — watch the light');
-    try {
-      const r = await fetch('/lights/' + active.body + '/step', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ steps: 1 }) });
-      const j = await r.json();
-      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      active.setMsg('✓ stepped +1 — did motion just STOP into a steady color? that’s Deep Blue Sea #2');
-    } catch (e) { active.setMsg('⚠ step failed: ' + e.message); }
-  };
-  // Direct light toggle — immediate, no Apply. For hand-reprogramming the light.
-  // Reads the current circuit state from /status and sends the opposite.
-  const lightCircuit = () => (active && active.body === 'pool') ? 'LIGHTS' : 'AUX_1';
-  el('lm_lighttoggle').onclick = async () => {
-    if (!active) return;
-    active.setMsg('… toggling light');
-    try {
-      const st = await (await fetch('/status')).json();
-      const on = !((st.circuits || {})[lightCircuit()]);
-      const r = await fetch('/circuit/' + lightCircuit(), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ on }) });
-      const j = await r.json();
-      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      active.setMsg(on ? '✓ light ON' : '✓ light OFF');
-    } catch (e) { active.setMsg('⚠ toggle failed: ' + e.message); }
-  };
-  // Force the Hayward light back to UCL compatibility mode (~1 min, then save).
-  el('lm_uclbtn').onclick = async () => {
-    if (!active) return;
-    if (!confirm('Reset the light to UCL mode? It runs ~1 minute of slow off/on '
-        + 'cycles, then ENDS WITH THE LIGHT ON showing its mode color. When you\'re '
-        + 'done, turn it off yourself and leave it off ~2 minutes to save, then '
-        + 're-sync. Continue?')) return;
-    const card = active;
-    card.setMsg('… UCL reset running (~1 min) — don’t touch the light');
-    try {
-      const r = await fetch('/lights/' + card.body + '/mode-reset', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const j = await r.json();
-      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      // Poll until the background sequence finishes, then tell the user.
-      let ticks = 0;
-      const iv = setInterval(async () => {
-        ticks++;
-        try {
-          const s = await (await fetch('/lights/' + card.body + '/mode-reset')).json();
-          if (s.done) {
-            clearInterval(iv);
-            card.setMsg('✓ UCL reset DONE — now leave the light OFF ~2 min to save, then Step +1 to sync');
-          } else {
-            card.setMsg('… UCL reset running (' + (ticks * 3) + 's) — don’t touch the light');
-          }
-        } catch (_) { /* keep polling */ }
-        if (ticks > 40) clearInterval(iv);   // safety stop (~2 min)
-      }, 3000);
-    } catch (e) { card.setMsg('⚠ UCL reset failed: ' + e.message); }
-  };
-
   function setupLightCard(body, ids) {
     const setMsg = m => { const e = el(ids.msg); if (e) e.textContent = m; };
     const card = { body, cal: {}, setMsg, reload: load, mechanic: 'absolute', programs: [], current: null };
