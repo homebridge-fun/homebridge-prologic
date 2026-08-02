@@ -1606,6 +1606,14 @@ class RS485BridgeBackend:
             vm = snap.get('valve_mode')
             if vm is not None:               # None = current frame isn't a mode
                 state.valve_mode = vm        # screen; keep last-known otherwise
+            # A firing heater relay means the heater is armed (Auto) — the Auto/Off
+            # LCD text isn't always on screen, so infer 'enabled' from the live
+            # relay to avoid showing mode "Off" while "heating now" is Running.
+            if state.heater_active:
+                if (state.valve_mode or 'pool') == 'spa':
+                    state.spa_heater_enabled = True
+                else:
+                    state.pool_heater_enabled = True
 
     # ── Public navigator surface ──────────────────────────────────────────────
     def send_nav_key(self, key_name: str) -> None:
@@ -1885,6 +1893,13 @@ def _apply_ac_led_to_state(led: dict) -> None:
         heater_st = led.get('heater')
         if heater_st in ('on', 'off', 'blink'):
             state.heater_active = (heater_st != 'off')
+            # A firing relay implies the heater is armed (Auto); infer 'enabled'
+            # so mode never reads "Off" while the relay is actually running.
+            if state.heater_active:
+                if (state.valve_mode or 'pool') == 'spa':
+                    state.spa_heater_enabled = True
+                else:
+                    state.pool_heater_enabled = True
         state.connected = True
         state.last_update = time.time()
 
