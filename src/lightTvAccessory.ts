@@ -19,6 +19,9 @@ export class LightTvAccessory {
   private readonly tv: Service;
   private activeId: number;
   private isOn = false;
+  /** Scene we just sent; poll-sync ignores the sidecar's value until it catches
+   * up, so a poll during the several-second power-cycle can't revert the pick. */
+  private pending: number | null = null;
 
   constructor(
     private readonly platform: ProLogicPlatform,
@@ -93,19 +96,25 @@ export class LightTvAccessory {
     }
   }
 
-  private async handleSelect(value: CharacteristicValue): Promise<void> {
+  // NOT async: HomeKit's ActiveIdentifier write must return immediately.
+  // Awaiting the multi-second power-cycle makes the write time out and HomeKit
+  // reverts the selector to the previous input (even though the scene fired).
+  private handleSelect(value: CharacteristicValue): void {
     const n = value as number;
     this.activeId = n;
+    this.pending = n;
     const p = this.programs.find(x => x.n === n);
     this.platform.log.info(`[Light ${this.body}] scene -> ${p?.name ?? n}`);
-    try {
-      await this.platform.sidecar.setLightProgram(this.body, n);
-      // Selecting a scene power-cycles the circuit and ends ON — reflect it.
-      this.isOn = true;
-      this.tv.updateCharacteristic(this.platform.Characteristic.Active, 1);
-    } catch (err) {
-      this.platform.log.error(`[Light ${this.body}] scene set failed:`, err);
-    }
+    this.platform.sidecar.setLightProgram(this.body, n)
+      .then(() => {
+        // The power-cycle ends ON — reflect it.
+        this.isOn = true;
+        this.tv.updateCharacteristic(this.platform.Characteristic.Active, 1);
+      })
+      .catch((err) => {
+        this.pending = null;
+        this.platform.log.error(`[Light ${this.body}] scene set failed:`, err);
+      });
   }
 
   /**
@@ -119,8 +128,16 @@ export class LightTvAccessory {
       this.isOn = circuitOn;
       this.tv.updateCharacteristic(this.platform.Characteristic.Active, circuitOn ? 1 : 0);
     }
-    if (lastProgram && lastProgram !== this.activeId
-        && this.programs.some(p => p.n === lastProgram)) {
+    if (lastProgram == null) return;
+    // While a pick is in flight, ignore the sidecar's (still-old) value until it
+    // reflects our selection — otherwise a poll mid power-cycle reverts it.
+    if (this.pending !== null) {
+      if (lastProgram === this.pending) this.pending = null;
+      return;
+    }
+    // No pending pick: mirror the sidecar (restores last scene after a restart,
+    // and reflects scenes fired from the cockpit).
+    if (lastProgram !== this.activeId && this.programs.some(p => p.n === lastProgram)) {
       this.activeId = lastProgram;
       this.tv.updateCharacteristic(this.platform.Characteristic.ActiveIdentifier, lastProgram);
     }
