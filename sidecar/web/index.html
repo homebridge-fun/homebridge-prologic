@@ -356,6 +356,11 @@
       <button class="lm-btn" id="lm_fireraw">Fire raw</button>
     </div>
     <div class="lm-hint">Fire a raw count to find where each mode lands, then set the offset so the names line up.</div>
+    <div class="lm-raw" id="lm_syncrow" hidden>
+      <label>light is currently on<select id="lm_syncsel"></select></label>
+      <button class="lm-btn" id="lm_syncbtn">Set current</button>
+    </div>
+    <div class="lm-hint" id="lm_synchint" hidden>This light steps relative to its current program, so tell it which scene it's on now (look at the pool). After that, picking a scene works.</div>
   </div>
 </div>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
@@ -1048,6 +1053,20 @@
     el('lm_on').value = c.on_ms ?? 150;
     el('lm_reset').value = c.reset_ms ?? 2000;
     el('lm_local').checked = c.local !== false;
+    // Relative (Hayward pool) light: show the "currently on" position sync.
+    const rel = card.mechanic === 'relative';
+    el('lm_syncrow').hidden = !rel;
+    el('lm_synchint').hidden = !rel;
+    if (rel) {
+      const sel = el('lm_syncsel');
+      sel.innerHTML = '';
+      (card.programs || []).forEach(p => {
+        const o = document.createElement('option');
+        o.value = p.n; o.textContent = p.n + '. ' + p.name;
+        if (p.n === card.current) o.selected = true;
+        sel.appendChild(o);
+      });
+    }
     el('light_modal').classList.add('show');
   }
   const closeModal = () => { el('light_modal').classList.remove('show'); active = null; };
@@ -1083,15 +1102,32 @@
       active.setMsg('✓ raw count ' + n + ' fired — moving or static?');
     } catch (e) { active.setMsg('⚠ raw ' + n + ' failed: ' + e.message); }
   };
+  // Tell the sidecar which program the (relative/pool) light is on now — no move.
+  el('lm_syncbtn').onclick = async () => {
+    if (!active) return;
+    const n = +el('lm_syncsel').value;
+    try {
+      const r = await fetch('/lights/' + active.body + '/sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ program: n }) });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      active.current = n;
+      active.setMsg('✓ current program set to ' + n + ' — now pick a scene');
+    } catch (e) { active.setMsg('⚠ sync failed: ' + e.message); }
+  };
 
   function setupLightCard(body, ids) {
     const setMsg = m => { const e = el(ids.msg); if (e) e.textContent = m; };
-    const card = { body, cal: {}, setMsg, reload: load };
+    const card = { body, cal: {}, setMsg, reload: load, mechanic: 'absolute', programs: [], current: null };
     let programs = [];
     function load() {
       fetch('/lights/programs?body=' + body).then(r => r.json()).then(d => {
         card.cal = d.calibration || {};
+        card.mechanic = d.mechanic || 'absolute';
+        card.current = d.current_program ?? null;
         programs = d.programs || [];
+        card.programs = programs;
         const sel = el(ids.sel);
         sel.innerHTML = '<option value="">Choose a scene…</option>';
         programs.forEach(p => {

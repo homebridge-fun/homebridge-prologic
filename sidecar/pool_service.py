@@ -782,6 +782,16 @@ def _light_programs(body: str):
 # spa light = AUX_1). Power-cycle timing + count offset are calibratable and
 # persisted in backend.json (key 'light_config').
 LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
+# The two lights select programs DIFFERENTLY (see docs/colorlogic-research.md):
+#   spa  = Pentair IntelliBrite -> ABSOLUTE (off/on N times = program N).
+#   pool = Hayward ColorLogic   -> RELATIVE (each off/on <10s = +1 from current),
+#          with NO absolute color reset — so we track position and step
+#          (target - current) mod count.
+LIGHT_MECHANIC = {'pool': 'relative', 'spa': 'absolute'}
+
+
+def _light_mechanic(body: str) -> str:
+    return LIGHT_MECHANIC.get(body, 'absolute')
 # Power-cycle timing is PER BODY — the pool (Hayward UCL) and spa (Pentair
 # IntelliBrite) lights use different reset/pulse timing, so calibrating one must
 # not disturb the other. Defaults; overridden by backend.json 'light_config'.
@@ -1540,6 +1550,23 @@ class RS485BridgeBackend:
                 return json.loads(r.read())
         except Exception as e:
             log.warning('rs485bridge /program(%s n=%s) error: %s', key, n, e)
+            return None
+
+    def cycle(self, key: str, count: int, off_ms: float, on_ms: float) -> Optional[dict]:
+        """Drive the daemon's /cycle: `count` blind off/on power-cycles of a
+        toggle circuit (no reset). For the Hayward pool light's RELATIVE advance
+        — each off/on (<10s) steps one program. Assumes the light is already ON."""
+        self._req_count += 1
+        payload = {'key': key, 'count': int(count), 'off_ms': off_ms, 'on_ms': on_ms}
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self._base + '/cycle', data=body,
+            headers=self._headers({'Content-Type': 'application/json'}))
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            log.warning('rs485bridge /cycle(%s x%s) error: %s', key, count, e)
             return None
 
     # ── State mapping ─────────────────────────────────────────────────────────
@@ -5326,12 +5353,16 @@ def lights_programs() -> Response:
         return [{'n': i + 1, 'name': name, 'type': typ}
                 for i, (name, typ) in enumerate(progs)]
 
+    with state_lock:
+        current = state.light_program.get(body)
     return jsonify({
         'body': body,
         'programs': _fmt(_light_programs(body)),
         'by_body': {b: _fmt(p) for b, p in LIGHT_PROGRAMS_BY_BODY.items()},
         'circuits': LIGHT_CIRCUITS,
         'calibration': dict(_light_cfg(body)),
+        'mechanic': _light_mechanic(body),   # 'relative' (pool) | 'absolute' (spa)
+        'current_program': current,          # last-known position (relative light)
     })
 
 
@@ -5388,11 +5419,42 @@ def lights_select(body: str) -> Response:
     if not (1 <= n <= nprog):
         return jsonify({'error': f'program must be 1..{nprog}'}), 400
 
-    # Offset can push the restore-count past the program count (e.g. spa needs
-    # mode+1), so allow headroom above nprog for the daemon's raw restore count.
-    count = _clamp(n + int(cfg['offset']), 1, nprog + 5)
-
     name = progs[n - 1][0]
+
+    # RELATIVE (Hayward pool): step (target - current) mod nprog quick off/on
+    # cycles from the tracked current program. Hayward has no absolute color
+    # reset, so the position must be known — synced once via
+    # POST /lights/<body>/sync — and the light must be ON to step it.
+    if _light_mechanic(body) == 'relative':
+        with state_lock:
+            current = state.light_program.get(body)
+        if current is None:
+            return jsonify({
+                'error': (f'{body} light position unknown — sync the current program '
+                          f'first: POST /lights/{body}/sync {{"program": N}}'),
+                'needs_sync': True}), 409
+        if not start_on:
+            return jsonify({
+                'error': f'{body} light must be ON to change its scene (relative advance)',
+                'needs_on': True}), 409
+        steps = (n - current) % nprog
+        if steps == 0:
+            return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                            'steps': 0, 'note': 'already on this program'})
+        log.info('Light %s -> program %d (%s): relative +%d from %d',
+                 body, n, name, steps, current)
+        with _nav_lock:      # serialize against menu nav — both drive the panel
+            res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
+        if res is None:
+            return jsonify({'error': 'bridge /cycle failed'}), 502
+        with state_lock:
+            state.light_program[body] = n
+        return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                        'steps': steps, 'from': current, 'bridge': res})
+
+    # ABSOLUTE (Pentair spa): reset + N restores. Offset can push the count past
+    # nprog (spa needs mode+1), so allow headroom for the daemon's raw count.
+    count = _clamp(n + int(cfg['offset']), 1, nprog + 5)
     log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
     with _nav_lock:      # serialize against menu nav — both drive the panel
         res = _ac_backend.select_program(circuit, count, reset_ms, off_ms, on_ms,
@@ -5404,6 +5466,29 @@ def lights_select(body: str) -> Response:
         state.light_program[body] = n
     return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
                     'daemon_count': count, 'bridge': res})
+
+
+@app.route('/lights/<body>/sync', methods=['POST'])
+def lights_sync(body: str) -> Response:
+    """Tell the sidecar which program a light is CURRENTLY on, without moving it.
+    Needed for the relative (Hayward pool) light so absolute selection can step
+    from a known position — the user reads the light and syncs once. Body:
+    {"program": N}."""
+    body = body.lower()
+    if body not in LIGHT_CIRCUITS:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    req = request.get_json(force=True) or {}
+    nprog = len(_light_programs(body))
+    try:
+        n = int(req.get('program'))
+    except (TypeError, ValueError):
+        return jsonify({'error': f'program must be 1..{nprog}'}), 400
+    if not (1 <= n <= nprog):
+        return jsonify({'error': f'program must be 1..{nprog}'}), 400
+    with state_lock:
+        state.light_program[body] = n
+    log.info('Light %s position synced to program %d (no move)', body, n)
+    return jsonify({'ok': True, 'body': body, 'program': n, 'synced': True})
 
 
 @app.route('/lights/calibration', methods=['GET', 'POST'])
