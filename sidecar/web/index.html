@@ -365,7 +365,6 @@
       <div class="lm-hint" id="lm_resynchint">Re-syncs the light to program&nbsp;1 (Voodoo Lounge) via a single 11–14&nbsp;s off. Use it if scene selection drifts — takes ~13&nbsp;s.</div>
     </div>
     <div class="lm-grid">
-      <label id="lm_offset_l">offset<input id="lm_offset" type="number"></label>
       <label>off ms<input id="lm_off" type="number"></label>
       <label>on ms<input id="lm_on" type="number"></label>
       <label id="lm_reset_l">reset ms<input id="lm_reset" type="number"></label>
@@ -1061,15 +1060,14 @@
     active = card;
     el('lm_title').textContent = (card.body === 'spa' ? 'Spa' : 'Pool') + ' light settings';
     const c = card.cal || {};
-    el('lm_offset').value = c.offset ?? 0;
     el('lm_off').value = c.off_ms ?? 150;
     el('lm_on').value = c.on_ms ?? 150;
     el('lm_reset').value = c.reset_ms ?? 2000;
     el('lm_local').checked = c.local !== false;
     const rel = card.mechanic === 'relative';
-    // Pool (relative) keeps only timing (off/on ms) + LOCAL. Offset, reset ms,
-    // and the raw-count calibration are absolute-count concepts, shown for spa.
-    el('lm_offset_l').hidden = rel;
+    // Pool (relative) keeps only timing (off/on ms) + LOCAL. reset ms is an
+    // absolute-count concept, shown for spa only. (Offset is baked into the
+    // sidecar — no longer a UI knob.)
     el('lm_reset_l').hidden = rel;
     // Relative (pool) only: one-tap resync to program 1, shown at the top.
     el('lm_resyncrow').hidden = !rel;
@@ -1098,7 +1096,7 @@
     try {
       await fetch('/lights/calibration', { method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Object.assign({ body: active.body, offset: +el('lm_offset').value }, modalTiming())) });
+        body: JSON.stringify(Object.assign({ body: active.body }, modalTiming())) });
       active.setMsg('✓ calibration saved');
       active.reload();
     } catch (e) { active.setMsg('⚠ save failed: ' + e.message); }

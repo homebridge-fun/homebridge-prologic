@@ -809,7 +809,9 @@ _LIGHT_CFG_DEFAULTS = {
 }
 LIGHT_CFG_BY_BODY = {
     'pool': dict(_LIGHT_CFG_DEFAULTS),
-    'spa':  dict(_LIGHT_CFG_DEFAULTS),
+    # Spa (Pentair absolute) is calibrated: program N needs count N+1, so the
+    # offset is a fixed +1. Baked in here (no longer a UI knob).
+    'spa':  dict(_LIGHT_CFG_DEFAULTS, offset=1),
 }
 # Back-compat alias (pool) for any caller not yet body-aware.
 LIGHT_CFG = LIGHT_CFG_BY_BODY['pool']
