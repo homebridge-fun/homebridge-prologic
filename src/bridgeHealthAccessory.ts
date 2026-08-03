@@ -41,7 +41,9 @@ export class BridgeHealthAccessory {
 
     this.service.getCharacteristic(this.platform.Characteristic.On)
       .onGet(() => this.wedged)
-      .onSet(value => this.handleManualTest(Boolean(value)));
+      // Fire-and-forget: the bridge probe can take a few seconds; awaiting it in
+      // onSet risks HomeKit's timeout. handleManualTest snaps the tile itself.
+      .onSet(value => { void this.handleManualTest(Boolean(value)); });
   }
 
   /**
