@@ -26,11 +26,19 @@ import shutil
 import datetime as dt
 
 DEFAULT_PATH = '/opt/pool-sidecar/temp_history.json'
-THRESHOLD_S = 45 * 60   # all-three-identical longer than this => frozen feed
+# All-three-temps-identical longer than this => frozen feed (an outage). Set at
+# 6h: real overnight stability holds each integer only ~1-2h (air temp keeps
+# ticking), while genuine outages run many hours to days — there's a clean gap
+# between the two, so 6h removes only the true outages. Override with --hours N.
+THRESHOLD_S = 6 * 3600
 
 
 def main() -> None:
     apply = '--apply' in sys.argv
+    threshold = THRESHOLD_S
+    for a in sys.argv[1:]:
+        if a.startswith('--hours='):
+            threshold = float(a.split('=', 1)[1]) * 3600
     positional = [a for a in sys.argv[1:] if not a.startswith('--')]
     path = positional[0] if positional else DEFAULT_PATH
 
@@ -46,7 +54,7 @@ def main() -> None:
         while j + 1 < n and data[j + 1][1:4] == s[1:4]:
             j += 1
         span = data[j][0] - data[k][0]
-        if j > k and span > THRESHOLD_S and s[1:4] != [None, None, None]:
+        if j > k and span > threshold and s[1:4] != [None, None, None]:
             out.append(data[k])                              # keep last-good sample
             out.append([data[k][0] + 1, None, None, None])   # gap marker (breaks the line)
             removed += j - k
