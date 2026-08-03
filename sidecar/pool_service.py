@@ -1524,14 +1524,19 @@ class RS485BridgeBackend:
                 state.valve_mode = vm        # screen; keep last-known otherwise
                 if vm == 'spa':
                     _mark_spa_active(time.time())
-            # A firing heater relay means the heater is armed (Auto) — the Auto/Off
-            # LCD text isn't always on screen, so infer 'enabled' from the live
-            # relay to avoid showing mode "Off" while "heating now" is Running.
-            if state.heater_active:
+            # 'Enabled' (armed/Auto) = the live HEATER_AUTO_MODE bit the pad sends
+            # as circuits['HEATER_1'] — accurate whether the relay is firing, idle,
+            # or off, keyed to the active body. Authoritative over the flaky LCD
+            # scrape. Do NOT infer 'enabled' from the firing relay: a relay still
+            # cooling down after a disable would force it back on and break the
+            # disable confirmation.
+            hc = (snap.get('circuits') or {})
+            if 'HEATER_1' in hc:
+                armed = bool(hc['HEATER_1'])
                 if (state.valve_mode or 'pool') == 'spa':
-                    state.spa_heater_enabled = True
+                    state.spa_heater_enabled = armed
                 else:
-                    state.pool_heater_enabled = True
+                    state.pool_heater_enabled = armed
 
     # ── Public navigator surface ──────────────────────────────────────────────
     def send_nav_key(self, key_name: str) -> None:
@@ -1812,13 +1817,10 @@ def _apply_ac_led_to_state(led: dict) -> None:
         heater_st = led.get('heater')
         if heater_st in ('on', 'off', 'blink'):
             state.heater_active = (heater_st != 'off')
-            # A firing relay implies the heater is armed (Auto); infer 'enabled'
-            # so mode never reads "Off" while the relay is actually running.
-            if state.heater_active:
-                if (state.valve_mode or 'pool') == 'spa':
-                    state.spa_heater_enabled = True
-                else:
-                    state.pool_heater_enabled = True
+            # NOTE: 'enabled' (armed) is derived from the HEATER_AUTO_MODE bit
+            # (circuits['HEATER_1']) where that is set — NOT from the firing relay.
+            # Inferring 'enabled' from a firing/cooling relay forced it back on and
+            # broke disable confirmation.
         state.connected = True
         state.last_update = time.time()
 
