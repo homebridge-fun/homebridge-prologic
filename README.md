@@ -124,6 +124,28 @@ silently doing nothing):**
 Rare configuration changes (set-point, freeze protection, timers, relay config)
 are handled at the physical panel at the equipment pad.
 
+## Bridge health & wedge recovery
+
+The sidecar tracks command-path health as `bridge_wedged`, surfaced as the
+"Bridge Needs Rebooting" switch and a cockpit banner. **Recovery differs by
+backend — this is a setup requirement, not just an internal detail:**
+
+- **AquaConnect backend** — the web box can enter a silent read-only mode that
+  **only a physical power-cycle clears**. The sidecar's recovery logic is written
+  around that: on wedge it starts a 120s cooldown and blocks commands, expecting
+  the box to reboot in that window. **This presumes you have set up an automated
+  power-cycle** — a HomeKit automation that cuts power to a smart plug feeding the
+  box when "Bridge Needs Rebooting" turns on. **Without that automation,
+  AquaConnect wedge recovery is manual** (you must power-cycle the box yourself);
+  the flag will not clear on its own.
+
+- **RS-485 smart bridge backend** — no box to power-cycle. A "wedge" here just
+  means the pad daemon was briefly unreachable (usually weak Wi-Fi). It shows a
+  mild, **self-clearing "offline — reconnecting"** state driven purely by
+  reachability — no cooldown, no command blocking, no automation required. The
+  fix for repeated offline blips is physical (improve the pad's Wi-Fi signal),
+  not a recovery automation. See `deploy/README-PAD.md`.
+
 ## References
 
 - [`aqualogic` library](https://github.com/swilson/aqualogic)

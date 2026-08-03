@@ -1,0 +1,7 @@
+[Unit]
+Description=Pad bridge serial watchdog (restart pool-bridge if the panel serial link drops)
+Documentation=https://github.com/homebridge-fun/homebridge-prologic
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pad-serialwatch.sh

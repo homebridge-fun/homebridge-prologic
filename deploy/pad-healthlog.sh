@@ -39,8 +39,13 @@ temp="$(vcgencmd measure_temp 2>/dev/null | sed 's/[^0-9.]//g')"; temp="${temp:-
 py_rss="$(ps -C python3 -o rss= 2>/dev/null | awk '{s+=$1} END{printf "%d", s/1024}')"
 py_rss="${py_rss:-0}"
 
+# Wi-Fi signal (dBm) — the metric that matters after the plastic-box relocation.
+# Lets the 30-day CSV show the signal trend and how often it dips toward -70.
+wifi="$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/signal/{gsub(/ ?dBm/,"",$2); gsub(/ /,"",$2); print $2}')"
+wifi="${wifi:-NA}"
+
 # Header on a fresh/truncated file (logrotate copytruncate empties it).
 if [ ! -s "$LOG" ]; then
-  echo "iso,epoch,mem_total_mb,mem_avail_mb,swap_used_mb,load1,throttled,uv_now,uv_since_boot,soc_temp_c,py_rss_mb" >"$LOG"
+  echo "iso,epoch,mem_total_mb,mem_avail_mb,swap_used_mb,load1,throttled,uv_now,uv_since_boot,soc_temp_c,py_rss_mb,wifi_dbm" >"$LOG"
 fi
-echo "$now_iso,$now_epoch,$mem_total,$mem_avail,$swap_used,$load1,$thr,$uv_now,$uv_ever,$temp,$py_rss" >>"$LOG"
+echo "$now_iso,$now_epoch,$mem_total,$mem_avail,$swap_used,$load1,$thr,$uv_now,$uv_ever,$temp,$py_rss,$wifi" >>"$LOG"

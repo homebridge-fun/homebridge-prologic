@@ -6,6 +6,7 @@ import { FanAccessory } from './fanAccessory';
 import { BridgeHealthAccessory } from './bridgeHealthAccessory';
 import { SaltSensorAccessory } from './saltSensorAccessory';
 import { HeaterRunningAccessory } from './heaterRunningAccessory';
+import { LightTvAccessory } from './lightTvAccessory';
 import { SidecarClient } from './sidecarClient';
 import {
   PLATFORM_NAME, PLUGIN_NAME, CIRCUITS,
@@ -31,6 +32,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private bridgeHealth?: BridgeHealthAccessory;
   private saltSensor?: SaltSensorAccessory;
   private heaterRunning?: HeaterRunningAccessory;
+  private readonly lightTvs = new Map<'pool' | 'spa', LightTvAccessory>();
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -56,6 +58,10 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableTemperatureSensors: config['enableTemperatureSensors'] ?? true,
       enableChlorinatorFan: config['enableChlorinatorFan'] ?? true,
       enableSaltSensor: config['enableSaltSensor'] ?? true,
+      enableSpaLightScenes: config['enableSpaLightScenes'] ?? false,
+      enablePoolLightScenes: config['enablePoolLightScenes'] ?? false,
+      spaLightSceneList: config['spaLightSceneList'] ?? [],
+      poolLightSceneList: config['poolLightSceneList'] ?? [],
       circuitLabels: config['circuitLabels'] ?? {},
     };
 
@@ -65,6 +71,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.reconcileBackend();
       this.pushUiConfig();
       this.discoverAccessories();
+      this.setupLightTvs();
       this.startPolling();
     });
 
@@ -227,12 +234,18 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
   private async reconcileBackend(): Promise<void> {
     try {
       const cur = await this.sidecar.getBackend();
-      if (cur.active === this.cfg.backend) {
-        this.log.debug(`Sidecar backend already '${this.cfg.backend}'.`);
-        return;
+      // Always push the full desired config, not just when the backend TYPE
+      // changed. Comparing only `cur.active === this.cfg.backend` missed a
+      // changed HOST/PORT (e.g. the pad Pi's tailnet IP changing after a
+      // re-image) — the sidecar kept polling the dead old address forever.
+      // setBackend is idempotent: it returns {unchanged:true} without a restart
+      // when nothing actually changed, so pushing unconditionally is safe.
+      if (cur.active !== this.cfg.backend) {
+        this.log.info(
+          `Sidecar backend is '${cur.active}', config wants '${this.cfg.backend}' — switching (sidecar will restart).`);
+      } else {
+        this.log.debug(`Reconciling sidecar '${this.cfg.backend}' config (host/port).`);
       }
-      this.log.info(
-        `Sidecar backend is '${cur.active}', config wants '${this.cfg.backend}' — switching (sidecar will restart).`);
       await this.sidecar.setBackend({
         backend: this.cfg.backend,
         aquaconnect_host: this.cfg.aquaconnectHost,
@@ -256,6 +269,56 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
     } catch (err) {
       this.log.debug('Push UI config failed (sidecar may be unreachable):',
         (err as Error).message);
+    }
+  }
+
+  /**
+   * Expose each enabled light as a HomeKit Television (scene picker). These MUST
+   * be published as EXTERNAL accessories — HomeKit shows only one Television per
+   * bridge, so each is its own external accessory the user adds separately.
+   * The scene list is fetched from the sidecar so HomeKit inputs match the
+   * cockpit exactly. Best-effort: a sidecar hiccup just skips the TV.
+   */
+  private async setupLightTvs(): Promise<void> {
+    const bodies: Array<'pool' | 'spa'> = [];
+    if (this.cfg.enableSpaLightScenes) bodies.push('spa');
+    if (this.cfg.enablePoolLightScenes) bodies.push('pool');
+
+    for (const body of bodies) {
+      try {
+        const all = await this.sidecar.getLightPrograms(body);
+        if (all.length === 0) {
+          this.log.warn(`No light scenes reported for ${body} — skipping its TV tile `
+            + '(needs the rs485bridge backend).');
+          continue;
+        }
+        // Config list (if any) curates + orders + renames; else all, in order.
+        const custom = body === 'spa' ? this.cfg.spaLightSceneList : this.cfg.poolLightSceneList;
+        const programs = (custom && custom.length > 0)
+          ? custom
+            .map(c => {
+              const found = all.find(p => p.n === c.program);
+              return found
+                ? { n: found.n, name: (c.name || found.name), type: found.type }
+                : null;
+            })
+            .filter((p): p is NonNullable<typeof p> => p !== null)
+          : all;
+        if (programs.length === 0) {
+          this.log.warn(`Configured ${body} light scenes matched none of the `
+            + `${all.length} available — skipping.`);
+          continue;
+        }
+        const circuit = body === 'spa' ? 'AUX_1' : 'LIGHTS';
+        const name = body === 'spa' ? 'Spa Light' : 'Pool Light';
+        const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}-lighttv-${body}`);
+        const acc = new this.api.platformAccessory(name, uuid);
+        this.lightTvs.set(body, new LightTvAccessory(this, acc, body, circuit, programs));
+        this.api.publishExternalAccessories(PLUGIN_NAME, [acc]);
+        this.log.info(`Published "${name}" scene TV (${programs.length} scenes).`);
+      } catch (err) {
+        this.log.warn(`Light TV setup for ${body} failed:`, (err as Error).message);
+      }
     }
   }
 
@@ -321,6 +384,14 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
         this.chlorinatorFan?.updateRunning(filterOn && (chlorPct ?? 0) > 0);
         this.saltSensor?.updateSaltLevel(status.salt_level);
         this.bridgeHealth?.updateWedged(status.bridge_wedged ?? false);
+
+        // Light scene TVs: reconcile power from the real circuit state, and the
+        // selected scene from the sidecar's last-sent program (survives plugin
+        // restarts; scene selection itself is open-loop).
+        this.lightTvs.get('spa')?.updateState(
+          status.circuits['AUX_1'] ?? false, status.light_program?.['spa']);
+        this.lightTvs.get('pool')?.updateState(
+          status.circuits['LIGHTS'] ?? false, status.light_program?.['pool']);
       } catch (err) {
         this.log.debug('Sidecar poll failed:', (err as Error).message);
       }

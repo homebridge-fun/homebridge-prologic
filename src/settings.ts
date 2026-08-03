@@ -34,6 +34,7 @@ export interface PoolStatus {
   valve_mode: 'pool' | 'spa' | null;
   vsp_slot_pct: Record<string, number>;  // keys "1"–"4"
   vsp_active_slot: number | null;
+  light_program?: Record<string, number>;  // last-selected scene # per body (open-loop)
   connected: boolean;
   last_update: number;
   bridge_wedged: boolean;
@@ -52,10 +53,20 @@ export interface PlatformConfig {
   circuits: Circuit[];
   activeBodies: ('pool' | 'spa' | 'spillover')[];
   enableActiveHeaterThermostat: boolean;
+  enableSpaLightScenes: boolean;
+  enablePoolLightScenes: boolean;
+  spaLightSceneList: LightSceneConfig[];
+  poolLightSceneList: LightSceneConfig[];
   enableTemperatureSensors: boolean;
   enableChlorinatorFan: boolean;
   enableSaltSensor: boolean;
   circuitLabels: Partial<Record<Circuit, string>>;
+}
+
+/** One HomeKit light-scene entry (config array is ordered + renamable). */
+export interface LightSceneConfig {
+  program: number;   // 1..N scene number (per the Pentair/Hayward manual)
+  name?: string;     // optional custom HomeKit label; falls back to the real name
 }
 
 export function celsiusToFahrenheit(c: number): number {

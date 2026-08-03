@@ -177,6 +177,9 @@ class PoolState:
     spa_chlorinator_percent: Optional[float] = None  # spa chlorinator %
     pump_speed: Optional[int] = None
     spa_speed: Optional[int] = None                  # VSP Spa Speed setting %
+    # True during the post-power-up pump prime (panel runs 100% on a "start
+    # delay" before resuming schedule) — so the cockpit shows "100% startup".
+    pump_startup: bool = False
     # populated by menu navigator reads; None = not yet read
     pool_setpoint_f: Optional[int] = None
     spa_setpoint_f: Optional[int] = None
@@ -213,6 +216,13 @@ state_lock = threading.Lock()
 _WEDGE_FAIL_THRESHOLD = 2
 _wedge_fail_streak: int = 0
 _wedge_lock = threading.Lock()
+
+# rs485bridge only: consecutive failed /state polls before flagging the bridge
+# 'offline'. At the 0.5s poll interval + a 5s per-poll timeout, 3 misses is a
+# few seconds of genuine unreachability — enough to ignore a single dropped
+# packet but fast enough to reflect a real outage. Reachability-driven and
+# self-clearing; there is no power-cycle cooldown for direct serial.
+_BRIDGE_OFFLINE_MISSES = 3
 
 
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
@@ -275,6 +285,14 @@ def _rearm_wedge() -> bool:
 def _record_command_failure() -> None:
     """Call when a command was sent but produced no confirmed state change."""
     global _wedge_fail_streak
+    # Direct-serial bridge: a failed command means the pad was briefly
+    # unreachable (weak Wi-Fi), NOT that a box wedged and needs a power-cycle.
+    # There's nothing to power-cycle and no read-only mode to escape. Offline
+    # detection is owned by RS485BridgeBackend._poll_loop (reachability-driven,
+    # self-clearing). So don't engage the AquaConnect cooldown/block machinery
+    # here — it would turn a 2-second network blip into a sticky 120s wedge.
+    if _active_backend == 'rs485bridge':
+        return
     with _wedge_lock:
         _wedge_fail_streak += 1
         streak = _wedge_fail_streak
@@ -306,6 +324,12 @@ def _wedge_block_response() -> Optional[tuple]:
     - Still in power-cycle cooldown: box is rebooting, don't send anything yet.
     - Wedged but cooldown elapsed: still blocked until the probe confirms recovery.
     """
+    # Direct-serial bridge: never BLOCK commands. There's no power-cycle cooldown
+    # to wait out — the bridge is stateless, so a command during an outage just
+    # fails fast and the caller retries. Blocking here (the AquaConnect behavior)
+    # only compounds a transient blip. The 'offline' flag is informational.
+    if _active_backend == 'rs485bridge':
+        return None
     with state_lock:
         wedged = state.bridge_wedged
         detected_at = state.wedge_detected_at
@@ -345,6 +369,11 @@ def _immediate_wedge_probe() -> None:
     Called after any HomeKit-driven write fails so the bridge_wedged flag
     updates within seconds rather than waiting for the 300s/30s probe loop.
     """
+    # Direct-serial bridge owns its own reachability signal in the poll loop —
+    # the AquaConnect canary (which declares a wedge + cooldown on one failed
+    # probe) does not apply and would re-arm the sticky wedge we're removing.
+    if _active_backend == 'rs485bridge':
+        return
     threading.Thread(target=_ac_canary_probe, daemon=True,
                      name='wedge-probe-on-failure').start()
 
@@ -701,38 +730,96 @@ def _install_key_burst(AquaLogic) -> None:
 # absolute reset procedure (full off -> N power-restores) via the pad daemon's
 # /program. LIGHT_PROGRAM_OFFSET calibrates the count-to-program mapping if the
 # panel's first-restore isn't program 1 (see /lights/programs + calibration).
-LIGHT_PROGRAMS = [
-    ('Voodoo Lounge', 'show'),
-    ('Deep Blue Sea', 'fixed'),
-    ('Royal Blue', 'fixed'),
-    ('Afternoon Skies', 'fixed'),
-    ('Aqua Green', 'fixed'),
-    ('Emerald', 'fixed'),
-    ('Cloud White', 'fixed'),
-    ('Warm Red', 'fixed'),
-    ('Flamingo', 'fixed'),
-    ('Vivid Violet', 'fixed'),
-    ('Sangria', 'fixed'),
-    ('Twilight', 'show'),
-    ('Tranquility', 'show'),
-    ('Gemstone', 'show'),
-    ('USA', 'show'),
-    ('Mardi Gras', 'show'),
-    ('Cool Cabaret', 'show'),
+# Pool light = Hayward ColorLogic (on LIGHTS). Per the user's actual light
+# manual (IMG_2927/2928), this is the 12-program ColorLogic (CL 4.0): 5 fixed
+# (#2-6, one green = Emerald), 7 shows (#1, 7-12). Advance = quick off/on <10s
+# (+1). Absolute anchor: a single 11-14s off then on re-synchronizes to program
+# 1 (Voodoo Lounge) — used by scene selection to anchor without observing state.
+LIGHT_PROGRAMS_POOL = [
+    ('Voodoo Lounge', 'show'),    # 1  fast color wash
+    ('Deep Blue Sea', 'fixed'),   # 2
+    ('Afternoon Skies', 'fixed'), # 3
+    ('Emerald', 'fixed'),         # 4  (the only green)
+    ('Sangria', 'fixed'),         # 5
+    ('Cloud White', 'fixed'),     # 6
+    ('Twilight', 'show'),         # 7  slow color wash
+    ('Tranquility', 'show'),      # 8  blue/cyan/white fade
+    ('Gemstone', 'show'),         # 9  blue/green/magenta fade
+    ('USA', 'show'),              # 10 red/white/blue switch
+    ('Mardi Gras', 'show'),       # 11 fast random fade
+    ('Cool Cabaret', 'show'),     # 12 random fade
 ]
+
+# Spa light = Pentair IntelliBrite 5G (on AUX_1). Absolute count per the
+# IntelliBrite manual: from power-on, off/on N times selects mode N. 1-7 are
+# color shows, 8-12 fixed colors. (13 Hold / 14 Recall are save/recall
+# functions, not selectable modes, so not listed here.)
+LIGHT_PROGRAMS_SPA = [
+    ('SAm', 'show'),
+    ('Party', 'show'),
+    ('Romance', 'show'),
+    ('Caribbean', 'show'),
+    ('American', 'show'),
+    ('California Sunset', 'show'),
+    ('Royal', 'show'),
+    ('Blue', 'fixed'),
+    ('Green', 'fixed'),
+    ('Red', 'fixed'),
+    ('White', 'fixed'),
+    ('Magenta', 'fixed'),
+]
+
+LIGHT_PROGRAMS_BY_BODY = {'pool': LIGHT_PROGRAMS_POOL, 'spa': LIGHT_PROGRAMS_SPA}
+# Back-compat default (pool) for any caller that doesn't specify a body.
+LIGHT_PROGRAMS = LIGHT_PROGRAMS_POOL
+
+
+def _light_programs(body: str):
+    """Program list for a body: Pentair (spa) vs Hayward UCL (pool)."""
+    return LIGHT_PROGRAMS_BY_BODY.get(body, LIGHT_PROGRAMS_POOL)
 
 # Which circuit each body's programmable light is on (pool light = LIGHTS,
 # spa light = AUX_1). Power-cycle timing + count offset are calibratable and
 # persisted in backend.json (key 'light_config').
 LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
-# Defaults; overridden by backend.json 'light_config' at startup.
-LIGHT_CFG = {
+# The two lights select programs DIFFERENTLY (see docs/colorlogic-research.md):
+#   spa  = Pentair IntelliBrite -> ABSOLUTE (off/on N times = program N).
+#   pool = Hayward ColorLogic   -> RELATIVE (each off/on <10s = +1 from current),
+#          with NO absolute color reset — so we track position and step
+#          (target - current) mod count.
+LIGHT_MECHANIC = {'pool': 'relative', 'spa': 'absolute'}
+
+
+def _light_mechanic(body: str) -> str:
+    return LIGHT_MECHANIC.get(body, 'absolute')
+# A single off in the 11-14s band re-synchronizes a Hayward ColorLogic light to
+# program 1 (per the manual's Light Synchronization section). 12s sits safely in
+# band and below the 60s cold-start threshold. Repeating this 3-4x in a row would
+# change the compatibility mode, so selection only ever does ONE per call.
+POOL_RESYNC_OFF_S = 12.0
+# Power-cycle timing is PER BODY — the pool (Hayward UCL) and spa (Pentair
+# IntelliBrite) lights use different reset/pulse timing, so calibrating one must
+# not disturb the other. Defaults; overridden by backend.json 'light_config'.
+_LIGHT_CFG_DEFAULTS = {
     'offset': 0,        # daemon restore-count = program_number + offset
     'reset_ms': 2000,   # full-off hold that resets the light to baseline (~2s)
     'off_ms': 120,      # rapid off pulse between restores
     'on_ms': 120,       # rapid on dwell between restores
     'local': True,      # LOCAL_WIRED frames (replicate the physical keypad)
 }
+LIGHT_CFG_BY_BODY = {
+    'pool': dict(_LIGHT_CFG_DEFAULTS),
+    # Spa (Pentair absolute) is calibrated: program N needs count N+1, so the
+    # offset is a fixed +1. Baked in here (no longer a UI knob).
+    'spa':  dict(_LIGHT_CFG_DEFAULTS, offset=1),
+}
+# Back-compat alias (pool) for any caller not yet body-aware.
+LIGHT_CFG = LIGHT_CFG_BY_BODY['pool']
+
+
+def _light_cfg(body: str) -> dict:
+    """Power-cycle calibration for a body (pool vs spa)."""
+    return LIGHT_CFG_BY_BODY.get(body, LIGHT_CFG_BY_BODY['pool'])
 
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
@@ -1472,6 +1559,23 @@ class RS485BridgeBackend:
             log.warning('rs485bridge /program(%s n=%s) error: %s', key, n, e)
             return None
 
+    def cycle(self, key: str, count: int, off_ms: float, on_ms: float) -> Optional[dict]:
+        """Drive the daemon's /cycle: `count` blind off/on power-cycles of a
+        toggle circuit (no reset). For the Hayward pool light's RELATIVE advance
+        — each off/on (<10s) steps one program. Assumes the light is already ON."""
+        self._req_count += 1
+        payload = {'key': key, 'count': int(count), 'off_ms': off_ms, 'on_ms': on_ms}
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self._base + '/cycle', data=body,
+            headers=self._headers({'Content-Type': 'application/json'}))
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            log.warning('rs485bridge /cycle(%s x%s) error: %s', key, count, e)
+            return None
+
     # ── State mapping ─────────────────────────────────────────────────────────
     def _apply(self, snap: Optional[dict]) -> None:
         """Map a daemon /state snapshot into self.lcd + the global PoolState.
@@ -1498,9 +1602,20 @@ class RS485BridgeBackend:
                 state.circuits[name] = bool(val)
             if snap.get('heater_active') is not None:
                 state.heater_active = bool(snap['heater_active'])
+            su = _pump_startup_from_lcd(lcd)
+            if su is not None:
+                state.pump_startup = su
             vm = snap.get('valve_mode')
             if vm is not None:               # None = current frame isn't a mode
                 state.valve_mode = vm        # screen; keep last-known otherwise
+            # A firing heater relay means the heater is armed (Auto) — the Auto/Off
+            # LCD text isn't always on screen, so infer 'enabled' from the live
+            # relay to avoid showing mode "Off" while "heating now" is Running.
+            if state.heater_active:
+                if (state.valve_mode or 'pool') == 'spa':
+                    state.spa_heater_enabled = True
+                else:
+                    state.pool_heater_enabled = True
 
     # ── Public navigator surface ──────────────────────────────────────────────
     def send_nav_key(self, key_name: str) -> None:
@@ -1525,20 +1640,37 @@ class RS485BridgeBackend:
 
     # ── Background state poll ──────────────────────────────────────────────────
     def _poll_loop(self) -> None:
+        # Reachability-driven offline flag. For direct serial the daemon's
+        # reachability IS the liveness signal: a healthy /state = online, a run
+        # of failed polls = offline. This OWNS state.bridge_wedged for the
+        # bridge (nothing else sets it now) — no power-cycle cooldown, no command
+        # blocking, self-clearing on the first good poll. A weak-Wi-Fi blip shows
+        # a brief 'offline' that heals itself instead of a sticky wedge.
+        fails = 0
         while not self._poll_stop.is_set():
-            snap = self._get_state()
-            if snap:
-                self._apply(snap)
-                # For direct serial the daemon's reachability IS the liveness
-                # signal (see probe_wedge): a healthy /state means the bridge is
-                # back, so clear any stale wedge the AquaConnect-style command-
-                # failure path may have raised while the pad was unreachable.
-                # _record_command_success only logs/acts when actually wedged, so
-                # this is a cheap no-op in the common case.
-                if snap.get('connected') and state.bridge_wedged:
-                    _record_command_success()
-                with self._frame_cond:
-                    self._frame_cond.notify_all()
+            try:
+                snap = self._get_state()
+                if snap:
+                    fails = 0
+                    self._apply(snap)
+                    if snap.get('connected') and state.bridge_wedged:
+                        _record_command_success()   # clears the offline flag
+                    with self._frame_cond:
+                        self._frame_cond.notify_all()
+                else:
+                    fails += 1
+                    # ~3 misses (poll interval + timeouts ≈ several seconds) before
+                    # flagging, so a single dropped packet doesn't flap the banner.
+                    if fails >= _BRIDGE_OFFLINE_MISSES and not state.bridge_wedged:
+                        with state_lock:
+                            state.bridge_wedged = True
+                            state.wedge_detected_at = None   # NO power-cycle cooldown
+                        log.warning('RS-485 bridge unreachable (%d consecutive polls) — '
+                                    'marking offline; self-clears on reconnect', fails)
+            except Exception as e:  # noqa: BLE001
+                # A malformed snapshot must NEVER kill this thread — a dead poll
+                # loop was what left the flag stuck with no way to self-heal.
+                log.debug('rs485bridge poll loop error (continuing): %s', e)
             self._read_wake.wait(timeout=self._poll_s)
             self._read_wake.clear()
 
@@ -1585,6 +1717,22 @@ _AC_HEATER_STATE_RE = re.compile(
 # 'Filter Speed 50%' pump-speed reading).
 _AC_HEATER_SETPOINT_RE = re.compile(r'(Pool|Spa) Heater1[^0-9]*(\d{2,3})\s*\xb0?\s*F', re.I)
 _AC_VSP_SLOT_RE = re.compile(r'Filter Speed([1-4])[^0-9]+(\d{1,3})\s*%', re.I)
+
+# Post-power-up pump prime: the panel runs the filter at 100% for a "start
+# delay" ("Filter Speed 100% St dly M:SS") before resuming the schedule. Detect
+# it so the cockpit shows "100% startup" instead of mislabeling the off-slot
+# 100% as a heater/override speed. Set/cleared only on filter-speed frames: a
+# filter-speed frame with "St dly" -> priming; one without -> not priming.
+_AC_FILTER_SPEED_RE = re.compile(r'Filter Speed\s+\d+\s*%', re.I)
+_AC_STARTUP_RE = re.compile(r'St\s*dly', re.I)
+
+
+def _pump_startup_from_lcd(lcd: str) -> Optional[bool]:
+    """Return True/False if `lcd` is a filter-speed frame (priming or not), else
+    None to leave the flag unchanged (this frame doesn't speak to it)."""
+    if not lcd or not _AC_FILTER_SPEED_RE.search(lcd):
+        return None
+    return bool(_AC_STARTUP_RE.search(lcd))
 
 # Fault/alert phrases the panel interleaves into the status scroll. Matched
 # case-insensitively as substrings. Each match records a last-seen time; a fault
@@ -1688,6 +1836,9 @@ def _apply_ac_scroll_to_state(lcd: str) -> None:
             if m:
                 setattr(state, field, int(m.group(1)))
                 state.last_update = time.time()
+        su = _pump_startup_from_lcd(lcd)
+        if su is not None:
+            state.pump_startup = su
         hm = _AC_HEATER_STATE_RE.search(lcd)
         if hm:
             prefix = (hm.group(1) or '').strip().lower()
@@ -1744,6 +1895,13 @@ def _apply_ac_led_to_state(led: dict) -> None:
         heater_st = led.get('heater')
         if heater_st in ('on', 'off', 'blink'):
             state.heater_active = (heater_st != 'off')
+            # A firing relay implies the heater is armed (Auto); infer 'enabled'
+            # so mode never reads "Off" while the relay is actually running.
+            if state.heater_active:
+                if (state.valve_mode or 'pool') == 'spa':
+                    state.spa_heater_enabled = True
+                else:
+                    state.pool_heater_enabled = True
         state.connected = True
         state.last_update = time.time()
 
@@ -3324,7 +3482,9 @@ def get_status() -> Response:
             'chlorinator_percent':     state.chlorinator_percent,
             'spa_chlorinator_percent': state.spa_chlorinator_percent,
             'pump_speed':              state.pump_speed,
+            'pump_startup':            state.pump_startup,
             'spa_speed':               state.spa_speed,
+            'light_program':           dict(state.light_program),
             # heater setpoints are read via menu navigation, cached here after reads
             'pool_setpoint_f':     state.pool_setpoint_f,
             'spa_setpoint_f':      state.spa_setpoint_f,
@@ -3342,7 +3502,11 @@ def get_status() -> Response:
             'ui_circuits':         list(_ui_circuits),
             'circuit_labels':      dict(_ui_circuit_labels),
             'faults':              _current_faults(),
-            'alerts':              _alert_buffer.recent(window_s=1800, limit=8),
+            # Rolling 10-min window so transient alerts auto-age off the cockpit
+            # (a flaky link shows current activity, not a growing pile needing a
+            # manual Dismiss). Coalescing bumps a repeat's timestamp, so an
+            # actively-recurring alert stays visible until it actually stops.
+            'alerts':              _alert_buffer.recent(window_s=600, limit=8),
         })
 
 
@@ -5152,7 +5316,12 @@ label{font-size:13px;margin-right:4px}#log{white-space:pre-wrap;background:#000;
 font-family:ui-monospace,monospace;font-size:12px;max-height:38vh;overflow:auto;margin-top:8px}
 .pill{font-size:11px;opacity:.7;margin-left:6px}
 </style></head><body>
-<h2>Pool Light Scenes <span class=pill>show=moving · fixed=static</span></h2>
+<h2>Light target: <span id=bodylbl>spa</span></h2>
+<div class=row>
+<button id=bpool onclick="setBody('pool')">Pool light (LIGHTS)</button>
+<button id=bspa onclick="setBody('spa')">Spa light (AUX_1)</button>
+</div>
+<h2>Named scenes <span class=pill>Hayward UCL names = POOL light. Spa is Pentair — use Raw count below.</span></h2>
 <div id=scenes class=row>loading…</div>
 <h2>Calibration</h2>
 <div class="row cal">
@@ -5169,7 +5338,19 @@ font-family:ui-monospace,monospace;font-size:12px;max-height:38vh;overflow:auto;
 </div>
 <h2>Log</h2><div id=log></div>
 <script>
-const B='/lights',body='pool';
+const B='/lights';let body='spa';
+function setBody(b){body=b;document.getElementById('bodylbl').textContent=b;
+ document.getElementById('bpool').style.opacity=(b==='pool')?1:.45;
+ document.getElementById('bspa').style.opacity=(b==='spa')?1:.45;
+ log('target = '+b+' light ('+(b==='spa'?'AUX_1 · Pentair':'LIGHTS · Hayward UCL')+')');
+ loadPrograms();}
+function loadPrograms(){
+ fetch(B+'/programs?body='+body).then(r=>r.json()).then(d=>{
+  const c=d.calibration||{};reset.value=c.reset_ms;off.value=c.off_ms;on.value=c.on_ms;offset.value=c.offset;
+  const s=document.getElementById('scenes');s.innerHTML='';
+  d.programs.forEach(p=>{const btn=document.createElement('button');btn.className=p.type;
+   btn.textContent=p.n+'. '+p.name;btn.onclick=()=>fire(p.n,p.name);s.appendChild(btn)})
+ }).catch(e=>document.getElementById('scenes').textContent='load failed: '+e)}
 const timing=()=>({reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value});
 function log(m){const l=document.getElementById('log');l.textContent=new Date().toLocaleTimeString()+'  '+m+'\\n'+l.textContent}
 async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
@@ -5177,26 +5358,33 @@ async function post(path,obj){log('→ '+path+' '+JSON.stringify(obj));
   const j=await r.json();log('← '+JSON.stringify(j));return j}catch(e){log('!! '+e)}}
 function fire(n,name){post(B+'/'+body+'/program',Object.assign({program:n},timing())).then(()=>log('fired scene '+n+' '+name+' — WATCH: moving or static?'))}
 function fireRaw(){post(B+'/'+body+'/program',Object.assign({count:+rawn.value},timing())).then(()=>log('fired RAW count '+rawn.value+' — WATCH: moving or static?'))}
-function saveCal(){post(B+'/calibration',{offset:+offset.value,reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value})}
-fetch(B+'/programs').then(r=>r.json()).then(d=>{
- const c=d.calibration||{};reset.value=c.reset_ms;off.value=c.off_ms;on.value=c.on_ms;offset.value=c.offset;
- document.getElementById('scenes').innerHTML='';
- d.programs.forEach(p=>{const b=document.createElement('button');b.className=p.type;
-  b.textContent=p.n+'. '+p.name;b.onclick=()=>fire(p.n,p.name);document.getElementById('scenes').appendChild(b)})
-}).catch(e=>document.getElementById('scenes').textContent='load failed: '+e)
+function saveCal(){post(B+'/calibration',{body:body,offset:+offset.value,reset_ms:+reset.value,off_ms:+off.value,on_ms:+on.value})}
+setBody(body);   // inits highlight + loads this body's program list
 </script></body></html>"""
     return Response(html, mimetype='text/html')
 
 
 @app.route('/lights/programs', methods=['GET'])
 def lights_programs() -> Response:
-    """The named ColorLogic scenes (1..17) with type (show=moving, fixed=static),
-    plus the current calibration. The plugin/cockpit renders this list."""
+    """Named light scenes with type (show=moving, fixed=static) + calibration.
+    Per-body: ?body=spa -> Pentair IntelliBrite (12), else Hayward UCL pool (17).
+    Also returns both lists under 'by_body' so a UI can render each."""
+    body = request.args.get('body', 'pool')
+
+    def _fmt(progs):
+        return [{'n': i + 1, 'name': name, 'type': typ}
+                for i, (name, typ) in enumerate(progs)]
+
+    with state_lock:
+        current = state.light_program.get(body)
     return jsonify({
-        'programs': [{'n': i + 1, 'name': name, 'type': typ}
-                     for i, (name, typ) in enumerate(LIGHT_PROGRAMS)],
+        'body': body,
+        'programs': _fmt(_light_programs(body)),
+        'by_body': {b: _fmt(p) for b, p in LIGHT_PROGRAMS_BY_BODY.items()},
         'circuits': LIGHT_CIRCUITS,
-        'calibration': dict(LIGHT_CFG),
+        'calibration': dict(_light_cfg(body)),
+        'mechanic': _light_mechanic(body),   # 'relative' (pool) | 'absolute' (spa)
+        'current_program': current,          # last-known position (relative light)
     })
 
 
@@ -5213,10 +5401,11 @@ def lights_select(body: str) -> Response:
         return jsonify({'error': 'light programming needs the rs485bridge backend'}), 501
 
     req = request.get_json(force=True) or {}
-    reset_ms = float(req.get('reset_ms', LIGHT_CFG['reset_ms']))
-    off_ms = float(req.get('off_ms', LIGHT_CFG['off_ms']))
-    on_ms = float(req.get('on_ms', LIGHT_CFG['on_ms']))
-    local = bool(req['local']) if 'local' in req else bool(LIGHT_CFG['local'])
+    cfg = _light_cfg(body)
+    reset_ms = float(req.get('reset_ms', cfg['reset_ms']))
+    off_ms = float(req.get('off_ms', cfg['off_ms']))
+    on_ms = float(req.get('on_ms', cfg['on_ms']))
+    local = bool(req['local']) if 'local' in req else bool(cfg['local'])
 
     # The light's settled on/off state (our steady poll, not a racy read) makes
     # the daemon's reset deterministic.
@@ -5234,10 +5423,12 @@ def lights_select(body: str) -> Response:
             return jsonify({'error': 'bridge /program failed'}), 502
         return jsonify({'ok': True, 'body': body, 'raw_count': raw, 'bridge': res})
 
+    progs = _light_programs(body)
+    nprog = len(progs)
     n = req.get('program')
     if n is None and req.get('name'):
         want = str(req['name']).strip().lower()
-        for i, (name, _t) in enumerate(LIGHT_PROGRAMS):
+        for i, (name, _t) in enumerate(progs):
             if name.lower() == want:
                 n = i + 1
                 break
@@ -5246,13 +5437,77 @@ def lights_select(body: str) -> Response:
     try:
         n = int(n)
     except (TypeError, ValueError):
-        return jsonify({'error': 'program must be 1..17 or a valid name'}), 400
-    if not (1 <= n <= 17):
-        return jsonify({'error': 'program must be 1..17'}), 400
+        return jsonify({'error': f'program must be 1..{nprog} or a valid name'}), 400
+    if not (1 <= n <= nprog):
+        return jsonify({'error': f'program must be 1..{nprog}'}), 400
 
-    count = _clamp(n + int(LIGHT_CFG['offset']), 1, 17)
+    name = progs[n - 1][0]
 
-    name = LIGHT_PROGRAMS[n - 1][0]
+    # RELATIVE (Hayward pool, CL 4.0). Two paths:
+    #  • Position known AND light on -> MINIMAL forward steps: (n-current) mod
+    #    nprog quick off/on cycles. This is the normal case after a sync and is
+    #    the fewest possible presses (e.g. #2->#3 = a single off/on).
+    #  • Position unknown or light off -> anchor first: one 11-14s off re-syncs
+    #    the light to program 1 (Voodoo Lounge) per the manual, then step (n-1).
+    #    Slower, but works blind when we have no reliable current position.
+    if _light_mechanic(body) == 'relative':
+        if not hasattr(_ac_backend, 'send_nav_key'):
+            return jsonify({'error': 'needs the rs485bridge backend'}), 501
+        key = _bridge_key_name(circuit)
+
+        def _set(target: bool) -> bool:
+            for _ in range(4):
+                with state_lock:
+                    if state.circuits.get(circuit) == target:
+                        return True
+                _ac_backend.send_nav_key(key)
+                time.sleep(1.0)
+            with state_lock:
+                return state.circuits.get(circuit) == target
+
+        with state_lock:
+            current = state.light_program.get(body)
+
+        if current is not None and start_on:
+            steps = (n - current) % nprog
+            if steps == 0:
+                return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                                'steps': 0, 'note': 'already on this program'})
+            log.info('Light %s -> program %d (%s): relative +%d from %d',
+                     body, n, name, steps, current)
+            with _nav_lock:      # serialize against menu nav — both drive the panel
+                res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
+            if res is None:
+                return jsonify({'error': 'bridge /cycle failed'}), 502
+            with state_lock:
+                state.light_program[body] = n
+            return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                            'steps': steps, 'from': current, 'bridge': res})
+
+        # Unknown position (or light off): anchor to #1, then step (n-1).
+        steps = (n - 1) % nprog
+        log.info('Light %s -> program %d (%s): anchor to #1 then +%d',
+                 body, n, name, steps)
+        with _nav_lock:      # serialize against menu nav — both drive the panel
+            _set(True)                 # ensure ON
+            time.sleep(0.5)
+            _set(False)                # begin the resync off
+            time.sleep(POOL_RESYNC_OFF_S)  # 11-14s -> re-sync to program 1
+            _set(True)                 # back ON -> program 1 (Voodoo Lounge)
+            time.sleep(1.0)
+            res = None
+            if steps:
+                res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
+                if res is None:
+                    return jsonify({'error': 'bridge /cycle failed'}), 502
+        with state_lock:
+            state.light_program[body] = n
+        return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
+                        'steps': steps, 'anchored_to': 1, 'bridge': res})
+
+    # ABSOLUTE (Pentair spa): reset + N restores. Offset can push the count past
+    # nprog (spa needs mode+1), so allow headroom for the daemon's raw count.
+    count = _clamp(n + int(cfg['offset']), 1, nprog + 5)
     log.info('Light %s -> program %d (%s), daemon count=%d', body, n, name, count)
     with _nav_lock:      # serialize against menu nav — both drive the panel
         res = _ac_backend.select_program(circuit, count, reset_ms, off_ms, on_ms,
@@ -5262,31 +5517,230 @@ def lights_select(body: str) -> Response:
     # Track last-selected scene per body (best-effort, open-loop).
     with state_lock:
         state.light_program[body] = n
+    corrected = _ensure_light_on_after_program(circuit, body)
     return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
-                    'daemon_count': count, 'bridge': res})
+                    'daemon_count': count, 're_asserted_on': corrected, 'bridge': res})
+
+
+def _ensure_light_on_after_program(circuit: str, body: str) -> bool:
+    """Parity guard for ABSOLUTE (spa) lights: a dropped/added toggle can leave
+    the light OFF when a program change should end ON. Poll the settled circuit
+    state and, if it ended off, do one CONFIRMED toggle to turn it back on
+    (Pentair resumes the last program on power-up). Returns True if corrected.
+
+    NOT applied to relative (pool) lights: turning a Hayward light on within
+    ~10 s ADVANCES a program, which would desync the tracked position."""
+    if _light_mechanic(body) != 'absolute' or _ac_backend is None:
+        return False
+    time.sleep(1.0)   # let the relay settle + the background poll reflect it
+    with state_lock:
+        on = state.circuits.get(circuit)
+    if on is not False:
+        return False
+    try:
+        with _nav_lock:
+            _ac_backend.send_nav_key(_bridge_key_name(circuit))
+        log.info('Light %s ended OFF after program change — re-asserted ON', body)
+        return True
+    except Exception as e:   # noqa: BLE001
+        log.warning('re-assert light on (%s) failed: %s', body, e)
+        return False
+
+
+@app.route('/lights/<body>/step', methods=['POST'])
+def lights_step(body: str) -> Response:
+    """Relative-advance a light by `steps` (default 1) quick off/on cycles, blind
+    — used to walk a Hayward pool light to a recognizable landmark (e.g. plain
+    White) so it can then be synced. Requires the light ON. Body: {"steps": 1}."""
+    body = body.lower()
+    circuit = LIGHT_CIRCUITS.get(body)
+    if circuit is None:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    if _ac_backend is None or not hasattr(_ac_backend, 'cycle'):
+        return jsonify({'error': 'light stepping needs the rs485bridge backend'}), 501
+    req = request.get_json(force=True) or {}
+    steps = _clamp(int(req.get('steps', 1)), 1, 30)
+    cfg = _light_cfg(body)
+    with state_lock:
+        start_on = state.circuits.get(circuit)
+    if not start_on:
+        return jsonify({'error': f'{body} light must be ON to step it', 'needs_on': True}), 409
+    with _nav_lock:
+        res = _ac_backend.cycle(circuit, steps, float(cfg['off_ms']), float(cfg['on_ms']))
+    if res is None:
+        return jsonify({'error': 'bridge /cycle failed'}), 502
+    # Advance the tracked position too, if we had one.
+    with state_lock:
+        cur = state.light_program.get(body)
+        if cur is not None:
+            nprog = len(_light_programs(body))
+            state.light_program[body] = ((cur - 1 + steps) % nprog) + 1
+        newpos = state.light_program.get(body)
+    return jsonify({'ok': True, 'body': body, 'steps': steps, 'current_program': newpos})
+
+
+_ucl_reset_state: dict = {}   # body -> {'running': bool, 'done': bool}
+_ucl_reset_lock = threading.Lock()
+
+
+@app.route('/lights/<body>/mode-reset', methods=['GET', 'POST'])
+def lights_mode_reset(body: str) -> Response:
+    """Force a Hayward ColorLogic light back into UCL compatibility mode:
+    4× [off ~12s, on], then leave it OFF (the caller waits ~2 min to save). Runs
+    in the background (~1 min) with CONFIRMED on/off toggles so a dropped press
+    can't skew the sequence. Clears the tracked position (unknown after a mode
+    change). Only meaningful for the relative (Hayward pool) light.
+
+    GET returns {'running', 'done'} so a UI can show progress without watching."""
+    body = body.lower()
+    if request.method == 'GET':
+        with _ucl_reset_lock:
+            return jsonify(_ucl_reset_state.get(body, {'running': False, 'done': False}))
+    circuit = LIGHT_CIRCUITS.get(body)
+    if circuit is None:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    # UCL is a Hayward compat-mode concept — the reset ritual only makes sense for
+    # the relative (pool) light. Refuse it for absolute lights (spa/Pentair) so an
+    # accidental click can't power-cycle the spa.
+    if _light_mechanic(body) != 'relative':
+        return jsonify({'error': f'{body} light is absolute (no UCL modes)'}), 400
+    if _ac_backend is None or not hasattr(_ac_backend, 'send_nav_key'):
+        return jsonify({'error': 'needs the rs485bridge backend'}), 501
+    key = _bridge_key_name(circuit)
+
+    def _set(target: bool) -> bool:
+        """Toggle until the circuit reaches `target` (confirmed via the poll)."""
+        for _ in range(4):
+            with state_lock:
+                if state.circuits.get(circuit) == target:
+                    return True
+            _ac_backend.send_nav_key(key)
+            time.sleep(1.0)
+        with state_lock:
+            return state.circuits.get(circuit) == target
+
+    def _run() -> None:
+        with _ucl_reset_lock:
+            _ucl_reset_state[body] = {'running': True, 'done': False}
+        try:
+            with _nav_lock:      # serialize the whole ~1-min sequence
+                _set(True)                    # ensure ON
+                time.sleep(0.5)
+                for _ in range(4):            # 4× [off ~12s, on] -> UCL
+                    _set(False)
+                    time.sleep(12.0)
+                    _set(True)
+                    time.sleep(1.0)
+                # Leave the light ON at the end so the user can read the mode-ID
+                # blink (UCL = red+white) at their own pace, then turn it off
+                # themselves. ON duration doesn't affect the mode; only the OFF
+                # holds do. The user's manual off begins the 2-min UCL save.
+            with state_lock:
+                state.light_program.pop(body, None)   # position unknown now
+            log.info('UCL mode-reset done for %s — leave off ~2 min to save, then sync', body)
+        except Exception as e:   # noqa: BLE001
+            log.warning('UCL mode-reset (%s) failed: %s', body, e)
+        finally:
+            with _ucl_reset_lock:
+                _ucl_reset_state[body] = {'running': False, 'done': True}
+
+    threading.Thread(target=_run, daemon=True, name=f'ucl-reset-{body}').start()
+    return jsonify({'ok': True, 'body': body, 'started': True,
+                    'note': ('Resetting to UCL (~1 min). It ENDS WITH THE LIGHT ON and '
+                             'blinking its mode color: RED+WHITE = UCL (any other color = '
+                             'not UCL, run again). When done reading it, turn the light OFF '
+                             'yourself and leave it off ~2 min to save, then sync.')})
+
+
+@app.route('/lights/<body>/sync', methods=['POST'])
+def lights_sync(body: str) -> Response:
+    """Tell the sidecar which program a light is CURRENTLY on, without moving it.
+    Needed for the relative (Hayward pool) light so absolute selection can step
+    from a known position — the user reads the light and syncs once. Body:
+    {"program": N}."""
+    body = body.lower()
+    if body not in LIGHT_CIRCUITS:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    req = request.get_json(force=True) or {}
+    nprog = len(_light_programs(body))
+    try:
+        n = int(req.get('program'))
+    except (TypeError, ValueError):
+        return jsonify({'error': f'program must be 1..{nprog}'}), 400
+    if not (1 <= n <= nprog):
+        return jsonify({'error': f'program must be 1..{nprog}'}), 400
+    with state_lock:
+        state.light_program[body] = n
+    log.info('Light %s position synced to program %d (no move)', body, n)
+    return jsonify({'ok': True, 'body': body, 'program': n, 'synced': True})
+
+
+@app.route('/lights/<body>/resync', methods=['POST'])
+def lights_resync(body: str) -> Response:
+    """Re-synchronize a relative (Hayward pool) light to program 1 (Voodoo
+    Lounge): a single 11-14s off then on, per the ColorLogic manual's Light
+    Synchronization. Sets the tracked position to 1 so subsequent selections
+    step minimally from a known anchor — no need to eyeball a color and Set
+    current by hand. Takes ~13s (blocks until done)."""
+    body = body.lower()
+    circuit = LIGHT_CIRCUITS.get(body)
+    if circuit is None:
+        return jsonify({'error': f'unknown body: {body}'}), 400
+    if _light_mechanic(body) != 'relative':
+        return jsonify({'error': f'{body} light is absolute (no resync needed)'}), 400
+    if _ac_backend is None or not hasattr(_ac_backend, 'send_nav_key'):
+        return jsonify({'error': 'needs the rs485bridge backend'}), 501
+    key = _bridge_key_name(circuit)
+
+    def _set(target: bool) -> bool:
+        for _ in range(4):
+            with state_lock:
+                if state.circuits.get(circuit) == target:
+                    return True
+            _ac_backend.send_nav_key(key)
+            time.sleep(1.0)
+        with state_lock:
+            return state.circuits.get(circuit) == target
+
+    with _nav_lock:
+        _set(True)                     # ensure ON
+        time.sleep(0.5)
+        _set(False)                    # begin the resync off
+        time.sleep(POOL_RESYNC_OFF_S)  # 11-14s -> re-sync to program 1
+        _set(True)                     # back ON -> program 1 (Voodoo Lounge)
+        time.sleep(1.0)
+    with state_lock:
+        state.light_program[body] = 1
+    name = _light_programs(body)[0][0]
+    log.info('Light %s re-synced to program 1 (%s)', body, name)
+    return jsonify({'ok': True, 'body': body, 'program': 1, 'name': name})
 
 
 @app.route('/lights/calibration', methods=['GET', 'POST'])
 def lights_calibration() -> Response:
-    """GET returns the current light power-cycle calibration. POST updates any
-    of offset / reset_ms / off_ms / on_ms and persists to backend.json so the
-    dialed-in values survive restarts."""
+    """Per-body light power-cycle calibration. GET ?body=spa returns that body's
+    values; POST {"body":"spa", ...} updates offset/reset_ms/off_ms/on_ms/local
+    for that body and persists to backend.json. Body defaults to 'pool'."""
     if request.method == 'POST':
-        body = request.get_json(force=True) or {}
+        req = request.get_json(force=True) or {}
+        which = str(req.get('body', 'pool')).lower()
+        cfg = _light_cfg(which)
         for k, lo, hi in (('offset', -17, 17), ('reset_ms', 500, 20000),
                           ('off_ms', 20, 3000), ('on_ms', 20, 3000)):
-            if k in body:
-                LIGHT_CFG[k] = _clamp(float(body[k]) if 'ms' in k else int(body[k]), lo, hi)
-        if 'local' in body:
-            LIGHT_CFG['local'] = bool(body['local'])
+            if k in req:
+                cfg[k] = _clamp(float(req[k]) if 'ms' in k else int(req[k]), lo, hi)
+        if 'local' in req:
+            cfg['local'] = bool(req['local'])
         try:
-            cfg = _load_backend_config()
-            cfg['light_config'] = dict(LIGHT_CFG)
-            _save_backend_config(cfg)
+            bconf = _load_backend_config()
+            bconf['light_config'] = {b: dict(c) for b, c in LIGHT_CFG_BY_BODY.items()}
+            _save_backend_config(bconf)
         except Exception as e:
             log.warning('persist light_config: %s', e)
-        log.info('Light calibration updated: %s', LIGHT_CFG)
-    return jsonify({'calibration': dict(LIGHT_CFG)})
+        log.info('Light calibration (%s) updated: %s', which, cfg)
+        return jsonify({'body': which, 'calibration': dict(cfg)})
+    which = str(request.args.get('body', 'pool')).lower()
+    return jsonify({'body': which, 'calibration': dict(_light_cfg(which))})
 
 
 @app.route('/prefetch', methods=['POST'])
@@ -5808,12 +6262,23 @@ def main() -> None:
     if _ui_circuits:
         log.info('Loaded persisted UI circuits: %s', _ui_circuits)
 
-    # Persisted ColorLogic light calibration (offset + power-cycle timing).
-    if isinstance(cfg.get('light_config'), dict):
-        for k in ('offset', 'reset_ms', 'off_ms', 'on_ms'):
-            if k in cfg['light_config']:
-                LIGHT_CFG[k] = cfg['light_config'][k]
-        log.info('Loaded persisted light calibration: %s', LIGHT_CFG)
+    # Persisted light calibration. New form is per-body {'pool':{...},'spa':{...}};
+    # the old flat form {offset,reset_ms,...} is migrated onto BOTH bodies.
+    lc = cfg.get('light_config')
+    if isinstance(lc, dict):
+        keys = ('offset', 'reset_ms', 'off_ms', 'on_ms', 'local')
+        if 'pool' in lc or 'spa' in lc:                 # new per-body form
+            for b in ('pool', 'spa'):
+                if isinstance(lc.get(b), dict):
+                    for k in keys:
+                        if k in lc[b]:
+                            LIGHT_CFG_BY_BODY[b][k] = lc[b][k]
+        else:                                            # old flat form -> both
+            for b in ('pool', 'spa'):
+                for k in keys:
+                    if k in lc:
+                        LIGHT_CFG_BY_BODY[b][k] = lc[k]
+        log.info('Loaded persisted light calibration: %s', LIGHT_CFG_BY_BODY)
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend

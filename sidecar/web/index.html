@@ -52,15 +52,18 @@
      is the same size regardless of its text — one width for off, a larger one
      for on (the "Auto" look). */
   .card .condlist .pill, .card .swlist .pill {
-    font-size: 15px; padding: 4px 8px; display: inline-block;
+    font-size: 15px; line-height: 1.15; padding: 2px 8px; display: inline-block;
     box-sizing: border-box; text-align: center; }
-  .card .condlist .pill.on, .card .swlist .pill.on { min-width: 92px; }
+  /* Active pills share one width, sized to fit the widest (the Pump-speed pill,
+     e.g. "100% · Speed 4"), so the on-state pills line up instead of the speed
+     pill bulging past the rest. */
+  .card .condlist .pill.on, .card .swlist .pill.on { min-width: 128px; }
   .card .condlist .pill.off, .card .swlist .pill.off { min-width: 64px; }
   /* Tighter rows in the pill lists (At a glance / Lights). */
-  .condlist .row, .swlist .row { min-height: 0; padding: 3px 0; }
+  .condlist .row, .swlist .row { min-height: 0; padding: 6px 0; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
     background: var(--panel2); color: var(--dim); }
-  .pill.on { background: rgba(52,211,153,.16); color: var(--ok); }
+  .pill.on { background: var(--ok); color: #04263a; }
   .pill.off { background: rgba(84,112,140,.2); color: var(--off); }
   .mode { display: flex; gap: 6px; }
   .mode .seg { flex: 1; text-align: center; padding: 11px; border-radius: 9px;
@@ -69,7 +72,8 @@
   .slots { display: flex; gap: 8px; }
   .slot { flex: 1; min-width: 0; text-align: center; background: var(--panel2);
     border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; }
-  .slot.run { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+  .slot.run { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset;
+    background: rgba(52,211,153,.13); }
   .slot.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .slot .s { font-size: 11px; color: var(--dim); white-space: nowrap; } .slot .p { font-size: 18px; font-weight: 700; }
   .slot .p.pend { color: var(--accent); }
@@ -88,16 +92,11 @@
   .duo { display: flex; gap: 10px; }
   .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
     border-radius: 10px; padding: 8px 10px; }
-  .bd.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+  /* Active body: green tint fill + a 2px green ring. Green = active state across
+     the UI; blue is reserved for "selected / being edited". */
+  .bd.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset;
+    background: rgba(52,211,153,.13); }
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
-  .bd.active .bd-k::after { content: ' ● current mode'; color: var(--ok); letter-spacing: 0; }
-  /* Per-body heater status line: mode (Auto/Off) + firing (Heating/Idle) */
-  .bd-stat { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
-  .bd-stat .b { font-size: 11px; font-weight: 700; letter-spacing: .03em;
-    padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); }
-  .bd-stat .b.on  { background: var(--ok);  color: #04263a; border-color: var(--ok); }
-  .bd-stat .b.off { background: transparent; color: var(--dim); }
-  .bd-stat .b.fire{ background: var(--accent); color: #04263a; border-color: var(--accent); }
   .bd-v { flex: 1; text-align: center; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .bd-v.pend { color: var(--accent); }
   .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
@@ -158,7 +157,9 @@
   #apply { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: none;
     margin: 0 auto; max-width: 640px; color: var(--accent);
     background: var(--panel); border-top: 2px solid var(--accent);
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); font-weight: 600;
+    /* Extra bottom clearance so iOS Safari's address bar doesn't cover the
+       buttons (env() alone only covers the home indicator, not the toolbar). */
+    padding: 12px 16px calc(34px + env(safe-area-inset-bottom)); font-weight: 600;
     align-items: center; justify-content: space-between; gap: 10px;
     box-shadow: 0 -6px 22px rgba(0,0,0,.4); }
   #apply.show { display: flex; }
@@ -243,7 +244,8 @@
     </div>
     <div class="condlist">
       <div class="row"><span class="label">Filter</span><span class="pill ctl" id="filter_state">—</span></div>
-      <div class="row"><span class="label">Heater mode</span><span class="pill ctl" id="heat_mode">—</span></div>
+      <div class="row"><span class="label">Pump speed</span><span class="pill" id="pump_now">—</span></div>
+      <div class="row"><span class="label">Heater</span><span class="pill ctl" id="heat_mode">—</span></div>
       <div class="row"><span class="label">Heating now</span><span class="pill" id="heat_fire">—</span></div>
     </div>
   </div>
@@ -257,11 +259,19 @@
     <h2>Heat</h2>
     <div class="duo">
       <div class="bd ctl" id="heat_pool" data-field="heat_pool"><div class="bd-k">Pool</div>
-        <div class="setrow"><button class="step ctl" id="hp_dn">−</button><div class="bd-v" id="heat_pool_set">—</div><button class="step ctl" id="hp_up">+</button></div>
-        <div class="bd-stat" id="heat_pool_stat"></div></div>
+        <div class="setrow"><button class="step ctl" id="hp_dn">−</button><div class="bd-v" id="heat_pool_set">—</div><button class="step ctl" id="hp_up">+</button></div></div>
       <div class="bd ctl" id="heat_spa" data-field="heat_spa"><div class="bd-k">Spa</div>
-        <div class="setrow"><button class="step ctl" id="hs_dn">−</button><div class="bd-v" id="heat_spa_set">—</div><button class="step ctl" id="hs_up">+</button></div>
-        <div class="bd-stat" id="heat_spa_stat"></div></div>
+        <div class="setrow"><button class="step ctl" id="hs_dn">−</button><div class="bd-v" id="heat_spa_set">—</div><button class="step ctl" id="hs_up">+</button></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Chlorinator</h2>
+    <div class="duo">
+      <div class="bd ctl" id="chlor_pool" data-field="chlor_pool"><div class="bd-k">Pool</div>
+        <div class="setrow"><button class="step ctl" id="cp_dn">−</button><div class="bd-v" id="chlor_pool_v">—</div><button class="step ctl" id="cp_up">+</button></div></div>
+      <div class="bd ctl" id="chlor_spa" data-field="chlor_spa"><div class="bd-k">Spa</div>
+        <div class="setrow"><button class="step ctl" id="cs_dn">−</button><div class="bd-v" id="chlor_spa_v">—</div><button class="step ctl" id="cs_up">+</button></div></div>
     </div>
   </div>
 
@@ -274,16 +284,6 @@
     <div class="slot-editor" id="slot_editor">
       <span class="se-label" id="se_label"></span>
       <span class="setrow-inline"><button class="step ctl" id="se_dn">−</button><span class="bd-v" id="se_val">—</span><button class="step ctl" id="se_up">+</button></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Chlorinator</h2>
-    <div class="duo">
-      <div class="bd ctl" id="chlor_pool" data-field="chlor_pool"><div class="bd-k">Pool</div>
-        <div class="setrow"><button class="step ctl" id="cp_dn">−</button><div class="bd-v" id="chlor_pool_v">—</div><button class="step ctl" id="cp_up">+</button></div></div>
-      <div class="bd ctl" id="chlor_spa" data-field="chlor_spa"><div class="bd-k">Spa</div>
-        <div class="setrow"><button class="step ctl" id="cs_dn">−</button><div class="bd-v" id="chlor_spa_v">—</div><button class="step ctl" id="cs_up">+</button></div></div>
     </div>
   </div>
 
@@ -304,48 +304,75 @@
   </div>
 
   <style>
-    #scene_btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .scene-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
-      background: var(--panel2); color: var(--ink); border: 1px solid var(--line);
-      border-left: 4px solid var(--off); border-radius: 12px; padding: 12px 14px;
-      font-size: 16px; font-weight: 600; text-align: left; line-height: 1.2; }
-    .scene-btn:active { background: var(--line); }
-    .scene-btn.show { border-left-color: var(--accent); }
-    .scene-btn .tag { font-size: 12px; font-weight: 600; color: var(--dim);
-      text-transform: uppercase; letter-spacing: .05em; }
-    .scene-btn.show .tag { color: var(--accent); }
-    #scene_msg { margin-top: 12px; min-height: 1.3em; font-size: 15px; color: var(--ink); }
-    #scene_cal { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
-    #scene_cal .crow { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
-    #scene_cal label { color: var(--dim); font-size: 13px; display: flex; flex-direction: column; gap: 3px; }
-    #scene_cal input { width: 72px; padding: 8px 10px; font-size: 15px; color: var(--ink);
-      background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; }
-    #scene_cal button { padding: 10px 16px; font-size: 15px; font-weight: 600; color: #04263a;
-      background: var(--accent); border: 0; border-radius: 10px; align-self: flex-end; }
-    #scene_cal .hint { font-size: 13px; color: var(--dim); }
+    /* Scene picker = a dropdown; picking stages into the shared apply bar.
+       Calibration lives in the ⚙ popup. */
+    .scene-sel { width: 100%; padding: 12px; font-size: 16px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--panel2); color: var(--ink);
+      -webkit-appearance: none; appearance: none; }
+    .scene-msg { margin-top: 10px; min-height: 1.2em; font-size: 14px; color: var(--dim); }
+    /* Current program badge in the light card header (driven by the status poll). */
+    .scene-now { font-size: 12px; font-weight: 700; color: #04263a; background: var(--ok);
+      padding: 3px 11px; border-radius: 999px; margin-left: auto; margin-right: 10px; }
+    .scene-now:empty { display: none; }
+    #light_modal { position: fixed; inset: 0; z-index: 41; display: none;
+      background: rgba(2,8,16,.72); align-items: center; justify-content: center; padding: 16px; }
+    #light_modal.show { display: flex; }
+    .lm-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+    .lm-grid label, .lm-raw label { display: flex; flex-direction: column; gap: 3px;
+      font-size: 13px; color: var(--dim); }
+    /* The flex rule above beats the default [hidden]{display:none}, so restore it. */
+    .lm-grid label[hidden], .lm-raw label[hidden] { display: none; }
+    .lm-grid input[type=number], .lm-raw input { width: 78px; padding: 8px 10px; font-size: 15px;
+      color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; }
+    .lm-check { flex-direction: row !important; align-items: center; gap: 6px !important; }
+    .lm-check input { width: auto; }
+    .lm-btn { padding: 10px 16px; font-size: 15px; font-weight: 600; color: #04263a;
+      background: var(--accent); border: 0; border-radius: 8px;
+      transition: transform .08s ease, filter .08s ease, box-shadow .08s ease; }
+    /* Press feedback: sink + brighten while held, then a brief confirm flash so
+       a quick tap still shows it registered. */
+    #light_modal button:active { transform: scale(.94); filter: brightness(1.25); }
+    #light_modal button.flashed { animation: btnflash .4s ease; }
+    @keyframes btnflash {
+      0%   { box-shadow: 0 0 0 0 var(--ok); filter: brightness(1.5); }
+      100% { box-shadow: 0 0 0 6px rgba(0,0,0,0); filter: brightness(1); } }
+    .lm-raw { display: flex; align-items: flex-end; gap: 10px; margin-top: 12px;
+      padding-top: 12px; border-top: 1px solid var(--line); }
+    .lm-hint { font-size: 13px; color: var(--dim); margin-top: 10px; }
+    #lm_resyncrow { margin: 6px 0 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
   </style>
   <div class="card">
-    <h2 class="hrow">Pool Light Scenes</h2>
-    <div id="scene_btns">loading…</div>
-    <div id="scene_msg"></div>
-    <div id="scene_cal">
-      <div class="crow">
-        <label>reset ms<input id="sc_reset" type="number"></label>
-        <label>off ms<input id="sc_off" type="number"></label>
-        <label>on ms<input id="sc_on" type="number"></label>
-        <label>offset<input id="sc_offset" type="number"></label>
-        <label style="flex-direction:row;align-items:center;gap:6px">
-          <input id="sc_local" type="checkbox" style="width:auto">LOCAL frames</label>
-        <button id="sc_save">Save</button>
-      </div>
-      <div class="crow">
-        <label>raw count<input id="sc_rawn" type="number" value="3"></label>
-        <button id="sc_fireraw">Fire raw</button>
-      </div>
-      <div class="hint">Fire a raw count, watch the pool, and find where it flips static → moving.</div>
-    </div>
+    <h2 class="hrow">Spa Light <span class="scene-now" id="spa_scene_now"></span>
+      <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
+    <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
+    <div class="scene-msg" id="spa_scene_msg"></div>
+  </div>
+
+  <div class="card">
+    <h2 class="hrow">Pool Light <span class="scene-now" id="scene_now"></span>
+      <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
+    <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
+    <div class="scene-msg" id="scene_msg"></div>
   </div>
 </main>
+
+<div id="light_modal">
+  <div class="modal-card">
+    <div class="modal-hd"><span class="t" id="lm_title">Light settings</span>
+      <button class="xbtn" id="lm_close">✕</button></div>
+    <div id="lm_resyncrow" hidden>
+      <button class="lm-btn" id="lm_resync">Resync colors</button>
+      <div class="lm-hint" id="lm_resynchint">Re-syncs the light to program&nbsp;1 (Voodoo Lounge) via a single 11–14&nbsp;s off. Use it if scene selection drifts — takes ~13&nbsp;s.</div>
+    </div>
+    <div class="lm-grid">
+      <label>off ms<input id="lm_off" type="number"></label>
+      <label>on ms<input id="lm_on" type="number"></label>
+      <label id="lm_reset_l">reset ms<input id="lm_reset" type="number"></label>
+      <label class="lm-check"><input id="lm_local" type="checkbox">LOCAL frames</label>
+    </div>
+    <button class="lm-btn" id="lm_save">Save calibration</button>
+  </div>
+</div>
 <footer>backend: <span id="backend">—</span> · updated <span id="age">—</span></footer>
 
 <div id="chart_modal">
@@ -402,19 +429,6 @@
     e.className = 'pill' + (e.classList.contains('ctl') ? ' ctl' : '') + (on ? ' on' : ' off');
   }
 
-  // Per-body heater status badges in the Heat card: always the armed mode
-  // (Auto/Off), plus the firing state (Heating/Idle) for the body that's in use.
-  function heatBodyStat(id, body, armedReal, s, staged) {
-    const e = $(id); if (!e) return;
-    const armed = ('heat' in staged && staged.heatWhich === body) ? staged.heat : armedReal;
-    let html = '<span class="b ' + (armed ? 'on' : 'off') + '">' + (armed ? 'Auto' : 'Off') + '</span>';
-    if (s.valve_mode === body) {
-      const firing = !!s.heater_active;
-      html += '<span class="b ' + (firing ? 'fire' : 'off') + '">' + (firing ? 'Heating' : 'Idle') + '</span>';
-    }
-    e.innerHTML = html;
-  }
-
   // ── Command plumbing ──────────────────────────────────────────────────────
   function setBusy(on, label) {
     busy = on;
@@ -448,6 +462,13 @@
     $('apply').classList.toggle('show', n > 0 && !busy);
     if (n > 0) txt('apply_n', n + (n === 1 ? ' pending change' : ' pending changes'));
   }
+  // Bridge for the light-scene cards (separate script scope): stage a light
+  // pick into the SAME apply bar as everything else. pick={n,name} or null.
+  window.stageLight = (body, pick) => {
+    const key = body + 'Light';
+    if (pick) staged[key] = pick; else delete staged[key];
+    updateApplyBar();
+  };
   function chlorStep(cur, dir) {
     cur = cur || 0;
     if (dir > 0) return cur < 10 ? Math.min(10, cur + 1) : Math.min(100, cur + 5);
@@ -521,6 +542,7 @@
     for (const k in staged) delete staged[k];
     selectedSlot = null;
     setEditing(null);
+    document.querySelectorAll('.scene-sel').forEach(s => { s.value = ''; });
     reRender();
   }
   // Apply — send each staged change in sequence (the panel is single-lane).
@@ -537,6 +559,8 @@
     for (let n = 1; n <= 4; n++)
       if (('slot' + n) in staged) items.push([`Set Speed ${n} to ${staged['slot' + n]}%`, `/vsp/slot/${n}`, { speed_pct: staged['slot' + n] }]);
     if ('spaSpeed' in staged) items.push([`Set Spa Speed to ${staged.spaSpeed}%`, '/vsp/spa', { speed_pct: staged.spaSpeed }]);
+    if ('spaLight' in staged) items.push(['Spa light → ' + staged.spaLight.name, '/lights/spa/program', { program: staged.spaLight.n }]);
+    if ('poolLight' in staged) items.push(['Pool light → ' + staged.poolLight.name, '/lights/pool/program', { program: staged.poolLight.n }]);
     for (const [name, dflt] of SWITCHES) {
       const key = 'ckt:' + name;
       if (key in staged) {
@@ -547,6 +571,7 @@
     for (const k in staged) delete staged[k];
     selectedSlot = null;
     setEditing(null);
+    document.querySelectorAll('.scene-sel').forEach(s => { s.value = ''; });
     setBusy(true, items[0][0]);
     try {
       for (let i = 0; i < items.length; i++) {
@@ -767,14 +792,12 @@
     $('heat_spa_set').classList.toggle('pend', 'setSpa' in staged);
     $('heat_pool').classList.toggle('active', s.valve_mode === 'pool');
     $('heat_spa').classList.toggle('active', s.valve_mode === 'spa');
-    // Per-body status: mode (Auto/Off) always; firing (Heating/Idle) only for the
-    // body that's in use (the single physical heater only fires the active body).
-    heatBodyStat('heat_pool_stat', 'pool', !!s.pool_heater_enabled, s, staged);
-    heatBodyStat('heat_spa_stat',  'spa',  !!s.spa_heater_enabled,  s, staged);
+    // (Per-body heater badges removed — the active body's Auto/Off + Heating/Idle
+    // is shown in the At-a-glance section, so the Heat card is just setpoints.)
     const aw = spa ? 'spa' : 'pool';
     const realHeat = spa ? !!s.spa_heater_enabled : !!s.pool_heater_enabled;
     const effHeat = ('heat' in staged && staged.heatWhich === aw) ? staged.heat : realHeat;
-    setPill('heat_mode', effHeat, 'Auto', 'Off');
+    setPill('heat_mode', effHeat, 'Enabled', 'Off');
     $('heat_mode').classList.toggle('staged', 'heat' in staged);
     setPill('heat_fire', !!s.heater_active, 'Running', 'Idle');
 
@@ -787,12 +810,44 @@
     $('chlor_spa_v').classList.toggle('pend', 'chlorSpa' in staged);
     $('chlor_pool').classList.toggle('active', s.valve_mode === 'pool');
     $('chlor_spa').classList.toggle('active', s.valve_mode === 'spa');
+    // Reflect each light's current program in its card header.
+    if (window.updateLightCurrent) window.updateLightCurrent(s.light_program);
 
     // Water — running speed calls out the active speed slot
     const filterOn = s.circuits && s.circuits.FILTER;   // real, drives the speed running flag
     const effFilter = ('filter' in staged) ? staged.filter : !!filterOn;
     setPill('filter_state', effFilter, 'On', 'Off');
     $('filter_state').classList.toggle('staged', 'filter' in staged);
+
+    // At-a-glance PUMP SPEED — the live speed the bus reports is the source of
+    // truth. The slots are just presets. When the controller commands a speed
+    // that isn't one of them (heater min-flow override, spa), show the real %
+    // and name the cause rather than mis-mapping it onto a slot.
+    (function () {
+      const e = $('pump_now'); if (!e) return;
+      const runSpeed = spa ? s.spa_speed : s.pump_speed;   // live bus speed, current mode
+      if (!filterOn) { e.textContent = 'Off'; e.className = 'pill off'; return; }
+      if (runSpeed == null) { e.textContent = '—'; e.className = 'pill'; return; }
+      let tag = '';
+      if (s.pump_startup) {
+        // Post-power-up prime: panel forces 100% on a "start delay" — takes
+        // priority so it isn't mislabeled a heater/override speed.
+        tag = 'startup';
+      } else if (spa) {
+        tag = (!!s.heater_active) ? 'spa · heat' : 'spa';
+      } else {
+        let match = null;
+        for (let i = 1; i <= 4; i++) {
+          const p = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
+          if (p != null && p === runSpeed) { match = i; break; }
+        }
+        if (match) tag = 'Speed ' + match;
+        else if (s.circuits && s.circuits.HEATER_1) tag = 'heat';
+        else tag = 'override';
+      }
+      e.textContent = runSpeed + '%' + (tag ? ' · ' + tag : '');
+      e.className = 'pill on';
+    })();
 
     // Speeds — tap a tile to edit (staged); running slot highlighted
     function slotTile(label, key, real, running) {
@@ -808,7 +863,12 @@
     const slots = $('slots'); slots.innerHTML = '';
     for (let i = 1; i <= 4; i++) {
       const pct = s.vsp_slot_pct ? s.vsp_slot_pct[String(i)] : undefined;
-      slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, !spa && s.vsp_active_slot === i));
+      // "Running" only when the panel selects this slot AND the live bus speed
+      // actually matches it — so a heater/override speed doesn't leave a slot
+      // falsely lit (the at-a-glance Pump row shows the real override instead).
+      const running = !spa && s.vsp_active_slot === i &&
+                      (s.pump_speed == null || s.pump_speed === pct);
+      slots.appendChild(slotTile('Speed ' + i, 'slot' + i, pct, running));
     }
     const spaSlots = $('spa_slots'); spaSlots.innerHTML = '';
     spaSlots.appendChild(slotTile('Speed', 'spaSpeed', s.spa_speed, spa));
@@ -874,14 +934,17 @@
     if (s.bridge_wedged) {
       const cd = s.wedge_cooldown_remaining_s;
       const bridge = s.backend === 'rs485bridge';
-      const subj = bridge ? 'RS-485 bridge' : 'AquaConnect box';
-      const hint = bridge
-        ? 'check the pad Pi / pool-bridge daemon — clears itself once reachable'
-        : 'power-cycle the AquaConnect box';
-      b.className = 'banner bad show';
-      b.textContent = cd > 0
-        ? `⚠ ${subj} recovering — cooldown, ${cd}s remaining`
-        : `⚠ Command path wedged — ${hint}`;
+      if (bridge) {
+        // Direct serial: 'offline' is transient + self-clearing (weak Wi-Fi
+        // blip), not a wedge needing a power-cycle. Milder wording + 'warn'.
+        b.className = 'banner show';   // base banner = amber (mild), not red '.bad'
+        b.textContent = '⚠ RS-485 bridge offline — reconnecting (clears itself automatically)';
+      } else {
+        b.className = 'banner bad show';
+        b.textContent = cd > 0
+          ? `⚠ AquaConnect box recovering — cooldown, ${cd}s remaining`
+          : '⚠ Command path wedged — power-cycle the AquaConnect box';
+      }
     } else { b.className = 'banner'; }
 
     txt('backend', s.backend || '—');
@@ -988,69 +1051,116 @@
 })();
 </script>
 <script>
-// Pool Light Scenes — self-contained (own fetch + inline feedback line).
+// Light Scenes — a dropdown per body; calibration lives in a shared popup.
 (function () {
-  const body = 'pool';
   const el = id => document.getElementById(id);
-  const msg = m => { const e = el('scene_msg'); if (e) e.textContent = m; };
-  const timing = () => ({
-    reset_ms: +el('sc_reset').value || 2000,
-    off_ms: +el('sc_off').value || 120,
-    on_ms: +el('sc_on').value || 120,
-    local: el('sc_local').checked,
+  let active = null;   // the card whose settings the modal is editing
+
+  function openModal(card) {
+    active = card;
+    el('lm_title').textContent = (card.body === 'spa' ? 'Spa' : 'Pool') + ' light settings';
+    const c = card.cal || {};
+    el('lm_off').value = c.off_ms ?? 150;
+    el('lm_on').value = c.on_ms ?? 150;
+    el('lm_reset').value = c.reset_ms ?? 2000;
+    el('lm_local').checked = c.local !== false;
+    const rel = card.mechanic === 'relative';
+    // Pool (relative) keeps only timing (off/on ms) + LOCAL. reset ms is an
+    // absolute-count concept, shown for spa only. (Offset is baked into the
+    // sidecar — no longer a UI knob.)
+    el('lm_reset_l').hidden = rel;
+    // Relative (pool) only: one-tap resync to program 1, shown at the top.
+    el('lm_resyncrow').hidden = !rel;
+    el('light_modal').classList.add('show');
+  }
+  const closeModal = () => { el('light_modal').classList.remove('show'); active = null; };
+  el('lm_close').onclick = closeModal;
+  // Visual confirmation that a settings button registered a tap: brief flash.
+  el('light_modal').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    b.classList.remove('flashed');
+    void b.offsetWidth;            // restart the animation on rapid re-taps
+    b.classList.add('flashed');
   });
-  async function post(obj, note) {
-    msg('… ' + note);
+  el('light_modal').onclick = e => { if (e.target.id === 'light_modal') closeModal(); };
+
+  const modalTiming = () => ({
+    reset_ms: +el('lm_reset').value || 2000,
+    off_ms: +el('lm_off').value || 150,
+    on_ms: +el('lm_on').value || 150,
+    local: el('lm_local').checked,
+  });
+  el('lm_save').onclick = async () => {
+    if (!active) return;
     try {
-      const r = await fetch('/lights/' + body + '/program', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(obj) });
+      await fetch('/lights/calibration', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ body: active.body }, modalTiming())) });
+      active.setMsg('✓ calibration saved');
+      active.reload();
+    } catch (e) { active.setMsg('⚠ save failed: ' + e.message); }
+  };
+  // Resync a relative light to program 1 (Voodoo Lounge) — single 11-14s off.
+  el('lm_resync').onclick = async () => {
+    if (!active) return;
+    const card = active;
+    card.setMsg('… resyncing to Voodoo Lounge (~13s) — don’t touch the light');
+    try {
+      const r = await fetch('/lights/' + card.body + '/resync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      const b = j.bridge || {};
-      const detail = 'presses=' + (b.presses ?? '?')
-        + ' reset_off=' + (b.reset_confirmed_off ?? '?')
-        + ' start_on=' + (b.start_on ?? '?') + ' frame=' + (b.frame ?? '?');
-      msg('✓ ' + note + '  [' + detail + ']. Saw: moving or static? how many dark→on?');
-    } catch (e) { msg('⚠ ' + note + ' failed: ' + e.message); }
-  }
-  const fire = (n, name, type) => {
-    const expect = type === 'show' ? 'EXPECT: moving show' : 'EXPECT: static color';
-    post(Object.assign({ program: n }, timing()), name + ' (#' + n + ', ' + (type === 'show' ? 'show' : 'fixed') + ') — ' + expect);
+      card.showCurrent(1);
+      card.setMsg('✓ resynced to ' + (j.name || 'program 1'));
+    } catch (e) { card.setMsg('⚠ resync failed: ' + e.message); }
   };
-  const fireRaw = () => post(Object.assign({ count: +el('sc_rawn').value }, timing()), 'raw count ' + el('sc_rawn').value);
-  async function saveCal() {
-    try {
-      const r = await fetch('/lights/calibration', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ offset: +el('sc_offset').value, reset_ms: +el('sc_reset').value,
-          off_ms: +el('sc_off').value, on_ms: +el('sc_on').value, local: el('sc_local').checked }) });
-      await r.json(); msg('✓ calibration saved');
-    } catch (e) { msg('⚠ save failed: ' + e.message); }
+  function setupLightCard(body, ids) {
+    const setMsg = m => { const e = el(ids.msg); if (e) e.textContent = m; };
+    const card = { body, cal: {}, setMsg, reload: load, mechanic: 'absolute', programs: [], current: null };
+    let programs = [];
+    function load() {
+      fetch('/lights/programs?body=' + body).then(r => r.json()).then(d => {
+        card.cal = d.calibration || {};
+        card.mechanic = d.mechanic || 'absolute';
+        card.current = d.current_program ?? null;
+        programs = d.programs || [];
+        card.programs = programs;
+        const sel = el(ids.sel);
+        sel.innerHTML = '<option value="">Choose a scene…</option>';
+        programs.forEach(p => {
+          const o = document.createElement('option');
+          o.value = p.n;
+          o.textContent = p.name + (p.type === 'show' ? ' · show' : ' · static');
+          sel.appendChild(o);
+        });
+      }).catch(e => setMsg('load failed: ' + e.message));
+    }
+    // Picking a scene only STAGES it into the shared apply bar (Cancel/Apply at
+    // the bottom, same as everything else) — nothing fires until Apply.
+    el(ids.sel).onchange = () => {
+      const p = programs.find(x => x.n === +el(ids.sel).value);
+      window.stageLight(body, p ? { n: p.n, name: p.name } : null);
+    };
+    el(ids.gear).onclick = () => openModal(card);
+    card.showCurrent = (n) => {
+      card.current = n ?? null;
+      const p = (card.programs || []).find(x => x.n === n);
+      const e = el(ids.now);
+      if (e) e.textContent = p ? p.name : '';
+    };
+    lightCards[body] = card;
+    load();
   }
-  fetch('/lights/programs').then(r => r.json()).then(d => {
-    const c = d.calibration || {};
-    el('sc_reset').value = c.reset_ms ?? 4000;
-    el('sc_off').value = c.off_ms ?? 250;
-    el('sc_on').value = c.on_ms ?? 250;
-    el('sc_offset').value = c.offset ?? 0;
-    el('sc_local').checked = c.local !== false;
-    const box = el('scene_btns'); box.innerHTML = '';
-    (d.programs || []).forEach(p => {
-      const b = document.createElement('button');
-      b.className = 'scene-btn' + (p.type === 'show' ? ' show' : '');
-      const name = document.createElement('span');
-      name.textContent = p.name;
-      const tag = document.createElement('span');
-      tag.className = 'tag';
-      tag.textContent = p.type === 'show' ? '◆ show' : 'static';
-      b.append(name, tag);
-      b.onclick = () => fire(p.n, p.name, p.type);
-      box.appendChild(b);
-    });
-  }).catch(e => { const b = el('scene_btns'); if (b) b.textContent = 'load failed: ' + e.message; });
-  el('sc_save').onclick = saveCal;
-  el('sc_fireraw').onclick = fireRaw;
+  const lightCards = {};
+  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear', now: 'spa_scene_now' });
+  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear', now: 'scene_now' });
+  // Driven by the main status poll: reflect each light's current program in its
+  // card header (and keep the settings' tracked position in sync).
+  window.updateLightCurrent = (lp) => {
+    lp = lp || {};
+    for (const body in lightCards) lightCards[body].showCurrent(lp[body]);
+  };
 })();
 </script>
 </body>

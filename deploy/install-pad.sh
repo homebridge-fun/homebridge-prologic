@@ -119,10 +119,23 @@ sudo systemctl --no-pager --lines=15 status pool-bridge.service || true
 echo "==> memory-pressure hardening (persistent journal + earlyoom + swappiness)"
 
 # Persistent journal (capped) so the NEXT freeze leaves a readable `-b -1` trail.
+# NOTE: Storage=persistent alone isn't enough — the dir needs correct ownership
+# (systemd-tmpfiles) and journald must FLUSH /run -> /var/log, or it silently
+# keeps logging to the volatile /run and every reboot wipes the evidence (this
+# bit us: a freeze's logs were lost even with Storage=persistent set).
 sudo mkdir -p /var/log/journal
 sudo sed -i 's/^#\?Storage=.*/Storage=persistent/'     /etc/systemd/journald.conf
 sudo sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
+sudo systemd-tmpfiles --create --prefix /var/log/journal
 sudo systemctl restart systemd-journald
+sudo journalctl --flush
+
+# Wi-Fi power-save OFF. The Pi Zero 2 W's brcmfmac drops off the network (and can
+# wedge) when power-save idles the radio — a healthy, idle box just goes
+# unreachable. `2` = disabled in NetworkManager; also set it live on wlan0.
+echo "==> disabling Wi-Fi power-save (brcmfmac idle-drop fix)"
+sudo cp "$REPO/deploy/wifi-powersave-off.conf" /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+sudo iw dev wlan0 set power_save off 2>/dev/null || true
 
 # earlyoom: kill the worst hog BEFORE the kernel thrashes to a freeze. The
 # bridge (its likely target) has Restart=on-failure, so it self-recovers.
@@ -147,6 +160,29 @@ sudo cp "$REPO/deploy/pad-health.logrotate"   /etc/logrotate.d/pad-health
 sudo systemctl daemon-reload
 sudo systemctl enable --now pool-healthlog.timer
 sudo systemctl start pool-healthlog.service   # write the first row now
+
+# 8. Network watchdog ------------------------------------------------------
+# The Pi Zero 2 W's brcmfmac Wi-Fi can crash (radio dead, CPU alive) and not
+# rejoin without a reboot — the box stays up but goes network-dark, which used
+# to mean a physical power-cycle. This watchdog detects that and self-recovers
+# (restart Wi-Fi -> reload module -> reboot), so it heals unattended.
+echo "==> installing network watchdog (self-heal crashed Wi-Fi)"
+sudo install -m 0755 "$REPO/deploy/pad-netwatch.sh" /usr/local/bin/pad-netwatch.sh
+sudo cp "$REPO/deploy/pool-netwatch.service" /etc/systemd/system/
+sudo cp "$REPO/deploy/pool-netwatch.timer"   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pool-netwatch.timer
+
+# 9. Bridge serial watchdog ------------------------------------------------
+# Covers the case pad-netwatch can't: the daemon is up + reachable but its
+# SERIAL link to the panel dropped (USB re-enumeration / loose cable), which
+# strands the cockpit at "no panel". Restarts pool-bridge to reopen the port.
+echo "==> installing bridge serial watchdog (reopen serial on drop)"
+sudo install -m 0755 "$REPO/deploy/pad-serialwatch.sh" /usr/local/bin/pad-serialwatch.sh
+sudo cp "$REPO/deploy/pool-serialwatch.service" /etc/systemd/system/
+sudo cp "$REPO/deploy/pool-serialwatch.timer"   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pool-serialwatch.timer
 
 echo
 echo "==================================================================="
