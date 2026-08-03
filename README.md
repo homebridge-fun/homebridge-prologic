@@ -1,58 +1,86 @@
 # homebridge-prologic
 
-Homebridge platform plugin for **Hayward ProLogic / AquaPlus** pool controllers via direct RS-485 serial communication through a WiFi serial bridge (USR-W610, Waveshare UART-WIFI232-B2, or similar).
+Homebridge platform plugin (plus a Python sidecar and a web cockpit) for
+**Hayward ProLogic / AquaLogic / AquaPlus** pool controllers. It goes well beyond
+the simple on/off switches earlier plugins offered — it drives the panel's deeper
+settings: adjustable **heat setpoints**, named **light scene / color-program
+selection**, **chlorinator output %**, **variable-speed pump** presets, and full
+circuit control, in both HomeKit and a browser cockpit.
 
-This plugin **replaces** the AquaConnect (ACHN) local HTTP interface, which Hayward has permanently disabled for control commands. It communicates directly with the RS-485 bus on the pool controller PCB.
+## Two connection modes
+
+The sidecar can reach the panel through **either** backend — you choose one in
+config:
+
+- **AquaConnect (ACHN) local HTTP** — the AquaConnect box's local network
+  interface. Fully functional today.
+- **Direct RS-485** — talks straight to the RS-485 bus on the controller PCB via
+  a small Raspberry Pi **"pad bridge"** (a Pi Zero at the equipment pad running
+  `sidecar/rs485_bridge.py` over a USB-RS485 adapter), reached over Tailscale.
+
+The direct RS-485 path is a deliberate **hedge**: Hayward has a pending change
+that could remove AquaConnect's local access, and the RS-485 backend keeps
+everything working if that lands (it also supports panels with no AquaConnect box
+at all). Both backends expose the same features through the same REST API.
+
+## What it controls
+
+Earlier Hayward/AquaLogic plugins mostly surfaced a handful of on/off circuits.
+This one exposes the settings you'd normally have to walk the panel's menus for:
+
+- **Heat** — per-body **setpoints you can change**, armed/enabled state, and live
+  Running/Idle heating status.
+- **Lights** — **named scene / color-program selection** for Hayward ColorLogic
+  (pool) and Pentair IntelliBrite (spa) lights, plus on/off, exposed as a HomeKit
+  Television tile and a cockpit picker.
+- **Chlorinator** — salt-cell output percentage per body, plus super-chlorinate.
+- **Pump** — variable-speed presets (VSP slots) and live speed.
+- **Circuits** — filter, spa mode, aux, spillover, heater enable, and more.
+- Temperature/salt sensors, plus a **web cockpit** with live control and a
+  temperature-history chart.
 
 ## Architecture
 
 ```
-[AquaPlus panel] ←RS-485→ [WiFi serial bridge] ←WiFi/TCP→ [Pi 4: Python sidecar]
-                                                                   ↕ localhost:5757
-                                                       [Pi 4: Homebridge + this plugin]
-                                                                   ↕ HAP
-                                                              [HomeKit / iPhone]
+                    ┌── AquaConnect box (local HTTP) ─────────────┐
+[AquaLogic panel] ──┤                                             ├── [Python sidecar] ── localhost:5757
+                    └── RS-485 bus → Pi pad bridge (Tailscale) ──┘        ↕
+                                                          [Homebridge + this plugin] ↔ HAP ↔ [HomeKit]
+                                                          [web cockpit]
 ```
 
-The **Python sidecar** (`sidecar/pool_service.py`) uses the [`aqualogic`](https://github.com/swilson/aqualogic) library to maintain a persistent TCP connection to the serial bridge and exposes pool state + control via a local REST API. The Homebridge plugin polls this API every 5 seconds.
+The **Python sidecar** (`sidecar/pool_service.py`) maintains the connection to the
+chosen backend (via HTTP to the AquaConnect box, or to the Pi pad bridge which
+uses the [`aqualogic`](https://github.com/swilson/aqualogic) library on the wire)
+and exposes pool state + control via a local REST API. The Homebridge plugin
+polls this API every 5 seconds; the web cockpit talks to it directly.
 
 ## Hardware Setup
 
-### RS-485 wiring to AquaPlus PCB
+### RS-485 backend — Raspberry Pi pad bridge
 
-Connect to **J2** or **J4** on the main board:
+The direct-RS-485 backend runs a small **Pi Zero at the equipment pad** with a
+USB-RS485 adapter on the controller bus, running `sidecar/rs485_bridge.py` as a
+systemd service (`pool-bridge`) and reachable over Tailscale. Full build and
+re-image runbook: [`deploy/README-PAD.md`](deploy/README-PAD.md); provisioning
+script: [`deploy/install-pad.sh`](deploy/install-pad.sh).
 
-| Bridge terminal | PCB pin | Wire |
-|---|---|---|
-| A+ | Pin 2 (DATA+) | Black |
-| B- | Pin 3 (DATA-) | Yellow |
-| GND | Pin 4 (GND) | Green |
+> Earlier prototypes used a WiFi/ethernet serial bridge (transparent TCP↔serial)
+> instead of the Pi. That approach **did not work** — the panel only accepts a
+> keypress in a narrow window after each keep-alive, which a transparent bridge
+> can't hit reliably, so reads worked but writes were dropped. The Pi pad bridge
+> replaced it and is the only supported RS-485 path.
 
-### WiFi serial bridge configuration
-
-| Setting | Value |
-|---|---|
-| Mode | STA (station — joins your WiFi) |
-| Protocol | TCP Server |
-| Local port | 8899 |
-| Baud | 19200 |
-| Data bits | 8 |
-| Parity | None |
-| Stop bits | 2 |
-| Transparent mode | Enabled |
+RS-485 wiring to the AquaPlus PCB (adapter to **J2**/**J4** on the main board):
+A+ → Pin 2 (DATA+), B− → Pin 3 (DATA−), GND → Pin 4 (GND).
 
 ## Installation
 
-### 1. Install the Python sidecar
+### 1. Install the Python sidecar (on the Homebridge host)
 
-```bash
-cd /path/to/homebridge-prologic/sidecar
-sudo bash install.sh --bridge-host 192.168.50.XXX
-```
-
-Replace `192.168.50.XXX` with the IP address your serial bridge received from DHCP. The script installs `aqualogic` + `flask`, copies the service file, and registers a systemd unit that starts on boot.
-
-Verify it's running:
+Install the sidecar service, then point it at your backend (AquaConnect box IP,
+or the pad bridge host). See `sidecar/` for the service unit and config. Verify
+it's running:
 
 ```bash
 sudo systemctl status pool-sidecar
@@ -145,6 +173,19 @@ backend — this is a setup requirement, not just an internal detail:**
   reachability — no cooldown, no command blocking, no automation required. The
   fix for repeated offline blips is physical (improve the pad's Wi-Fi signal),
   not a recovery automation. See `deploy/README-PAD.md`.
+
+## Acknowledgments
+
+- **[cupshir](https://github.com/cupshir)** — whose AquaConnect Homebridge plugin
+  I ran before building this one. It's the prior art and inspiration for the
+  AquaConnect approach here; this project grew out of wanting deeper control and a
+  fallback path.
+- **[`swilson/aqualogic`](https://github.com/swilson/aqualogic)** — the Python
+  RS-485 protocol library that decodes the AquaLogic bus. It runs on the Pi pad
+  bridge and is what makes the direct-RS-485 backend possible.
+- **[`SteveTheGeekHA/AquaConnectDeviceHandler`](https://github.com/SteveTheGeekHA/AquaConnectDeviceHandler)**
+  — reference implementation used to verify the AquaConnect web key codes and
+  protocol for the AquaConnect backend.
 
 ## References
 
