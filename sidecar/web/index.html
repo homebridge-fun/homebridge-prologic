@@ -51,8 +51,8 @@
   /* Fixed widths per state (centered, low padding) so every pill on every row
      is the same size regardless of its text — one width for off, a larger one
      for on (the "Auto" look). */
-  .card .condlist .pill, .card .swlist .pill {
-    font-size: 15px; line-height: 1.15; padding: 2px 8px; display: inline-block;
+  .card .condlist .pill, .card .swlist .pill, .card .lblock .pill {
+    font-size: 15px; line-height: 1.15; padding: 7px 12px; display: inline-block;
     box-sizing: border-box; text-align: center; }
   /* Active pills share one width, sized to fit the widest (the Pump-speed pill,
      e.g. "100% · Speed 4"), so the on-state pills line up instead of the speed
@@ -255,20 +255,20 @@
   <div class="card">
     <h2>Lights</h2>
     <div class="lblock">
-      <div class="row"><span class="label">Spa</span><span class="pill ctl" id="spa_light_pill">—</span></div>
-      <div class="lrow2">
-        <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
-        <button class="gearbtn" id="spa_gear" title="Spa light settings">⚙</button>
-      </div>
-      <div class="scene-msg" id="spa_scene_msg"></div>
-    </div>
-    <div class="lblock">
       <div class="row"><span class="label">Pool</span><span class="pill ctl" id="pool_light_pill">—</span></div>
       <div class="lrow2">
         <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
         <button class="gearbtn" id="pool_gear" title="Pool light settings">⚙</button>
       </div>
       <div class="scene-msg" id="scene_msg"></div>
+    </div>
+    <div class="lblock">
+      <div class="row"><span class="label">Spa</span><span class="pill ctl" id="spa_light_pill">—</span></div>
+      <div class="lrow2">
+        <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
+        <button class="gearbtn" id="spa_gear" title="Spa light settings">⚙</button>
+      </div>
+      <div class="scene-msg" id="spa_scene_msg"></div>
     </div>
   </div>
 
