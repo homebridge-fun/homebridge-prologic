@@ -3,6 +3,24 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.7.2 — Remove the dead legacy RS-485 backend; docs accuracy
+
+**Cleanup**
+- Removed the never-working legacy `rs485` backend (raw frames over a WiFi/eth
+  transparent serial bridge — the panel's post-keep-alive accept window can't be
+  hit that way, so writes were dropped). ~780 lines gone from the sidecar: the
+  keep-alive `KEY_*` machinery, `RealPanel`, the RS-485 observer/`panel_thread`,
+  and the rs485-only debug/benchmark routes. The supported backends are
+  **AquaConnect** and the **Raspberry Pi RS-485 pad bridge** (`rs485bridge`); the
+  `--backend` default is now `aquaconnect`. No change to `/status` or behavior.
+
+**Docs**
+- README/description corrected: both connection modes, AquaConnect not disabled
+  (RS-485 pad bridge is a hedge), deep automation (setpoints, light scenes,
+  chlorinator, VSP) vs. earlier plugins' on/off — and the stale "not supported"
+  limitations rewritten. Acknowledgments added (cupshir, swilson/aqualogic,
+  SteveTheGeekHA).
+
 ## 0.7.1 — HomeKit responsiveness, unified Lights UI, honest temp history
 
 **HomeKit "No Response" fixes**

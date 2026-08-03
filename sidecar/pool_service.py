@@ -381,7 +381,7 @@ def _immediate_wedge_probe() -> None:
 # ---------------------------------------------------------------------------
 # Backend selection persistence (§selectable-backend)
 #
-# The active navigation backend (aquaconnect | rs485) is chosen at startup from
+# The active navigation backend (aquaconnect | rs485bridge) is chosen at startup from
 # this config file if present, else from CLI args. POST /backend rewrites the
 # file and exits the process so systemd restarts into the new backend. This
 # lets the Homebridge plugin switch backends without sudo or relaunching the
@@ -615,138 +615,6 @@ def _temp_history_thread(now_fn=time.time) -> None:
 
 panel = None
 panel_lock = threading.Lock()
-
-# ---------------------------------------------------------------------------
-# WiFi-bridge write reliability (keep-alive window targeting)
-#
-# The aqualogic library sends a queued key frame once, right after it reads a
-# keep-alive. The AquaLogic panel only accepts a keypress in a narrow window
-# that follows each keep-alive. Over a direct serial wire the reactive send
-# lands; over the USR-W610 WiFi serial bridge it arrives too late and the panel
-# silently drops it (Bad CRC), so writes fail while reads work.
-#
-# Empirically (10ms-resolution sweep on real hardware, see commit history) the
-# panel's accept window for THIS bridge sits ~70ms after we receive a
-# keep-alive: per-frame landing rate peaks sharply at predelay=70ms (~60%) and
-# is near-zero at 0-50ms and 90ms+. So we delay KEY_PREDELAY_MS after the
-# keep-alive, then write the frame ONCE.
-#
-# Bursting (writing the frame several times in quick succession) was tried and
-# is actively HARMFUL on this bridge: the W610 packs the rapid writes into a
-# merged serial run that the panel rejects wholesale — a 3x burst spanning the
-# 70ms peak scored 0/10 where a single frame at 70ms scored 6/10. RS-485
-# turnaround padding was likewise a dead end (the W610 turnaround is ~75µs,
-# ~0.1 of a byte time, far too small to corrupt the frame header). Both are
-# kept as no-default tunables (burst=1, pad=0) purely for diagnostics.
-#
-# Per-frame reliability is ~60%, so set_circuit re-presses up to KEY_MAX_RETRIES
-# times, checking the real panel state before each press and stopping the
-# instant it lands. 8 independent 60% shots => ~99.9% — measured 10/10 in situ.
-KEY_BURST = 1            # single frame; >1 is harmful on the W610 (diagnostics only)
-KEY_PREDELAY_MS = 70.0   # measured center of the panel's post-keep-alive window
-KEY_GAP_MS = 10.0        # only used when KEY_BURST > 1 (diagnostics)
-KEY_PAD_BYTES = 0        # RS-485 turnaround padding; 0 = off (diagnostics only)
-# Max seconds to wait after a press for a clean LEDs frame to confirm the toggle.
-# Measured: a press that lands confirms in ~0.43s (one LEDs broadcast). Setting
-# this to 1.0s gives 2.3x margin with no false-re-press risk, and cuts the
-# per-miss retry cost from 3.0s to 1.0s — driving mean latency down significantly.
-KEY_VERIFY_DELAY_S = 1.0
-# Re-press on a genuine miss. At ~60%/press, 12 retries gives 1-(0.4^12) > 99.99%.
-# set_circuit checks real panel state before every press and stops immediately on
-# success, so extra retries cannot overshoot. Validated 100/100 in situ:
-# median=0.43s, mean=1.91s, p90=5.63s, max=12.1s, zero failures.
-KEY_MAX_RETRIES = 12
-
-
-def _install_key_burst(AquaLogic) -> None:
-    """Monkeypatch AquaLogic._send_frame and get_state."""
-    import binascii
-
-    def _send_frame_burst(self) -> None:
-        if self._send_queue.empty():
-            return
-        data = self._send_queue.get(block=False)
-        frame = data['frame']
-        # Optional RS-485 turnaround padding (default off). Proven unnecessary
-        # on the W610 (~75µs turnaround) but kept as a diagnostic lever.
-        out = bytes(KEY_PAD_BYTES) + bytes(frame) if KEY_PAD_BYTES else frame
-        # Wait for the panel's post-keep-alive accept window, then write once.
-        # KEY_BURST > 1 writes repeatedly — proven HARMFUL on this bridge (the
-        # W610 merges rapid writes); kept only for diagnostics.
-        time.sleep(KEY_PREDELAY_MS / 1000.0)
-        for _ in range(max(1, KEY_BURST)):
-            self._write(out)
-            if KEY_BURST > 1:
-                time.sleep(KEY_GAP_MS / 1000.0)
-        log.info('Sent (x%d pad=%d predelay=%.0fms): %s', KEY_BURST,
-                 KEY_PAD_BYTES, KEY_PREDELAY_MS, binascii.hexlify(frame).decode())
-        # No async _check_state requeue. Verification is done synchronously in
-        # RealPanel.set_circuit under _nav_lock using _actual_state(), which
-        # reads _states directly and avoids the optimistic queue-peek problem.
-
-    def _get_state_safe(self, state):
-        """get_state patched to handle raw send_key frames (no desired_states)."""
-        for data in list(self._send_queue.queue):
-            desired_states = data.get('desired_states')
-            if desired_states is None:
-                continue
-            for desired_state in desired_states:
-                if desired_state['state'] == state:
-                    return desired_state['enabled']
-        if state.value == 0x80000000:  # States.FILTER_LOW_SPEED
-            return (0x20 & self._flashing_states) != 0  # FILTER bit
-        return (state.value & self._states) != 0
-
-    # Patch LONG_DISPLAY_UPDATE handling in process().
-    # The library's process() ignores LONG_DISPLAY_UPDATE (0x04 0x0a) with
-    # '# Not currently parsed / pass'. But during menu navigation the panel
-    # sends LONG frames (full 2×16 LCD), NOT short DISPLAY_UPDATE (0x01 0x03)
-    # frames. Without this patch, lcd.text_updated() is never called during
-    # menu navigation, so _send() always times out and _press_until() burns
-    # its entire budget thinking every RIGHT/PLUS/MINUS was dropped.
-    #
-    # Fix: replace the body of the LONG branch with the same decode+callback
-    # that the short branch uses, plus bit-7 stripping for flashing chars
-    # (characters with bit 7 set blink on the physical display per PR #11).
-    import inspect, textwrap, types
-
-    src = inspect.getsource(AquaLogic.process)
-    old_stub = (
-        'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
-        '                    # Not currently parsed\n'
-        '                    pass'
-    )
-    new_body = (
-        'elif frame_type == self.FRAME_TYPE_LONG_DISPLAY_UPDATE:\n'
-        '                    # LONG frame: variable-length header + 40 LCD bytes\n'
-        '                    # (20-char line 1 + 20-char line 2) + 0x00 null.\n'
-        '                    # Short frames (len<41) are cursor/blink control\n'
-        '                    # packets, not text updates — skip them or they\n'
-        '                    # decode as garbage (e.g. "ju %").\n'
-        '                    if len(frame) >= 41:\n'
-        '                        lcd = frame[-41:-1]  # drop header + null\n'
-        '                        raw = bytes(b if b == 0xdf else (b & 0x7f) for b in lcd)\n'
-        '                        text = raw.replace(b\'\\xdf\', b\'\\xc2\\xb0\').decode(\'utf-8\', errors=\'replace\')\n'
-        '                        self._web.text_updated(text)'
-    )
-    if old_stub not in src:
-        log.warning('LONG_DISPLAY_UPDATE patch: expected stub not found in '
-                    'aqualogic.core.AquaLogic.process — menu LCD updates will '
-                    'not fire. Check library version.')
-    else:
-        import aqualogic.core as _aq_core
-        patched_src = textwrap.dedent(src.replace(old_stub, new_body))
-        globs = vars(_aq_core).copy()
-        globs['__name__'] = _aq_core.__name__
-        exec(compile(patched_src, inspect.getfile(AquaLogic), 'exec'), globs)
-        AquaLogic.process = globs['process']
-        log.info('LONG_DISPLAY_UPDATE patch applied: menu navigation LCD '
-                 'updates will now reach LcdCapture.')
-
-    AquaLogic._send_frame = _send_frame_burst
-    AquaLogic.get_state = _get_state_safe
-    log.info('Key-burst send enabled: burst=%d predelay=%.0fms gap=%.0fms pad=%d',
-             KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_PAD_BYTES)
 
 # Hayward Universal ColorLogic (UCL) light programs, in the panel's power-cycle
 # order (1..17). 'show' = color-changing/moving, 'fixed' = static color — the
@@ -982,7 +850,7 @@ class LcdCapture:
 # ---------------------------------------------------------------------------
 # FrameHub — backend-agnostic live frame feed (§ parallel-backend work)
 #
-# Each backend (aquaconnect, rs485) owns one hub. As LCD frames arrive they are
+# Each backend (aquaconnect, rs485bridge) owns one hub. As LCD frames arrive they are
 # published here; the /stream SSE endpoints subscribe to get a continuous tail
 # without polling — the same "watch the bus" model the AquaConnect frame-reader
 # uses internally, now exposed as a first-class read surface. The hub name is
@@ -2016,230 +1884,6 @@ _setpoint_debouncer: Optional[WriteDebouncer] = None
 class UnsupportedCircuit(Exception):
     """Raised when a circuit has no corresponding keypad key to toggle it."""
 
-
-# ---------------------------------------------------------------------------
-# Real panel adapter
-# ---------------------------------------------------------------------------
-
-class RealPanel:
-    def __init__(self, aq, States, Keys):
-        self._aq = aq
-        self._States = States
-        self._Keys = Keys
-        self._smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
-
-    def set_circuit(self, name: str, on: bool) -> bool:
-        s = self._smap.get(name)
-        if s is None:
-            raise KeyError(name)
-        # set_state(States.HEATER_1, on) is a no-op stub in the aqualogic lib
-        # (it never sends a key). The keypad HEATER_1 button toggles Auto vs
-        # Manual Off, which the lib models as HEATER_AUTO_MODE — that path
-        # actually sends Keys.HEATER_1. Route the heater enable through it.
-        target = self._States.HEATER_AUTO_MODE if s == self._States.HEATER_1 else s
-
-        # Serialize against the menu navigator (heater refresher) under
-        # _nav_lock: both feed the same RS-485 send queue, and interleaved
-        # keypresses corrupt each other (Bad CRC) and lose the toggle.
-        #
-        # Verify using _actual_state(), NOT get_state(). get_state() is
-        # optimistic — it peeks at the send queue and returns the *desired*
-        # state the instant set_state() queues the frame, so our verify loop
-        # would declare success before the burst even fires. _actual_state()
-        # reads aq._states (the raw LEDs bit-field) directly, which only
-        # updates when the panel broadcasts a clean LEDs frame after the press.
-        with _nav_lock:
-            for _ in range(max(1, KEY_MAX_RETRIES)):
-                if self._actual_state(target) == on:
-                    return True  # already in / reached desired state
-                # set_state queues one burst toggle, or returns False if this
-                # state has no keypad key (unsupported circuit).
-                if not self._aq.set_state(target, on):
-                    raise UnsupportedCircuit(name)
-                # Wait for the burst to fire (queue drains in the process loop).
-                t0 = time.time()
-                while not self._aq._send_queue.empty() and time.time() - t0 < 3.0:
-                    time.sleep(0.1)
-                # Poll the real panel state; return the instant a clean LEDs
-                # frame confirms the toggle, else re-press after the ceiling.
-                deadline = time.time() + KEY_VERIFY_DELAY_S
-                while time.time() < deadline:
-                    time.sleep(0.3)
-                    if self._actual_state(target) == on:
-                        return True
-            return self._actual_state(target) == on  # unconfirmed after retries
-
-    def _actual_state(self, state) -> bool:
-        """Read the panel's confirmed bit-field, bypassing get_state's optimism."""
-        if state == self._States.HEATER_AUTO_MODE:
-            return bool(self._aq._heater_auto_mode)
-        return bool(state.value & self._aq._states)
-
-    def send_key(self, name: str) -> None:
-        k = getattr(self._Keys, name, None)
-        if k is None:
-            raise ValueError(f'Unknown key: {name!r}')
-        self._aq.send_key(k)
-
-
-# RS-485 observe-only listener (parallel-backend work). When the active backend
-# is AquaConnect, this runs alongside it: it streams frames into the 'rs485'
-# FrameHub and parses an ISOLATED state snapshot (never the global `state`), so
-# the two backends never stomp each other. It sends no keys except when a
-# benchmark explicitly drives _rs485_observer.nav. Promoting this observer to a
-# co-equal active backend later (option 2) only needs its snapshot to also
-# answer /status/rs485 — the streaming/nav plumbing is already here.
-_rs485_observer: Optional[SimpleNamespace] = None  # (aq, panel, nav, lcd) when up
-_rs485_obs_state: dict = {}
-_rs485_obs_lock = threading.Lock()
-
-
-def rs485_observer_thread(host: str, port: int) -> None:
-    global _rs485_observer
-
-    from aqualogic.core import AquaLogic
-    from aqualogic.states import States
-    from aqualogic.keys import Keys
-
-    _install_key_burst(AquaLogic)
-    obs_lcd = LcdCapture(hub=_get_hub('rs485'))
-    smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
-
-    def on_change(aq) -> None:
-        snap: dict = {}
-        try:
-            snap['pool_temp'] = _read_property(aq, 'pool_temp')
-            snap['air_temp'] = _read_property(aq, 'air_temp')
-            snap['spa_temp'] = _read_property(aq, 'spa_temp')
-            snap['salt_level'] = _read_property(aq, 'salt_level')
-            snap['chlorinator_percent'] = _read_property(aq, 'pool_chlorinator')
-            snap['pump_speed'] = _read_property(aq, 'pump_speed')
-            circ: dict = {}
-            for name, s in smap.items():
-                try:
-                    circ[name] = bool(aq.get_state(s))
-                except Exception:
-                    pass
-            snap['circuits'] = circ
-        except Exception:
-            pass
-        with _rs485_obs_lock:
-            _rs485_obs_state.clear()
-            _rs485_obs_state.update(snap)
-            _rs485_obs_state['connected'] = True
-            _rs485_obs_state['last_update'] = time.time()
-
-    while True:
-        try:
-            log.info('RS-485 OBSERVER (observe-only) connecting to %s:%s', host, port)
-            aq = AquaLogic(web_port=0)
-            aq._web = obs_lcd
-            aq.connect(host, port)
-            try:
-                import socket as _socket
-                aq._socket.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
-            except Exception as e:
-                log.warning('Observer: could not set TCP_NODELAY: %s', e)
-            obs_panel = RealPanel(aq, States, Keys)
-            obs_nav = MenuNavigator(obs_panel, obs_lcd)
-            _rs485_observer = SimpleNamespace(
-                aq=aq, panel=obs_panel, nav=obs_nav, lcd=obs_lcd)
-            aq.process(on_change)        # blocks until the connection drops
-        except Exception as e:
-            log.error('RS-485 observer lost: %s', e)
-        finally:
-            _rs485_observer = None
-            with _rs485_obs_lock:
-                _rs485_obs_state['connected'] = False
-        log.info('RS-485 observer reconnecting in 5 seconds...')
-        time.sleep(5)
-
-
-def panel_thread(host: str, port: int) -> None:
-    global panel
-
-    from aqualogic.core import AquaLogic
-    from aqualogic.states import States
-    from aqualogic.keys import Keys
-
-    # Always install: even at burst=1 we need the keep-alive window targeting
-    # (predelay) and the get_state patch that tolerates raw send_key frames.
-    _install_key_burst(AquaLogic)
-
-    # In RS-485-active mode the global lcd carries the panel's frames; route them
-    # into the 'rs485' hub so /stream works the same as it does for AquaConnect.
-    lcd._hub = _get_hub('rs485')
-
-    smap = {n: getattr(States, n) for n in CIRCUIT_NAMES}
-
-    def on_change(aq) -> None:
-        l1, l2 = lcd.lines()
-        with state_lock:
-            state.connected = True
-            state.last_update = time.time()
-            state.pool_temp = _read_property(aq, 'pool_temp')
-            state.air_temp = _read_property(aq, 'air_temp')
-            state.spa_temp = _read_property(aq, 'spa_temp')
-            state.salt_level = _read_property(aq, 'salt_level')
-            state.chlorinator_percent = _read_property(aq, 'pool_chlorinator')
-            state.pump_speed = _read_property(aq, 'pump_speed')
-            for name, s in smap.items():
-                try:
-                    state.circuits[name] = bool(aq.get_state(s))
-                except Exception:
-                    pass
-            # circuits['HEATER_1'] = armed/Auto mode (not the firing relay).
-            # heater_active is set by _apply_ac_led_to_state from the LED field.
-            try:
-                state.circuits['HEATER_1'] = bool(aq.get_state(States.HEATER_AUTO_MODE))
-            except Exception:
-                pass
-            # Parse valve mode from default cycling display (§10).
-            # The panel's "Filter Speed  NN% Pool/Spa Mode" frame carries the
-            # active mode. On this hardware the LCD text has no newline, so the
-            # whole 32-char frame lands in l1 and l2 is empty — match against
-            # the joined frame, not l2 alone. "Spa Mode"/"Pool Mode" are
-            # distinct from "Spa Temp"/"Spa-CountDn" so this won't false-match.
-            frame = f'{l1} {l2}'
-            if 'Pool Mode' in frame:
-                state.valve_mode = 'pool'
-            elif 'Spa Mode' in frame:
-                state.valve_mode = 'spa'
-                _mark_spa_active(time.time())
-
-    while True:
-        try:
-            log.info(f'Connecting to serial bridge at {host}:{port}')
-            aq = AquaLogic(web_port=0)  # suppress built-in web server
-            aq._web = lcd               # intercept every LCD frame
-            aq.connect(host, port)
-            # CRITICAL for WiFi-bridge write reliability: disable Nagle's
-            # algorithm on the socket. The aqualogic lib opens a raw TCP socket
-            # and never sets TCP_NODELAY, so our tiny key frames (~15 bytes) get
-            # held by Nagle until the previous segment is ACKed. Combined with
-            # the bridge's delayed-ACK this is the classic ~40ms Nagle stall —
-            # the key frame leaves at a random 0-40ms offset and almost always
-            # misses the panel's narrow post-keep-alive poll window (Bad CRC).
-            # With Nagle off the frame goes on the wire immediately, so the
-            # reactive send lands in the window far more reliably.
-            try:
-                import socket as _socket
-                aq._socket.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
-                log.info('TCP_NODELAY set on bridge socket (Nagle disabled)')
-            except Exception as e:
-                log.warning('Could not set TCP_NODELAY: %s', e)
-            with panel_lock:
-                panel = RealPanel(aq, States, Keys)
-            aq.process(on_change)       # blocks until connection drops
-        except Exception as e:
-            log.error(f'Connection lost: {e}')
-        finally:
-            with panel_lock:
-                panel = None
-            with state_lock:
-                state.connected = False
-        log.info('Reconnecting in 5 seconds...')
-        time.sleep(5)
 
 
 # ---------------------------------------------------------------------------
@@ -3586,8 +3230,8 @@ def get_backend() -> Response:
 def set_backend() -> Response:
     """Switch the navigation backend.
 
-    Body: {"backend": "aquaconnect"|"rs485",
-           "aquaconnect_host"?: str, "rs485_host"?: str, "rs485_port"?: int}
+    Body: {"backend": "aquaconnect"|"rs485bridge",
+           "aquaconnect_host"?: str, "rs485bridge_host"?: str}
 
     Persists the choice and exits the process so systemd restarts into the new
     backend. If the requested backend already matches the active one (and hosts
@@ -3595,22 +3239,16 @@ def set_backend() -> Response:
     """
     body = request.get_json(force=True)
     backend = body.get('backend')
-    if backend not in ('aquaconnect', 'rs485', 'rs485bridge'):
-        return jsonify({'error': "backend must be 'aquaconnect', 'rs485', or 'rs485bridge'"}), 400
+    if backend not in ('aquaconnect', 'rs485bridge'):
+        return jsonify({'error': "backend must be 'aquaconnect' or 'rs485bridge'"}), 400
 
     cfg = _load_backend_config()
     cfg['backend'] = backend
-    for k in ('aquaconnect_host', 'rs485_host', 'observe_rs485_host', 'rs485bridge_host'):
+    for k in ('aquaconnect_host', 'rs485bridge_host'):
         if body.get(k):
             cfg[k] = body[k]
-    if body.get('rs485_port'):
-        cfg['rs485_port'] = int(body['rs485_port'])
     if body.get('rs485bridge_port'):
         cfg['rs485bridge_port'] = int(body['rs485bridge_port'])
-    if body.get('observe_rs485_port'):
-        cfg['observe_rs485_port'] = int(body['observe_rs485_port'])
-    if 'observe_rs485' in body:
-        cfg['observe_rs485'] = bool(body['observe_rs485'])
 
     # No-op if nothing actually changes (avoid a needless restart loop).
     if backend == _active_backend and cfg == _load_backend_config():
@@ -3640,12 +3278,10 @@ def toggle_backend() -> Response:
     The whole-sidecar switch is the 'fully silent idle' toggle: only the active
     backend's process paths run, so the other bridge never touches the panel —
     every read/write/benchmark on the new active backend is single-transport.
-    Clears observe_rs485 so the clean (no parallel observer) mode is used.
     """
-    other = 'rs485' if _active_backend == 'aquaconnect' else 'aquaconnect'
+    other = 'rs485bridge' if _active_backend == 'aquaconnect' else 'aquaconnect'
     cfg = _load_backend_config()
     cfg['backend'] = other
-    cfg['observe_rs485'] = False   # single-transport: no parallel observer
     try:
         _save_backend_config(cfg)
     except Exception as e:
@@ -3666,7 +3302,7 @@ def toggle_backend() -> Response:
 # /stream/<name> and /benchmark/<name> forms target a specific backend by name
 # — needed for the parallel RS-485 validation where both buses run at once.
 
-_STREAM_BACKENDS = ('aquaconnect', 'rs485', 'rs485bridge')
+_STREAM_BACKENDS = ('aquaconnect', 'rs485bridge')
 
 
 def _sse_response(hub: FrameHub) -> Response:
@@ -3708,8 +3344,6 @@ def list_backends() -> Response:
         hub = _frame_hubs.get(name)
         if name == _active_backend:
             role = 'active'
-        elif name == 'rs485' and _rs485_observer is not None:
-            role = 'observer'
         else:
             role = 'inactive'
         info = {
@@ -3718,10 +3352,6 @@ def list_backends() -> Response:
             'frames_seen': hub._seq if hub else 0,
             'last_frame_ts': hub.last_publish if hub else None,
         }
-        if name == 'rs485' and (_rs485_observer is not None or _rs485_obs_state):
-            with _rs485_obs_lock:
-                info['connected'] = bool(_rs485_obs_state.get('connected'))
-                info['observed_state'] = dict(_rs485_obs_state)
         out.append(info)
     return jsonify({'active': _active_backend, 'backends': out})
 
@@ -3736,9 +3366,8 @@ def benchmark_named(name: str) -> Response:
     the nav trace. Comparable across backends — for RS-485 the latency is the
     bus round-trip; for AquaConnect it's the HTTP frame-reader confirm time.
 
-    Prefers the ACTIVE backend (single-transport, no cross-bridge contention).
-    Falls back to the observe-only RS-485 listener only if rs485 is requested
-    while AquaConnect is active.
+    Only the ACTIVE backend can be benchmarked (single-transport, no
+    cross-bridge contention).
     """
     if name not in _STREAM_BACKENDS:
         return jsonify({'error': f'unknown backend: {name}'}), 404
@@ -3751,162 +3380,10 @@ def benchmark_named(name: str) -> Response:
     if nav is None:
         return jsonify({'error': err}), code
 
-    result = _run_nav_benchmark(nav, laps, slot, applied, is_rs485=(name == 'rs485'))
+    result = _run_nav_benchmark(nav, laps, slot, applied)
     result['backend'] = name
     result['mode'] = mode   # 'active' (single-transport) or 'observer'
     return jsonify(result)
-
-
-@app.route('/benchmark/rs485/sweep', methods=['POST'])
-def rs485_sweep() -> Response:
-    """Sweep key_predelay_ms values to find the RS-485 panel's accept window.
-
-    Body: {"predelays_ms": [30,50,70,100,150], "laps"?: 2, "slot"?: 1,
-           "key_burst"?: 1, "key_timeout"?: 4.0, "post_menu_settle"?: 0.35}
-
-    Runs a benchmark lap for each predelay in order. Returns each run's drop
-    rate and avg key latency so you can pick the timing that minimises drops.
-    Aborts early if a run produces 0 successful keys (panel stuck).
-    """
-    nav, mode, err, code = _resolve_benchmark_nav('rs485')
-    if nav is None:
-        return jsonify({'error': err}), code
-
-    body = request.get_json(force=True) or {}
-    predelays = body.get('predelays_ms',
-                         [20, 30, 50, 70, 100, 130, 160, 200])
-    laps = max(1, int(body.get('laps', 2)))
-    slot = int(body.get('slot', 1))
-    base = _apply_overrides(_nav_timing_defaults(), body)
-
-    runs = []
-    for pd in predelays:
-        applied = dict(base)
-        applied['key_predelay_ms'] = float(pd)
-        result = _run_nav_benchmark(nav, laps, slot, applied, is_rs485=True)
-        s = result['summary']
-        entry = {
-            'key_predelay_ms': pd,
-            'ok_laps': s['ok_laps'],
-            'laps': s['laps'],
-            'avg_s': s['avg_s'],
-            'drop_rate_pct': s['drop_rate_pct'],
-            'avg_key_latency_ms': s.get('avg_key_latency_ms'),
-            'total_drops': s['total_drops'],
-            'total_presses': s['total_presses'],
-        }
-        runs.append(entry)
-        # If every lap failed with this predelay, the panel may be stuck in a
-        # menu — abort rather than compounding errors.
-        if s['ok_laps'] == 0 and s['laps'] >= 2:
-            log.warning('rs485_sweep: all laps failed at predelay=%sms — aborting', pd)
-            break
-
-    # Rank by drop rate (ascending), then avg_s
-    clean = [r for r in runs if r['ok_laps'] > 0]
-    clean.sort(key=lambda r: (r['drop_rate_pct'] or 999, r['avg_s'] or 999))
-    return jsonify({
-        'runs': runs,
-        'best': clean[0] if clean else None,
-        'mode': mode,   # 'active' (single-transport) or 'observer'
-        'params': {'laps': laps, 'slot': slot},
-    })
-
-
-def _percentile(sorted_vals: list, p: float):
-    """Simple percentile (nearest-rank) of a pre-sorted list.
-    (Named _percentile, not _pct, to avoid confusion with MenuNavigator._pct,
-    the LCD value parser.)"""
-    if not sorted_vals:
-        return None
-    k = max(0, min(len(sorted_vals) - 1, int(round(p / 100.0 * (len(sorted_vals) - 1)))))
-    return sorted_vals[k]
-
-
-@app.route('/debug/rs485/taptest', methods=['POST'])
-def rs485_taptest() -> Response:
-    """Fast keypress-landing probe for tuning the RS-485/WiFi-bridge timing.
-
-    Body: {"presses"?: 20, "timeout"?: 1.5, "predelay_ms"?: <set live first>}
-
-    Enters the Settings menu and fires single, benign RIGHT/LEFT presses (cursor
-    moves only — no equipment changes), measuring for EACH press whether it
-    landed (display changed) and how long it took. Reports landing rate plus the
-    latency distribution (min/p50/p90/max) of landed presses — the long tail is
-    the signature of bridge buffering/jitter. Much faster than the full nav
-    benchmark, so it's the loop to use while changing bridge settings.
-
-    Single presses with NO re-press, so the landing rate is the raw per-window
-    hit probability (unlike the benchmark, whose navigator re-presses drops).
-    """
-    nav, mode, err, code = _resolve_benchmark_nav('rs485')
-    if nav is None:
-        return jsonify({'error': err}), code
-
-    body = request.get_json(silent=True) or {}
-    presses = max(1, int(body.get('presses', 20)))
-    timeout = float(body.get('timeout', 1.5))
-
-    global KEY_PREDELAY_MS
-    saved_predelay = KEY_PREDELAY_MS
-    if body.get('predelay_ms') is not None:
-        KEY_PREDELAY_MS = float(body['predelay_ms'])
-    saved_timeout = MenuNavigator._KEY_TIMEOUT
-    MenuNavigator._KEY_TIMEOUT = timeout
-
-    results = []
-    anchor_error = None
-    try:
-        with _nav_lock:
-            nav._anchor()
-            for i in range(presses):
-                key = 'RIGHT' if i % 2 == 0 else 'LEFT'
-                before = nav.text()
-                t0 = time.time()
-                after = nav._send(key)
-                dt_ms = round((time.time() - t0) * 1000, 1)
-                # A true landing means display changed AND we're still in the
-                # Settings Menu ring (not a panel-auto-exit to status display).
-                # Without this check, panel timeouts that change the LCD text
-                # look like landed presses (false positives at slow timeouts).
-                real_nav = (after != before and nav._in_settings(after))
-                if not real_nav and after != before:
-                    # Panel escaped the menu — re-anchor before continuing.
-                    try:
-                        nav._anchor()
-                    except RuntimeError:
-                        break
-                results.append({'landed': real_nav, 'latency_ms': dt_ms})
-    except RuntimeError as e:
-        anchor_error = str(e)
-    finally:
-        MenuNavigator._KEY_TIMEOUT = saved_timeout
-        KEY_PREDELAY_MS = saved_predelay
-        try:
-            nav.fast_exit()
-        except Exception:
-            pass
-
-    if anchor_error and not results:
-        return jsonify({'error': anchor_error}), 503
-
-    landed = [r for r in results if r['landed']]
-    lat = sorted(r['latency_ms'] for r in landed)
-    return jsonify({
-        'mode': mode,
-        'presses': presses,
-        'landed': len(landed),
-        'landing_rate_pct': round(100 * len(landed) / presses, 1),
-        'predelay_ms': saved_predelay if body.get('predelay_ms') is None
-                       else float(body['predelay_ms']),
-        'latency_ms': {
-            'min': lat[0] if lat else None,
-            'p50': _percentile(lat, 50),
-            'p90': _percentile(lat, 90),
-            'max': lat[-1] if lat else None,
-        },
-        'detail': results,
-    })
 
 
 @app.route('/bridge/health')
@@ -4171,8 +3648,6 @@ def _nav_timing_defaults() -> dict:
         'min_gap': _AC_MIN_GAP_S,                        # AC only
         'post_menu_settle': MenuNavigator._POST_MENU_SETTLE_S,
         'key_timeout': MenuNavigator._KEY_TIMEOUT,
-        'key_predelay_ms': KEY_PREDELAY_MS,              # RS-485 only
-        'key_burst': KEY_BURST,                          # RS-485 only
     }
 
 
@@ -4184,60 +3659,43 @@ def _apply_overrides(base: dict, body: dict) -> dict:
             applied[k] = float(body[k])
     if body.get('min_gap') is not None:
         applied['min_gap'] = float(body['min_gap'])
-    if body.get('key_predelay_ms') is not None:
-        applied['key_predelay_ms'] = float(body['key_predelay_ms'])
-    if body.get('key_burst') is not None:
-        applied['key_burst'] = int(body['key_burst'])
     return applied
 
 
 def _resolve_benchmark_nav(name: str):
     """Pick the navigator to benchmark for `name`.
 
-    Returns (nav, mode, err, http_code). Prefers the ACTIVE backend so the run
-    is single-transport (reads, nav and confirmation all on one bridge — the
-    true 'is this backend viable on its own' test). Only falls back to the
-    observe-only RS-485 listener when rs485 is asked for while AC is active.
+    Returns (nav, mode, err, http_code). Only the ACTIVE backend can be
+    benchmarked so the run is single-transport (reads, nav and confirmation all
+    on one bridge — the true 'is this backend viable on its own' test).
     """
     if name == _active_backend:
         nav = _get_navigator()
         if nav is None:
             return None, None, f'{name} active but navigator unavailable', 503
         return nav, 'active', None, 200
-    if name == 'rs485' and _rs485_observer is not None:
-        return _rs485_observer.nav, 'observer', None, 200
     return None, None, (f'{name} is not the active backend and has no observer; '
                         f'toggle to it first (POST /backend/toggle)'), 503
 
 
-def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict,
-                       is_rs485: bool = False) -> dict:
+def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict) -> dict:
     """Apply `applied` tunables, time read_vsp_slot(slot) over `laps`, restore.
 
     read_vsp_slot is pure navigate-and-read — no panel state changes. Returns a
     dict with per-lap detail and an aggregate summary. Always restores the
     previous tunables, even on error.
-
-    For RS-485 benchmarks (is_rs485=True) the relevant tunables are
-    key_predelay_ms, key_burst, key_timeout, and post_menu_settle.  The AC
-    min_gap is not applicable. The 'requests' metric counts AC HTTP requests
-    that happened alongside (the AC poll loop keeps running), so it's omitted
-    from RS-485 results to avoid confusion.
     """
-    global _AC_MIN_GAP_S, KEY_PREDELAY_MS, KEY_BURST
+    global _AC_MIN_GAP_S
     saved = _nav_timing_defaults()
     laps_out: list = []
     try:
         _AC_MIN_GAP_S = applied['min_gap']
         MenuNavigator._POST_MENU_SETTLE_S = applied['post_menu_settle']
         MenuNavigator._KEY_TIMEOUT = applied['key_timeout']
-        if is_rs485:
-            KEY_PREDELAY_MS = applied['key_predelay_ms']
-            KEY_BURST = applied['key_burst']
 
         for i in range(laps):
             seq0 = _NAV_SEQ[0]
-            req0 = _ac_backend._req_count if (_ac_backend and not is_rs485) else 0
+            req0 = _ac_backend._req_count if _ac_backend else 0
             t0 = time.time()
             ok, err = True, None
             try:
@@ -4254,26 +3712,15 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict,
                 'presses': presses, 'drops': drops,
                 **({'error': err} if err else {}),
             }
-            if not is_rs485:
-                # AC: count HTTP requests (presses + frame-reader reads);
-                # validates the N+1-per-N-keys frame-reader design.
-                lap['requests'] = (_ac_backend._req_count - req0
-                                   if _ac_backend else 0)
-            else:
-                # RS-485: report avg per-key latency from the trace (bus
-                # round-trip from send_key → on_change confirmation).
-                key_latencies = [e['wait_s'] for e in lap_keys if e['changed']]
-                lap['avg_key_latency_ms'] = (
-                    round(sum(key_latencies) / len(key_latencies) * 1000, 1)
-                    if key_latencies else None)
+            # AC: count HTTP requests (presses + frame-reader reads);
+            # validates the N+1-per-N-keys frame-reader design.
+            lap['requests'] = (_ac_backend._req_count - req0
+                               if _ac_backend else 0)
             laps_out.append(lap)
     finally:
         _AC_MIN_GAP_S = saved['min_gap']
         MenuNavigator._POST_MENU_SETTLE_S = saved['post_menu_settle']
         MenuNavigator._KEY_TIMEOUT = saved['key_timeout']
-        if is_rs485:
-            KEY_PREDELAY_MS = saved['key_predelay_ms']
-            KEY_BURST = saved['key_burst']
 
     ok_laps = [l for l in laps_out if l['ok']]
     times = [l['seconds'] for l in ok_laps]
@@ -4290,16 +3737,10 @@ def _run_nav_benchmark(nav, laps: int, slot: int, applied: dict,
             100 * sum(l['drops'] for l in laps_out) / total_presses, 1
         ) if total_presses else None,
     }
-    if not is_rs485:
-        total_requests = sum(l.get('requests', 0) for l in laps_out)
-        summary['total_requests'] = total_requests
-        summary['requests_per_press'] = (
-            round(total_requests / total_presses, 2) if total_presses else None)
-    else:
-        valid_avgs = [l['avg_key_latency_ms'] for l in laps_out
-                      if l.get('avg_key_latency_ms') is not None]
-        summary['avg_key_latency_ms'] = (
-            round(sum(valid_avgs) / len(valid_avgs), 1) if valid_avgs else None)
+    total_requests = sum(l.get('requests', 0) for l in laps_out)
+    summary['total_requests'] = total_requests
+    summary['requests_per_press'] = (
+        round(total_requests / total_presses, 2) if total_presses else None)
     return {'summary': summary, 'laps_detail': laps_out, 'applied': applied}
 
 
@@ -4853,119 +4294,6 @@ def debug_nav_trace_clear() -> Response:
     with _NAV_TRACE_LOCK:
         _NAV_TRACE.clear()
     return jsonify({'ok': True})
-
-
-@app.route('/debug/rawkey', methods=['POST'])
-def debug_rawkey() -> Response:
-    """Send one key under a chosen RS-485 frame type, bypassing send_key.
-
-    Body: {"key": "RIGHT", "frametype": "remote"}
-      frametype: "local"    -> 00 02 LOCAL_WIRED_KEY_EVENT (what send_key uses
-                                for keys <= 0xffff)
-                 "remote"   -> 00 03 REMOTE_WIRED_KEY_EVENT (what a wired remote
-                                like the AquaConnect box emits)
-                 "wireless" -> 00 83 WIRELESS_KEY_EVENT (what send_key uses for
-                                keys > 0xffff, e.g. HEATER_1; 4-byte key layout)
-    Builds the frame exactly like aqualogic._get_key_event_frame but lets us
-    pick the frame type, so we can prove whether menu-scroll keys (or the
-    heater key) need a different event type. Returns the hex frame queued.
-    """
-    p = _get_panel()
-    if p is None:
-        return jsonify({'error': 'Not connected'}), 503
-    body = request.get_json(force=True) or {}
-    name = body.get('key', '')
-    ftype = body.get('frametype', 'remote').lower()
-    if ftype not in ('local', 'remote', 'wireless'):
-        return jsonify({'error': f'frametype must be local|remote|wireless, got {ftype!r}'}), 400
-    try:
-        aq = p._aq
-        Keys = p._Keys
-        k = getattr(Keys, name, None)
-        if k is None:
-            return jsonify({'error': f'Unknown key {name!r}'}), 400
-        frame = bytearray()
-        frame.append(aq.FRAME_DLE)
-        frame.append(aq.FRAME_STX)
-        if ftype == 'wireless':
-            # Wireless layout differs: 01 marker, then the key value as 4 bytes
-            # twice, then a trailing 00 (mirrors _get_key_event_frame's >0xffff
-            # branch). Lets us test HEATER_1 and the like as wireless events.
-            aq._append_data(frame, aq.FRAME_TYPE_WIRELESS_KEY_EVENT)
-            aq._append_data(frame, b'\x01')
-            aq._append_data(frame, int(k.value).to_bytes(4, byteorder='little'))
-            aq._append_data(frame, int(k.value).to_bytes(4, byteorder='little'))
-            aq._append_data(frame, b'\x00')
-        else:
-            type_bytes = aq.FRAME_TYPE_REMOTE_WIRED_KEY_EVENT if ftype == 'remote' \
-                else aq.FRAME_TYPE_LOCAL_WIRED_KEY_EVENT
-            aq._append_data(frame, type_bytes)
-            aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
-            aq._append_data(frame, int(k.value).to_bytes(2, byteorder='little'))
-        crc = sum(frame)
-        aq._append_data(frame, crc.to_bytes(2, byteorder='big'))
-        frame.append(aq.FRAME_DLE)
-        frame.append(aq.FRAME_ETX)
-        import binascii
-        hexf = binascii.hexlify(bytes(frame)).decode()
-        aq._send_queue.put({'frame': frame})
-        log.info('rawkey %s type=%s queued: %s', name, ftype, hexf)
-        return jsonify({'ok': True, 'key': name, 'frametype': ftype, 'frame': hexf})
-    except Exception as e:
-        log.error(f'rawkey: {e}')
-        return jsonify({'error': str(e)}), 500
-
-
-def _current_key_timing() -> dict:
-    return {'burst': KEY_BURST, 'predelay_ms': KEY_PREDELAY_MS,
-            'gap_ms': KEY_GAP_MS, 'max_retries': KEY_MAX_RETRIES,
-            'verify_delay_s': KEY_VERIFY_DELAY_S, 'pad_bytes': KEY_PAD_BYTES}
-
-
-@app.route('/keytiming', methods=['GET', 'POST'])
-@app.route('/debug/keyburst', methods=['GET', 'POST'])
-def debug_keyburst() -> Response:
-    """Live-tune the RS-485 key timing without a restart.
-
-    POST JSON any of: burst (int), predelay_ms (float), gap_ms (float),
-    max_retries (int), verify_delay_s (float), pad_bytes (int). The send path
-    reads these globals on each keypress, so changes take effect immediately.
-
-    Pass "persist": true to save the resulting values to backend.json so they
-    survive sidecar restarts/reboots — useful when dialing in timing over many
-    debug runs. The persisted values override the CLI --key-* args at startup.
-    """
-    global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES
-    persisted = False
-    if request.method == 'POST':
-        body = request.get_json(force=True) or {}
-        if 'burst' in body:
-            KEY_BURST = max(1, int(body['burst']))
-        if 'predelay_ms' in body:
-            KEY_PREDELAY_MS = float(body['predelay_ms'])
-        if 'gap_ms' in body:
-            KEY_GAP_MS = float(body['gap_ms'])
-        if 'max_retries' in body:
-            KEY_MAX_RETRIES = max(1, int(body['max_retries']))
-        if 'verify_delay_s' in body:
-            KEY_VERIFY_DELAY_S = float(body['verify_delay_s'])
-        if 'pad_bytes' in body:
-            KEY_PAD_BYTES = max(0, int(body['pad_bytes']))
-        log.info('Key timing retuned: burst=%d predelay=%.0fms gap=%.0fms '
-                 'retries=%d verify=%.1fs pad=%d', KEY_BURST, KEY_PREDELAY_MS,
-                 KEY_GAP_MS, KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES)
-        if body.get('persist'):
-            try:
-                cfg = _load_backend_config()
-                cfg['key_timing'] = _current_key_timing()
-                _save_backend_config(cfg)
-                persisted = True
-                log.info('Key timing persisted to backend.json')
-            except Exception as e:
-                log.error('Could not persist key timing: %s', e)
-    out = _current_key_timing()
-    out['persisted'] = persisted
-    return jsonify(out)
 
 
 @app.route('/debug/scroll-sweep', methods=['POST'])
@@ -6202,10 +5530,7 @@ def setpoint_backfill_thread() -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    global KEY_BURST, KEY_PREDELAY_MS, KEY_GAP_MS
     parser = argparse.ArgumentParser(description='AquaPlus/ProLogic RS-485 sidecar')
-    parser.add_argument('--host', help='WiFi serial bridge IP (required unless --simulate)')
-    parser.add_argument('--port', type=int, default=8899)
     parser.add_argument('--api-port', type=int, default=5757)
     parser.add_argument('--api-host', default='127.0.0.1')
     parser.add_argument('--simulate', action='store_true',
@@ -6213,19 +5538,9 @@ def main() -> None:
     parser.add_argument('--heater-refresh', type=float, default=0.0,
                         help='Seconds between background heater-state reads '
                              '(menu navigation). 0 disables (default).')
-    parser.add_argument('--key-burst', type=int, default=KEY_BURST,
-                        help='Times to write each key frame per send. 1 = single '
-                             'shot (correct for the W610; >1 is harmful — it '
-                             'merges rapid writes). Default 1.')
-    parser.add_argument('--key-predelay-ms', type=float, default=KEY_PREDELAY_MS,
-                        help='Delay after keep-alive before writing the frame '
-                             '(ms). Targets the panel accept window. Default 70.')
-    parser.add_argument('--key-gap-ms', type=float, default=KEY_GAP_MS,
-                        help='Gap between writes when --key-burst > 1 (ms, '
-                             'diagnostics only). Default 10.')
-    parser.add_argument('--backend', choices=['rs485', 'aquaconnect', 'rs485bridge'],
-                        default='rs485',
-                        help='Navigation backend: rs485 (default), aquaconnect (HTTP), '
+    parser.add_argument('--backend', choices=['aquaconnect', 'rs485bridge'],
+                        default='aquaconnect',
+                        help='Navigation backend: aquaconnect (HTTP, default), '
                              'or rs485bridge (pad-Pi smart bridge over HTTP/Tailscale).')
     parser.add_argument('--aquaconnect-host', default='192.168.50.100',
                         help='AquaConnect box IP for --backend aquaconnect. Default 192.168.50.100.')
@@ -6237,16 +5552,6 @@ def main() -> None:
     parser.add_argument('--rs485bridge-token', default=os.environ.get('RS485_BRIDGE_TOKEN'),
                         help='Bearer token if the bridge requires auth (default: '
                              'RS485_BRIDGE_TOKEN env var).')
-    parser.add_argument('--observe-rs485', action='store_true',
-                        help='In aquaconnect mode, also run an observe-only RS-485 '
-                             'listener in parallel (streams to /stream/rs485, '
-                             'benchmarkable via /benchmark/rs485). Sends no keys '
-                             'except during a benchmark.')
-    parser.add_argument('--observe-rs485-host', default=None,
-                        help='RS-485 bridge host for the parallel observer '
-                             '(default: --host).')
-    parser.add_argument('--observe-rs485-port', type=int, default=8899,
-                        help='RS-485 bridge port for the parallel observer. Default 8899.')
     args = parser.parse_args()
 
     # Persisted backend selection (written by POST /backend) overrides CLI args,
@@ -6255,36 +5560,11 @@ def main() -> None:
     cfg = _load_backend_config()
     backend = cfg.get('backend', args.backend)
     aquaconnect_host = cfg.get('aquaconnect_host', args.aquaconnect_host)
-    rs485_host = cfg.get('rs485_host', args.host)
-    rs485_port = cfg.get('rs485_port', args.port)
     rs485bridge_host = cfg.get('rs485bridge_host', args.rs485bridge_host)
     rs485bridge_port = cfg.get('rs485bridge_port', args.rs485bridge_port)
     # Token is a secret — accept it from the env/CLI only, never persisted to
     # backend.json (which the plugin reads/writes).
     rs485bridge_token = args.rs485bridge_token
-    # The CLI flag force-enables the observer even if backend.json persisted
-    # observe_rs485=false (e.g. from a prior /backend/toggle single-transport
-    # run). Persisted true also enables it. Otherwise off.
-    observe_rs485 = bool(args.observe_rs485 or cfg.get('observe_rs485', False))
-    observe_rs485_host = (cfg.get('observe_rs485_host')
-                          or args.observe_rs485_host or rs485_host or args.host)
-    observe_rs485_port = cfg.get('observe_rs485_port', args.observe_rs485_port)
-
-    global KEY_MAX_RETRIES, KEY_VERIFY_DELAY_S, KEY_PAD_BYTES
-    KEY_BURST = args.key_burst
-    KEY_PREDELAY_MS = args.key_predelay_ms
-    KEY_GAP_MS = args.key_gap_ms
-    # Persisted key timing (POST /keytiming {persist:true}) overrides the CLI
-    # --key-* args, so a value dialed in over many debug runs survives restarts.
-    kt = cfg.get('key_timing') or {}
-    if 'burst' in kt:         KEY_BURST = max(1, int(kt['burst']))
-    if 'predelay_ms' in kt:   KEY_PREDELAY_MS = float(kt['predelay_ms'])
-    if 'gap_ms' in kt:        KEY_GAP_MS = float(kt['gap_ms'])
-    if 'max_retries' in kt:   KEY_MAX_RETRIES = max(1, int(kt['max_retries']))
-    if 'verify_delay_s' in kt: KEY_VERIFY_DELAY_S = float(kt['verify_delay_s'])
-    if 'pad_bytes' in kt:     KEY_PAD_BYTES = max(0, int(kt['pad_bytes']))
-    if kt:
-        log.info('Loaded persisted key timing: %s', kt)
 
     # Proactive wedge-probe interval (seconds; 0 = reactive-only). Persisted
     # value overrides the default.
@@ -6359,24 +5639,22 @@ def main() -> None:
     # Fault-discovery candidates persist across restarts so the backlog accrues.
     _load_fault_candidates()
 
+    # --simulate wins over any backend (the default backend is a real one now).
+    if args.simulate:
+        threading.Thread(target=simulate_thread, daemon=True, name='simulate').start()
+        if args.heater_refresh > 0:
+            threading.Thread(target=refresher_thread, args=(args.heater_refresh,),
+                             daemon=True, name='refresher').start()
+        log.info('REST API listening on %s:%s (simulation)',
+                 args.api_host, args.api_port)
+        app.run(host=args.api_host, port=args.api_port, threaded=True)
+        return
+
     if backend == 'aquaconnect':
         _ac_backend = AquaConnectBackend(host=aquaconnect_host)
         log.info('AquaConnect backend: http://%s/WNewSt.htm', aquaconnect_host)
         threading.Thread(target=_canary_probe_loop, daemon=True,
                          name='ac-canary').start()
-        # Optional parallel RS-485 observer (observe-only; never touches the
-        # global state or sends keys outside a benchmark).
-        if observe_rs485:
-            if observe_rs485_host:
-                threading.Thread(
-                    target=rs485_observer_thread,
-                    args=(observe_rs485_host, observe_rs485_port),
-                    daemon=True, name='rs485-observer').start()
-                log.info('RS-485 observer (observe-only) -> %s:%s',
-                         observe_rs485_host, observe_rs485_port)
-            else:
-                log.warning('--observe-rs485 set but no RS-485 host given; '
-                            'observer not started')
         # Read all menu-navigable values once on startup (every sidecar
         # restart), so heater setpoints / chlorinator % / VSP speeds populate
         # without waiting for a Homebridge restart.
@@ -6408,29 +5686,8 @@ def main() -> None:
         app.run(host=args.api_host, port=args.api_port, threaded=True)
         return
 
-    if args.simulate:
-        t = threading.Thread(target=simulate_thread, daemon=True, name='simulate')
-    else:
-        if not rs485_host:
-            parser.error('--host is required unless --simulate is given or --backend aquaconnect')
-        t = threading.Thread(target=panel_thread, args=(rs485_host, rs485_port), daemon=True, name='aqualogic')
-    t.start()
-
-    if args.heater_refresh > 0:
-        threading.Thread(target=refresher_thread, args=(args.heater_refresh,),
-                         daemon=True, name='refresher').start()
-
-    # One-shot startup pre-fetch + heater setpoint backfill (skip in simulation
-    # — SimPanel has no _aq for the navigator key-sends).
-    if not args.simulate:
-        threading.Thread(target=startup_prefetch_thread, daemon=True,
-                         name='startup-prefetch').start()
-        threading.Thread(target=setpoint_backfill_thread, daemon=True,
-                         name='setpoint-backfill').start()
-
-    log.info('REST API listening on %s:%s (key-burst=%d)',
-             args.api_host, args.api_port, KEY_BURST)
-    app.run(host=args.api_host, port=args.api_port, threaded=True)
+    parser.error('no backend selected: use --backend aquaconnect|rs485bridge '
+                 'or --simulate')
 
 
 if __name__ == '__main__':
