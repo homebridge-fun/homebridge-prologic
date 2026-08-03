@@ -1,20 +1,59 @@
 # homebridge-prologic
 
-Homebridge platform plugin for **Hayward ProLogic / AquaPlus** pool controllers via direct RS-485 serial communication through a WiFi serial bridge (USR-W610, Waveshare UART-WIFI232-B2, or similar).
+Homebridge platform plugin (plus a Python sidecar and a web cockpit) for
+**Hayward ProLogic / AquaLogic / AquaPlus** pool controllers. It goes well beyond
+the simple on/off switches earlier plugins offered — it drives the panel's deeper
+settings: adjustable **heat setpoints**, named **light scene / color-program
+selection**, **chlorinator output %**, **variable-speed pump** presets, and full
+circuit control, in both HomeKit and a browser cockpit.
 
-This plugin **replaces** the AquaConnect (ACHN) local HTTP interface, which Hayward has permanently disabled for control commands. It communicates directly with the RS-485 bus on the pool controller PCB.
+## Two connection modes
+
+The sidecar can reach the panel through **either** backend — you choose one in
+config:
+
+- **AquaConnect (ACHN) local HTTP** — the AquaConnect box's local network
+  interface. Fully functional today.
+- **Direct RS-485** — talks straight to the RS-485 bus on the controller PCB via
+  a WiFi serial bridge (USR-W610, Waveshare UART-WIFI232-B2) or a small Raspberry
+  Pi "pad bridge" on the wire.
+
+The direct RS-485 path is a deliberate **hedge**: Hayward has a pending change
+that could remove AquaConnect's local access, and the RS-485 backend keeps
+everything working if that lands (it also supports panels with no AquaConnect box
+at all). Both backends expose the same features through the same REST API.
+
+## What it controls
+
+Earlier Hayward/AquaLogic plugins mostly surfaced a handful of on/off circuits.
+This one exposes the settings you'd normally have to walk the panel's menus for:
+
+- **Heat** — per-body **setpoints you can change**, armed/enabled state, and live
+  Running/Idle heating status.
+- **Lights** — **named scene / color-program selection** for Hayward ColorLogic
+  (pool) and Pentair IntelliBrite (spa) lights, plus on/off, exposed as a HomeKit
+  Television tile and a cockpit picker.
+- **Chlorinator** — salt-cell output percentage per body, plus super-chlorinate.
+- **Pump** — variable-speed presets (VSP slots) and live speed.
+- **Circuits** — filter, spa mode, aux, spillover, heater enable, and more.
+- Temperature/salt sensors, plus a **web cockpit** with live control and a
+  temperature-history chart.
 
 ## Architecture
 
 ```
-[AquaPlus panel] ←RS-485→ [WiFi serial bridge] ←WiFi/TCP→ [Pi 4: Python sidecar]
-                                                                   ↕ localhost:5757
-                                                       [Pi 4: Homebridge + this plugin]
-                                                                   ↕ HAP
-                                                              [HomeKit / iPhone]
+                    ┌── AquaConnect box (local HTTP) ──┐
+[AquaLogic panel] ──┤                                  ├── [Python sidecar] ── localhost:5757
+                    └── RS-485 bus → WiFi/pad bridge ──┘        ↕
+                                                        [Homebridge + this plugin] ↔ HAP ↔ [HomeKit]
+                                                        [web cockpit]
 ```
 
-The **Python sidecar** (`sidecar/pool_service.py`) uses the [`aqualogic`](https://github.com/swilson/aqualogic) library to maintain a persistent TCP connection to the serial bridge and exposes pool state + control via a local REST API. The Homebridge plugin polls this API every 5 seconds.
+The **Python sidecar** (`sidecar/pool_service.py`) maintains the connection to the
+chosen backend (using the [`aqualogic`](https://github.com/swilson/aqualogic)
+library for RS-485) and exposes pool state + control via a local REST API. The
+Homebridge plugin polls this API every 5 seconds; the web cockpit talks to it
+directly.
 
 ## Hardware Setup
 
