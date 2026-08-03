@@ -250,8 +250,24 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2 class="hrow">Spa Light <span class="scene-now" id="spa_scene_now"></span>
+      <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
+    <div class="row"><span class="label">Power</span><span class="pill ctl" id="spa_light_pill">—</span></div>
+    <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
+    <div class="scene-msg" id="spa_scene_msg"></div>
+  </div>
+
+  <div class="card">
+    <h2 class="hrow">Pool Light <span class="scene-now" id="scene_now"></span>
+      <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
+    <div class="row"><span class="label">Power</span><span class="pill ctl" id="pool_light_pill">—</span></div>
+    <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
+    <div class="scene-msg" id="scene_msg"></div>
+  </div>
+
   <div class="card" id="switches_card" style="display:none">
-    <h2>Lights</h2>
+    <h2>Other</h2>
     <div class="swlist" id="switches"></div>
   </div>
 
@@ -341,19 +357,6 @@
     .lm-hint { font-size: 13px; color: var(--dim); margin-top: 10px; }
     #lm_resyncrow { margin: 6px 0 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
   </style>
-  <div class="card">
-    <h2 class="hrow">Spa Light <span class="scene-now" id="spa_scene_now"></span>
-      <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
-    <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
-    <div class="scene-msg" id="spa_scene_msg"></div>
-  </div>
-
-  <div class="card">
-    <h2 class="hrow">Pool Light <span class="scene-now" id="scene_now"></span>
-      <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
-    <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
-    <div class="scene-msg" id="scene_msg"></div>
-  </div>
 </main>
 
 <div id="light_modal">
@@ -490,7 +493,9 @@
   }
   // Extra controllable circuits shown as toggles when the panel reports them.
   // FILTER lives in Pump Speed, POOL/SPA in Mode, HEATER_1 in Conditions.
-  const SWITCHES = [['LIGHTS', 'Lights'], ['AUX_1', 'Aux 1'], ['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover']];
+  // LIGHTS (pool) and AUX_1 (spa) have dedicated light cards with power + scenes;
+  // the generic "Other" card only carries the remaining aux circuits.
+  const SWITCHES = [['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover']];
   function stageCircuit(name) {
     if (busy) return;
     const real = !!(last.circuits && last.circuits[name]);
@@ -904,6 +909,19 @@
       sw.appendChild(row);
     });
     $('switches_card').style.display = sw.children.length ? '' : 'none';
+
+    // Light card power pills (LIGHTS=pool, AUX_1=spa) — same staged circuit
+    // toggle as the generic switches, but rendered into the dedicated cards.
+    [['LIGHTS', 'pool_light_pill'], ['AUX_1', 'spa_light_pill']].forEach(([name, pid]) => {
+      const pill = $(pid);
+      if (!pill) return;
+      const key = 'ckt:' + name;
+      const real = !!(s.circuits && s.circuits[name]);
+      const eff = (key in staged) ? staged[key] : real;
+      pill.className = 'pill ctl' + (eff ? ' on' : ' off') + ((key in staged) ? ' staged' : '');
+      pill.textContent = eff ? 'On' : 'Off';
+      pill.onclick = () => { setEditing(null); stageCircuit(name); };
+    });
 
     // System faults (top of app)
     const fx = $('faults');
