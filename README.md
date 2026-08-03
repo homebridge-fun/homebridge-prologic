@@ -174,6 +174,19 @@ backend — this is a setup requirement, not just an internal detail:**
   fix for repeated offline blips is physical (improve the pad's Wi-Fi signal),
   not a recovery automation. See `deploy/README-PAD.md`.
 
+## Acknowledgments
+
+- **[cupshir](https://github.com/cupshir)** — whose AquaConnect Homebridge plugin
+  I ran before building this one. It's the prior art and inspiration for the
+  AquaConnect approach here; this project grew out of wanting deeper control and a
+  fallback path.
+- **[`swilson/aqualogic`](https://github.com/swilson/aqualogic)** — the Python
+  RS-485 protocol library that decodes the AquaLogic bus. It runs on the Pi pad
+  bridge and is what makes the direct-RS-485 backend possible.
+- **[`SteveTheGeekHA/AquaConnectDeviceHandler`](https://github.com/SteveTheGeekHA/AquaConnectDeviceHandler)**
+  — reference implementation used to verify the AquaConnect web key codes and
+  protocol for the AquaConnect backend.
+
 ## References
 
 - [`aqualogic` library](https://github.com/swilson/aqualogic)
