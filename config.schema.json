@@ -2,7 +2,7 @@
   "pluginAlias": "ProLogic",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaPlus pool controllers. Talks to the panel through the Python sidecar service (AquaConnect HTTP box by default, or an RS-485 serial bridge). See sidecar/install.sh.",
+  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaLogic/AquaPlus pool controllers. Talks to the panel through the Python sidecar service — either the AquaConnect HTTP box or a Raspberry Pi RS-485 pad bridge. See the README for setup.",
   "footerDisplay": "See the [README](https://github.com/homebridge-fun/homebridge-prologic) for wiring and setup instructions.",
   "schema": {
     "type": "object",

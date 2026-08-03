@@ -15,8 +15,8 @@ config:
 - **AquaConnect (ACHN) local HTTP** — the AquaConnect box's local network
   interface. Fully functional today.
 - **Direct RS-485** — talks straight to the RS-485 bus on the controller PCB via
-  a WiFi serial bridge (USR-W610, Waveshare UART-WIFI232-B2) or a small Raspberry
-  Pi "pad bridge" on the wire.
+  a small Raspberry Pi **"pad bridge"** (a Pi Zero at the equipment pad running
+  `sidecar/rs485_bridge.py` over a USB-RS485 adapter), reached over Tailscale.
 
 The direct RS-485 path is a deliberate **hedge**: Hayward has a pending change
 that could remove AquaConnect's local access, and the RS-485 backend keeps
@@ -42,56 +42,45 @@ This one exposes the settings you'd normally have to walk the panel's menus for:
 ## Architecture
 
 ```
-                    ┌── AquaConnect box (local HTTP) ──┐
-[AquaLogic panel] ──┤                                  ├── [Python sidecar] ── localhost:5757
-                    └── RS-485 bus → WiFi/pad bridge ──┘        ↕
-                                                        [Homebridge + this plugin] ↔ HAP ↔ [HomeKit]
-                                                        [web cockpit]
+                    ┌── AquaConnect box (local HTTP) ─────────────┐
+[AquaLogic panel] ──┤                                             ├── [Python sidecar] ── localhost:5757
+                    └── RS-485 bus → Pi pad bridge (Tailscale) ──┘        ↕
+                                                          [Homebridge + this plugin] ↔ HAP ↔ [HomeKit]
+                                                          [web cockpit]
 ```
 
 The **Python sidecar** (`sidecar/pool_service.py`) maintains the connection to the
-chosen backend (using the [`aqualogic`](https://github.com/swilson/aqualogic)
-library for RS-485) and exposes pool state + control via a local REST API. The
-Homebridge plugin polls this API every 5 seconds; the web cockpit talks to it
-directly.
+chosen backend (via HTTP to the AquaConnect box, or to the Pi pad bridge which
+uses the [`aqualogic`](https://github.com/swilson/aqualogic) library on the wire)
+and exposes pool state + control via a local REST API. The Homebridge plugin
+polls this API every 5 seconds; the web cockpit talks to it directly.
 
 ## Hardware Setup
 
-### RS-485 wiring to AquaPlus PCB
+### RS-485 backend — Raspberry Pi pad bridge
 
-Connect to **J2** or **J4** on the main board:
+The direct-RS-485 backend runs a small **Pi Zero at the equipment pad** with a
+USB-RS485 adapter on the controller bus, running `sidecar/rs485_bridge.py` as a
+systemd service (`pool-bridge`) and reachable over Tailscale. Full build and
+re-image runbook: [`deploy/README-PAD.md`](deploy/README-PAD.md); provisioning
+script: [`deploy/install-pad.sh`](deploy/install-pad.sh).
 
-| Bridge terminal | PCB pin | Wire |
-|---|---|---|
-| A+ | Pin 2 (DATA+) | Black |
-| B- | Pin 3 (DATA-) | Yellow |
-| GND | Pin 4 (GND) | Green |
+> Earlier prototypes used a WiFi/ethernet serial bridge (transparent TCP↔serial)
+> instead of the Pi. That approach **did not work** — the panel only accepts a
+> keypress in a narrow window after each keep-alive, which a transparent bridge
+> can't hit reliably, so reads worked but writes were dropped. The Pi pad bridge
+> replaced it and is the only supported RS-485 path.
 
-### WiFi serial bridge configuration
-
-| Setting | Value |
-|---|---|
-| Mode | STA (station — joins your WiFi) |
-| Protocol | TCP Server |
-| Local port | 8899 |
-| Baud | 19200 |
-| Data bits | 8 |
-| Parity | None |
-| Stop bits | 2 |
-| Transparent mode | Enabled |
+RS-485 wiring to the AquaPlus PCB (adapter to **J2**/**J4** on the main board):
+A+ → Pin 2 (DATA+), B− → Pin 3 (DATA−), GND → Pin 4 (GND).
 
 ## Installation
 
-### 1. Install the Python sidecar
+### 1. Install the Python sidecar (on the Homebridge host)
 
-```bash
-cd /path/to/homebridge-prologic/sidecar
-sudo bash install.sh --bridge-host 192.168.50.XXX
-```
-
-Replace `192.168.50.XXX` with the IP address your serial bridge received from DHCP. The script installs `aqualogic` + `flask`, copies the service file, and registers a systemd unit that starts on boot.
-
-Verify it's running:
+Install the sidecar service, then point it at your backend (AquaConnect box IP,
+or the pad bridge host). See `sidecar/` for the service unit and config. Verify
+it's running:
 
 ```bash
 sudo systemctl status pool-sidecar
