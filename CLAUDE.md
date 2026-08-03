@@ -10,6 +10,9 @@
   that machine has pulled the code — include the `git pull` step if needed.
 - When giving terminal commands, always provide **complete, runnable blocks**
   that can be copy-pasted in one go — not many small one-line snippets.
+- **Put all code/commands in fenced code blocks, never inline.** Even a single
+  command goes in a ```block``` (so it's copy-pasteable and unambiguous), not in
+  backticks mid-sentence.
 - The Homebridge UI terminal runs *inside* the Homebridge process, so
   `sudo systemctl restart homebridge` kills that session. That's fine as the
   **last command** in a block — put the restart at the end and it still
