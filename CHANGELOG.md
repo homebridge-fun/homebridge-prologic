@@ -3,6 +3,20 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.0 — Host sidecar installer; docs/spec sync for publishing
+
+- **New host sidecar installer** (`sidecar/install.sh`) for a clean fresh setup:
+  `--backend aquaconnect --aquaconnect-host <ip>` or `--backend rs485bridge
+  --rs485bridge-host <pad-ip>` (optional `--rs485bridge-token`). Creates the venv,
+  installs Flask, copies `pool_service.py` + the web cockpit, and registers the
+  `pool-sidecar` systemd unit with a backend-correct `ExecStart`. `--dry-run`
+  previews the unit. Replaces the removed legacy USR-W610 installer.
+- **`requirements.txt` trimmed to Flask** — the host no longer needs `aqualogic`
+  (RS-485 decode lives on the pad bridge since 0.7.2).
+- **Docs/spec sync** — README quickstart shows the real install commands for both
+  backends; spec file-tree and the rs485bridge backend status updated to reflect
+  production reality.
+
 ## 0.7.3 — Backend-aware bridge health; spec sync
 
 - **Bridge-health tile is backend-aware.** On the RS-485 pad bridge a "wedge" is
