@@ -821,6 +821,28 @@ def _light_cfg(body: str) -> dict:
     """Power-cycle calibration for a body (pool vs spa)."""
     return LIGHT_CFG_BY_BODY.get(body, LIGHT_CFG_BY_BODY['pool'])
 
+
+def _persist_light_program() -> None:
+    """Persist the per-body tracked light program to backend.json so the scene
+    position survives a sidecar restart — lights are changed rarely, so a stale
+    in-memory position (lost on restart) forced a needless re-anchor. Best-effort."""
+    try:
+        with state_lock:
+            lp = {b: int(n) for b, n in state.light_program.items()}
+        bconf = _load_backend_config()
+        bconf['light_program'] = lp
+        _save_backend_config(bconf)
+    except Exception as e:   # noqa: BLE001
+        log.warning('persist light_program: %s', e)
+
+
+def _track_light_program(body: str, n: int) -> None:
+    """Set the tracked program for a body and persist it. Call OUTSIDE state_lock
+    (it re-acquires the lock and _persist reads it)."""
+    with state_lock:
+        state.light_program[body] = int(n)
+    _persist_light_program()
+
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
     'SPILLOVER', 'AUX_1', 'AUX_2', 'HEATER_1', 'SUPER_CHLORINATE',
@@ -5479,8 +5501,7 @@ def lights_select(body: str) -> Response:
                 res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
             if res is None:
                 return jsonify({'error': 'bridge /cycle failed'}), 502
-            with state_lock:
-                state.light_program[body] = n
+            _track_light_program(body, n)
             return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
                             'steps': steps, 'from': current, 'bridge': res})
 
@@ -5500,8 +5521,7 @@ def lights_select(body: str) -> Response:
                 res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
                 if res is None:
                     return jsonify({'error': 'bridge /cycle failed'}), 502
-        with state_lock:
-            state.light_program[body] = n
+        _track_light_program(body, n)
         return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
                         'steps': steps, 'anchored_to': 1, 'bridge': res})
 
@@ -5515,8 +5535,7 @@ def lights_select(body: str) -> Response:
     if res is None:
         return jsonify({'error': 'bridge /program failed'}), 502
     # Track last-selected scene per body (best-effort, open-loop).
-    with state_lock:
-        state.light_program[body] = n
+    _track_light_program(body, n)
     corrected = _ensure_light_on_after_program(circuit, body)
     return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
                     'daemon_count': count, 're_asserted_on': corrected, 'bridge': res})
@@ -5572,10 +5591,12 @@ def lights_step(body: str) -> Response:
     # Advance the tracked position too, if we had one.
     with state_lock:
         cur = state.light_program.get(body)
+        newpos = None
         if cur is not None:
             nprog = len(_light_programs(body))
-            state.light_program[body] = ((cur - 1 + steps) % nprog) + 1
-        newpos = state.light_program.get(body)
+            newpos = ((cur - 1 + steps) % nprog) + 1
+    if newpos is not None:
+        _track_light_program(body, newpos)
     return jsonify({'ok': True, 'body': body, 'steps': steps, 'current_program': newpos})
 
 
@@ -5669,8 +5690,7 @@ def lights_sync(body: str) -> Response:
         return jsonify({'error': f'program must be 1..{nprog}'}), 400
     if not (1 <= n <= nprog):
         return jsonify({'error': f'program must be 1..{nprog}'}), 400
-    with state_lock:
-        state.light_program[body] = n
+    _track_light_program(body, n)
     log.info('Light %s position synced to program %d (no move)', body, n)
     return jsonify({'ok': True, 'body': body, 'program': n, 'synced': True})
 
@@ -5709,8 +5729,7 @@ def lights_resync(body: str) -> Response:
         time.sleep(POOL_RESYNC_OFF_S)  # 11-14s -> re-sync to program 1
         _set(True)                     # back ON -> program 1 (Voodoo Lounge)
         time.sleep(1.0)
-    with state_lock:
-        state.light_program[body] = 1
+    _track_light_program(body, 1)
     name = _light_programs(body)[0][0]
     log.info('Light %s re-synced to program 1 (%s)', body, name)
     return jsonify({'ok': True, 'body': body, 'program': 1, 'name': name})
@@ -6279,6 +6298,18 @@ def main() -> None:
                     if k in lc:
                         LIGHT_CFG_BY_BODY[b][k] = lc[k]
         log.info('Loaded persisted light calibration: %s', LIGHT_CFG_BY_BODY)
+
+    # Persisted light program position (per body) — restores the tracked scene
+    # so a restart doesn't force a re-anchor on the next selection.
+    lp = cfg.get('light_program')
+    if isinstance(lp, dict):
+        with state_lock:
+            for b, n in lp.items():
+                try:
+                    state.light_program[b] = int(n)
+                except (TypeError, ValueError):
+                    pass
+        log.info('Loaded persisted light program: %s', dict(state.light_program))
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend
