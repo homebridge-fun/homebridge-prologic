@@ -3,6 +3,17 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.7.3 — Backend-aware bridge health; spec sync
+
+- **Bridge-health tile is backend-aware.** On the RS-485 pad bridge a "wedge" is
+  just transient unreachability that self-heals, so the tile now reads **"Bridge
+  Offline"** (Model "RS-485 pad bridge") with "pad unreachable — self-heals on
+  reconnect (check pad Wi-Fi)" messaging, instead of AquaConnect's "Bridge Needs
+  Rebooting / power-cycle the box".
+- **Specs synced** with the 0.7.2 backend removal — `plugin-spec.md` and
+  `aqualogic-automation-spec.md` now describe only `aquaconnect` (default) and
+  `rs485bridge`, with the legacy `rs485` API surface removed from the docs.
+
 ## 0.7.2 — Remove the dead legacy RS-485 backend; docs accuracy
 
 **Cleanup**

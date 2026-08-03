@@ -435,16 +435,20 @@ The AquaConnect bridge's network address must be a **user setting**, not hardcod
 ## 15. AquaConnect HTTP backend (dual-backend architecture) `[VERIFIED-REF]`
 
 The navigator runs over **either** of two interchangeable backends, selectable
-at runtime (`--backend rs485|aquaconnect`). Both feed the **same**
-`MenuNavigator` and `LcdCapture`, so all menu logic (§3–§13) is shared; only the
-transport differs.
+at runtime (`--backend aquaconnect|rs485bridge`, default `aquaconnect`). Both
+feed the **same** `MenuNavigator` and `LcdCapture`, so all menu logic (§3–§13) is
+shared; only the transport differs.
 
-- **`rs485bridge`** (default) — direct-serial pad daemon driven over HTTP/Tailscale
-  (§0, §11, §16). Fast; the production primary path.
+- **`rs485bridge`** — direct-serial pad daemon (Pi Zero at the pad) driven over
+  HTTP/Tailscale (§0, §11, §16). The production primary path.
 - **`aquaconnect`** — HTTP to the AquaConnect web box. No RS-485 wiring needed;
   useful as a fallback and for A/B testing navigation logic.
-- **`rs485`** — legacy raw RS-485 frames over a TCP serial bridge (§0). Reads work
-  but writes are unreliable; **deprecated**, superseded by `rs485bridge`.
+
+> A former legacy `rs485` backend (raw frames over a WiFi/ethernet transparent
+> TCP serial bridge) was **removed in 0.7.2** — writes were unreliable because a
+> transparent bridge can't hit the panel's post-keep-alive accept window. The Pi
+> pad bridge (which owns the timing on the wire) replaced it. See §0 for the
+> write-window background that motivated moving the RS-485 work onto the pad.
 
 `[VERIFIED-REF]` below = matches the working `SteveTheGeekHA/AquaConnectDeviceHandler`
 reference implementation; confirm once against the live box with `GET

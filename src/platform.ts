@@ -193,11 +193,14 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       this.saltSensor = new SaltSensorAccessory(this, acc);
     }
 
-    // Switch: open when AC box command path is wedged
+    // Switch: bridge command-path health. Backend-dependent meaning — an
+    // AquaConnect wedge needs a physical power-cycle; the RS-485 pad bridge just
+    // goes briefly offline and self-heals when it reconnects.
     {
-      const acc = register('Bridge Needs Rebooting',
+      const rs485 = this.cfg.backend === 'rs485bridge';
+      const acc = register(rs485 ? 'Bridge Offline' : 'Bridge Needs Rebooting',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-bridge-health`));
-      this.bridgeHealth = new BridgeHealthAccessory(this, acc);
+      this.bridgeHealth = new BridgeHealthAccessory(this, acc, this.cfg.backend);
     }
 
     // Catch-all: strip any legacy ContactSensor service (the old wedge-sensor
