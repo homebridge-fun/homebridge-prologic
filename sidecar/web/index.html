@@ -582,12 +582,15 @@
     if ('spaSpeed' in staged) items.push([`Set Spa Speed to ${staged.spaSpeed}%`, '/vsp/spa', { speed_pct: staged.spaSpeed }]);
     if ('spaLight' in staged) items.push(['Spa light → ' + staged.spaLight.name, '/lights/spa/program', { program: staged.spaLight.n }]);
     if ('poolLight' in staged) items.push(['Pool light → ' + staged.poolLight.name, '/lights/pool/program', { program: staged.poolLight.n }]);
-    for (const [name, dflt] of SWITCHES) {
-      const key = 'ckt:' + name;
-      if (key in staged) {
-        const label = (last.circuit_labels && last.circuit_labels[name]) || dflt;
-        items.push([(staged[key] ? 'Turn on ' : 'Turn off ') + label, '/circuit/' + name, { on: staged[key] }]);
-      }
+    // Any staged circuit toggle (light power pills stage ckt:LIGHTS / ckt:AUX_1;
+    // the Other card stages ckt:AUX_2 / ckt:SPILLOVER) — handle them generically
+    // so none are dropped now that the light circuits aren't in SWITCHES.
+    const CKT_LABEL = { LIGHTS: 'Pool light', AUX_1: 'Spa light', AUX_2: 'Aux 2', SPILLOVER: 'Spillover' };
+    for (const k in staged) {
+      if (!k.startsWith('ckt:')) continue;
+      const name = k.slice(4);
+      const label = (last.circuit_labels && last.circuit_labels[name]) || CKT_LABEL[name] || name;
+      items.push([(staged[k] ? 'Turn on ' : 'Turn off ') + label, '/circuit/' + name, { on: staged[k] }]);
     }
     for (const k in staged) delete staged[k];
     selectedSlot = null;
@@ -1153,12 +1156,17 @@
     const setMsg = m => { const e = el(ids.msg); if (e) e.textContent = m; };
     const card = { body, ids, cal: {}, setMsg, reload: load, mechanic: 'absolute', programs: [], current: null };
     let programs = [];
-    // Set the dropdown to reflect the current program (unless a pick is staged).
+    // Show the current program as the placeholder (the value="" option), keeping
+    // the select's value empty. That way the dropdown DISPLAYS the current scene
+    // but every pick — including re-picking the current one — is a real change
+    // event that stages. (Selecting the actual option would emit no change.)
     function reflectCurrent() {
-      if (window.lightStaged && window.lightStaged(body)) return;
       const sel = el(ids.sel);
-      const has = card.current != null && (card.programs || []).some(p => p.n === card.current);
-      sel.value = has ? String(card.current) : '';
+      const p = (card.programs || []).find(x => x.n === card.current);
+      const ph = sel.options[0];
+      if (ph && ph.value === '') ph.textContent = p ? p.name : 'Choose a scene…';
+      if (window.lightStaged && window.lightStaged(body)) return;
+      sel.value = '';
     }
     function load() {
       fetch('/lights/programs?body=' + body).then(r => r.json()).then(d => {
