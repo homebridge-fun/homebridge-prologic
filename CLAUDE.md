@@ -1,6 +1,13 @@
 # Working with this repo
 
 ## Response style
+- **Always say WHERE every command runs.** This is a multi-machine setup — the
+  **hop** (Homebridge host: dev checkout, `pool-sidecar`, cockpit), the **pad**
+  (Pi Zero at the equipment pad: `pool-bridge`, `rs485_bridge.py`, reached via
+  `ssh <user>@pool`), and sometimes an **SSH/external terminal**. Label every
+  command block with the machine it runs on (e.g. "On the PAD:", "On the HOP:").
+  A block referencing a repo file (e.g. `deploy/harden-pad.sh`) only works after
+  that machine has pulled the code — include the `git pull` step if needed.
 - When giving terminal commands, always provide **complete, runnable blocks**
   that can be copy-pasted in one go — not many small one-line snippets.
 - The Homebridge UI terminal runs *inside* the Homebridge process, so
