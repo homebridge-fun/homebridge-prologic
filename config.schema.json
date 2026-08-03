@@ -51,7 +51,7 @@
       "rs485bridgeHost": {
         "title": "RS-485 Smart Bridge Host",
         "type": "string",
-        "description": "Tailnet IP (or resolvable host) of the pad-Pi smart bridge daemon (used when backend = rs485bridge). Prefer the Tailscale IP, e.g. 100.x.y.z — the MagicDNS name may not resolve on the hop."
+        "description": "Host of the pad-Pi smart bridge daemon (used when backend = rs485bridge). Use either the Tailscale tailnet IP (e.g. 100.x.y.z) or, if Tailscale MagicDNS is enabled and the Homebridge host accepts tailnet DNS (`tailscale set --accept-dns=true`; verify with `getent hosts <name>`), the MagicDNS name (e.g. 'pool'). The name survives a tailnet-IP change; the IP avoids a DNS dependency."
       },
       "rs485bridgePort": {
         "title": "RS-485 Smart Bridge Port",
