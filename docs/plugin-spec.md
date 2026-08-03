@@ -724,9 +724,10 @@ homebridge-prologic/
 │   ├── aquaconnect-screen-refresh-handoff.md   ← research handoff (archived)
 │   └── aquaconnect-screen-refresh-findings.md  ← Update Local Server& discovery
 ├── sidecar/
-│   ├── pool_service.py             ← dual-backend sidecar + Flask REST API
-│   ├── requirements.txt
-│   └── install.sh
+│   ├── pool_service.py             ← dual-backend sidecar + Flask REST API (host)
+│   ├── rs485_bridge.py             ← RS-485 pad-bridge daemon (runs on the pad Pi)
+│   ├── web/index.html              ← self-contained web cockpit
+│   └── requirements.txt
 └── src/
     ├── index.ts
     ├── platform.ts                 ← accessory registration, reconcileBackend, poll loop
