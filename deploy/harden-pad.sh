@@ -38,6 +38,20 @@ if ! ip link show "$TS_IFACE" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Lockout guard: if this is an SSH session that ISN'T coming over the tailnet,
+# enabling a tailnet-only firewall would cut it. Refuse unless you have console
+# access and set ALLOW_NON_TAILNET_SSH=1.
+if [[ -n "${SSH_CONNECTION:-}" ]]; then
+  CLIENT_IP="${SSH_CONNECTION%% *}"
+  if ! ip -o route get "$CLIENT_IP" 2>/dev/null | grep -q " dev $TS_IFACE"; then
+    echo "ERROR: your SSH session is from $CLIENT_IP, which is NOT routed over" >&2
+    echo "       $TS_IFACE. Enabling a tailnet-only firewall would disconnect you." >&2
+    echo "       Reconnect over the tailnet (ssh <user>@pool) and re-run — or, if" >&2
+    echo "       you have a local console, re-run with ALLOW_NON_TAILNET_SSH=1." >&2
+    [[ "${ALLOW_NON_TAILNET_SSH:-0}" != "1" ]] && exit 1
+  fi
+fi
+
 if ! command -v ufw >/dev/null 2>&1; then
   echo "==> Installing ufw..."
   apt-get update -qq
@@ -49,7 +63,7 @@ ufw default deny incoming        # deny everything inbound by default
 ufw default allow outgoing       # pad still reaches Tailscale/DERP, DNS, NTP, apt
 ufw allow in on "$TS_IFACE"      # SSH + bridge API (:8899) — tailnet only
 # DHCP client lease renewals on the LAN (this is the client port, not a service):
-ufw allow in on "$LAN_IFACE" proto udp from port 67 to any port 68
+ufw allow in on "$LAN_IFACE" proto udp from any port 67 to any port 68
 ufw --force enable
 
 echo
