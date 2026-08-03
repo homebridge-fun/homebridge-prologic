@@ -488,6 +488,15 @@
   };
   // Lets the light cards know not to overwrite an in-flight staged pick.
   window.lightStaged = (body) => (body + 'Light') in staged;
+  // Light cards use these to decide power vs scene behavior on a pick.
+  window.circuitOn = (name) => !!(last.circuits && last.circuits[name]);
+  window.stageCircuitTo = (name, on) => {
+    const real = !!(last.circuits && last.circuits[name]);
+    const key = 'ckt:' + name;
+    if (on === real) delete staged[key]; else staged[key] = on;
+    updateApplyBar();
+    reRender();
+  };
   function chlorStep(cur, dir) {
     cur = cur || 0;
     if (dir > 0) return cur < 10 ? Math.min(10, cur + 1) : Math.min(100, cur + 5);
@@ -1186,11 +1195,23 @@
         reflectCurrent();
       }).catch(e => setMsg('load failed: ' + e.message));
     }
-    // Picking a scene only STAGES it into the shared apply bar (Cancel/Apply at
-    // the bottom, same as everything else) — nothing fires until Apply.
+    // Picking a scene STAGES into the shared apply bar (nothing fires until
+    // Apply). Behavior depends on whether it's the current scene and on/off:
+    //  • different scene            -> stage the scene change (powers on + sets)
+    //  • current scene, light OFF   -> just power it on (no scene re-run)
+    //  • current scene, light ON    -> ignore (already showing it)
+    const circuit = body === 'pool' ? 'LIGHTS' : 'AUX_1';
     el(ids.sel).onchange = () => {
       const p = programs.find(x => x.n === +el(ids.sel).value);
-      window.stageLight(body, p ? { n: p.n, name: p.name } : null);
+      if (!p) { window.stageLight(body, null); return; }
+      if (p.n === card.current) {
+        window.stageLight(body, null);            // no scene change
+        const isOn = window.circuitOn && window.circuitOn(circuit);
+        if (!isOn) window.stageCircuitTo(circuit, true);  // off -> power on
+        reflectCurrent();                          // back to placeholder
+        return;
+      }
+      window.stageLight(body, { n: p.n, name: p.name });
     };
     el(ids.gear).onclick = () => openModal(card);
     // Reflect the current program in the dropdown (was a separate badge before).
