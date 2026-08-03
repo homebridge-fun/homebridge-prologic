@@ -258,7 +258,7 @@
       <div class="row"><span class="label">Pool</span><span class="pill ctl" id="pool_light_pill">—</span></div>
       <div class="lrow2">
         <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
-        <button class="gearbtn" id="pool_gear" title="Pool light settings">⚙</button>
+        <button class="gearbtn" id="pool_gear" title="Pool light settings">&#9881;&#65038;</button>
       </div>
       <div class="scene-msg" id="scene_msg"></div>
     </div>
@@ -266,7 +266,7 @@
       <div class="row"><span class="label">Spa</span><span class="pill ctl" id="spa_light_pill">—</span></div>
       <div class="lrow2">
         <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
-        <button class="gearbtn" id="spa_gear" title="Spa light settings">⚙</button>
+        <button class="gearbtn" id="spa_gear" title="Spa light settings">&#9881;&#65038;</button>
       </div>
       <div class="scene-msg" id="spa_scene_msg"></div>
     </div>
@@ -335,14 +335,21 @@
     .scene-msg:empty { display: none; }
     /* One "Lights" box, two blocks (Pool, Spa). Each block: label + power pill
        (fonts matched to At a glance), then the scene dropdown + settings gear. */
-    .lblock { padding: 4px 0; }
-    .lblock + .lblock { border-top: 1px solid rgba(159,182,207,.18); margin-top: 4px; }
-    .card .lblock .row { padding: 4px 0; }
+    .lblock { padding: 2px 0; }
+    .lblock + .lblock { border-top: 1px solid rgba(159,182,207,.18); margin-top: 2px; }
+    .card .lblock .row { padding: 2px 0; }
     .card .lblock .label { font-size: 16px; }
-    .lrow2 { display: flex; align-items: center; gap: 9px; margin-top: 6px; }
-    .lrow2 .scene-sel { flex: 1; width: auto; padding: 10px 12px; font-size: 15px; border-radius: 9px; }
-    .gearbtn { flex: none; width: 44px; align-self: stretch; border-radius: 9px; font-size: 16px;
-      background: transparent; border: 1px solid var(--line); color: var(--dim); }
+    .lrow2 { display: flex; align-items: stretch; gap: 8px; margin-top: 4px; }
+    .lrow2 .scene-sel { flex: 1; width: auto; padding: 10px 34px 10px 12px; font-size: 15px;
+      border-radius: 9px;
+      /* Chevron so it reads as a picker (native arrow is removed by appearance:none). */
+      background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%),
+                        linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+      background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+      background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+    .gearbtn { flex: none; width: 44px; border-radius: 9px; font-size: 15px;
+      background: transparent; border: 1px solid var(--line); color: var(--dim);
+      font-variant-emoji: text; }   /* flat, monochrome gear — not the color emoji */
     #light_modal { position: fixed; inset: 0; z-index: 41; display: none;
       background: rgba(2,8,16,.72); align-items: center; justify-content: center; padding: 16px; }
     #light_modal.show { display: flex; }
