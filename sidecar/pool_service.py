@@ -519,8 +519,20 @@ _TEMP_FINE_WINDOW_S = 86400            # keep full 5-min detail for the last day
 _TEMP_COARSE_BUCKET_S = 900            # 15-min buckets beyond the fine window
 _TEMP_RETENTION_S = 90 * 86400         # drop samples older than 90 days
 _TEMP_HISTORY_MAX = 15000              # hard backstop (~8.8k expected at steady state)
+_TEMP_STALE_S = 180                    # skip a sample if no fresh data in this long
+_SPA_COOLDOWN_S = 300                  # ignore pool/water temp for 5 min after spa
 _temp_history: list = []
 _temp_history_lock = threading.Lock()
+# When the spa was last active (valve in spa mode). While the spa runs, the
+# shared water-temp sensor reads the SPA, so the "pool" temp is meaningless; we
+# drop it during spa and for a cooldown after, to avoid false dips in the chart.
+_spa_last_active_ts: float = 0.0
+
+
+def _mark_spa_active(now: float) -> None:
+    """Record that the spa is active now (drives the pool-temp exclusion)."""
+    global _spa_last_active_ts
+    _spa_last_active_ts = now
 
 
 def _compact_history(hist: list, now: float) -> list:
@@ -565,15 +577,27 @@ def _load_temp_history() -> None:
 
 
 def _temp_history_thread(now_fn=time.time) -> None:
-    """Append a temp sample every interval and persist. Skips samples where all
-    three temps are unknown (nothing to plot)."""
+    """Append a temp sample every interval and persist. Skips a sample entirely
+    when the feed is stale (pad/box unreachable) so an outage becomes an honest
+    GAP in the chart instead of a frozen last-value flatline. Also drops the
+    pool/water temp while the spa is active (or within a cooldown after), since
+    the shared sensor reads the spa then. Skips samples with nothing to plot."""
     while True:
         time.sleep(_TEMP_SAMPLE_INTERVAL_S)
+        now = now_fn()
         with state_lock:
             pool, spa, air = state.pool_temp, state.spa_temp, state.air_temp
+            last_update = state.last_update or 0
+            spa_active = state.valve_mode == 'spa'
+        # Stale feed → no fresh reading; record a gap, not the frozen value.
+        if now - last_update > _TEMP_STALE_S:
+            continue
+        # Water temp is invalid while the spa runs / just ran (shared sensor).
+        if spa_active or (now - _spa_last_active_ts) < _SPA_COOLDOWN_S:
+            pool = None
         if pool is None and spa is None and air is None:
             continue
-        sample = [round(now_fn()), pool, spa, air]
+        sample = [round(now), pool, spa, air]
         with _temp_history_lock:
             _temp_history.append(sample)
             _temp_history[:] = _compact_history(_temp_history, sample[0])
@@ -820,6 +844,28 @@ LIGHT_CFG = LIGHT_CFG_BY_BODY['pool']
 def _light_cfg(body: str) -> dict:
     """Power-cycle calibration for a body (pool vs spa)."""
     return LIGHT_CFG_BY_BODY.get(body, LIGHT_CFG_BY_BODY['pool'])
+
+
+def _persist_light_program() -> None:
+    """Persist the per-body tracked light program to backend.json so the scene
+    position survives a sidecar restart — lights are changed rarely, so a stale
+    in-memory position (lost on restart) forced a needless re-anchor. Best-effort."""
+    try:
+        with state_lock:
+            lp = {b: int(n) for b, n in state.light_program.items()}
+        bconf = _load_backend_config()
+        bconf['light_program'] = lp
+        _save_backend_config(bconf)
+    except Exception as e:   # noqa: BLE001
+        log.warning('persist light_program: %s', e)
+
+
+def _track_light_program(body: str, n: int) -> None:
+    """Set the tracked program for a body and persist it. Call OUTSIDE state_lock
+    (it re-acquires the lock and _persist reads it)."""
+    with state_lock:
+        state.light_program[body] = int(n)
+    _persist_light_program()
 
 CIRCUIT_NAMES = [
     'POOL', 'SPA', 'FILTER', 'LIGHTS',
@@ -1608,6 +1654,8 @@ class RS485BridgeBackend:
             vm = snap.get('valve_mode')
             if vm is not None:               # None = current frame isn't a mode
                 state.valve_mode = vm        # screen; keep last-known otherwise
+                if vm == 'spa':
+                    _mark_spa_active(time.time())
             # A firing heater relay means the heater is armed (Auto) — the Auto/Off
             # LCD text isn't always on screen, so infer 'enabled' from the live
             # relay to avoid showing mode "Off" while "heating now" is Running.
@@ -1883,6 +1931,7 @@ def _apply_ac_led_to_state(led: dict) -> None:
             state.valve_mode = 'spa'
             state.circuits['POOL'] = False
             state.circuits['SPA'] = True
+            _mark_spa_active(time.time())
         # Equipment on/off → circuits dict (absent stays out of the map)
         for name, key in (('filter', 'FILTER'), ('lights', 'LIGHTS'),
                           ('aux1', 'AUX_1'), ('aux2', 'AUX_2')):
@@ -2156,6 +2205,7 @@ def panel_thread(host: str, port: int) -> None:
                 state.valve_mode = 'pool'
             elif 'Spa Mode' in frame:
                 state.valve_mode = 'spa'
+                _mark_spa_active(time.time())
 
     while True:
         try:
@@ -5479,8 +5529,7 @@ def lights_select(body: str) -> Response:
                 res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
             if res is None:
                 return jsonify({'error': 'bridge /cycle failed'}), 502
-            with state_lock:
-                state.light_program[body] = n
+            _track_light_program(body, n)
             return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
                             'steps': steps, 'from': current, 'bridge': res})
 
@@ -5500,8 +5549,7 @@ def lights_select(body: str) -> Response:
                 res = _ac_backend.cycle(circuit, steps, off_ms, on_ms)
                 if res is None:
                     return jsonify({'error': 'bridge /cycle failed'}), 502
-        with state_lock:
-            state.light_program[body] = n
+        _track_light_program(body, n)
         return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
                         'steps': steps, 'anchored_to': 1, 'bridge': res})
 
@@ -5515,8 +5563,7 @@ def lights_select(body: str) -> Response:
     if res is None:
         return jsonify({'error': 'bridge /program failed'}), 502
     # Track last-selected scene per body (best-effort, open-loop).
-    with state_lock:
-        state.light_program[body] = n
+    _track_light_program(body, n)
     corrected = _ensure_light_on_after_program(circuit, body)
     return jsonify({'ok': True, 'body': body, 'program': n, 'name': name,
                     'daemon_count': count, 're_asserted_on': corrected, 'bridge': res})
@@ -5572,10 +5619,12 @@ def lights_step(body: str) -> Response:
     # Advance the tracked position too, if we had one.
     with state_lock:
         cur = state.light_program.get(body)
+        newpos = None
         if cur is not None:
             nprog = len(_light_programs(body))
-            state.light_program[body] = ((cur - 1 + steps) % nprog) + 1
-        newpos = state.light_program.get(body)
+            newpos = ((cur - 1 + steps) % nprog) + 1
+    if newpos is not None:
+        _track_light_program(body, newpos)
     return jsonify({'ok': True, 'body': body, 'steps': steps, 'current_program': newpos})
 
 
@@ -5669,8 +5718,7 @@ def lights_sync(body: str) -> Response:
         return jsonify({'error': f'program must be 1..{nprog}'}), 400
     if not (1 <= n <= nprog):
         return jsonify({'error': f'program must be 1..{nprog}'}), 400
-    with state_lock:
-        state.light_program[body] = n
+    _track_light_program(body, n)
     log.info('Light %s position synced to program %d (no move)', body, n)
     return jsonify({'ok': True, 'body': body, 'program': n, 'synced': True})
 
@@ -5709,8 +5757,7 @@ def lights_resync(body: str) -> Response:
         time.sleep(POOL_RESYNC_OFF_S)  # 11-14s -> re-sync to program 1
         _set(True)                     # back ON -> program 1 (Voodoo Lounge)
         time.sleep(1.0)
-    with state_lock:
-        state.light_program[body] = 1
+    _track_light_program(body, 1)
     name = _light_programs(body)[0][0]
     log.info('Light %s re-synced to program 1 (%s)', body, name)
     return jsonify({'ok': True, 'body': body, 'program': 1, 'name': name})
@@ -6279,6 +6326,18 @@ def main() -> None:
                     if k in lc:
                         LIGHT_CFG_BY_BODY[b][k] = lc[k]
         log.info('Loaded persisted light calibration: %s', LIGHT_CFG_BY_BODY)
+
+    # Persisted light program position (per body) — restores the tracked scene
+    # so a restart doesn't force a re-anchor on the next selection.
+    lp = cfg.get('light_program')
+    if isinstance(lp, dict):
+        with state_lock:
+            for b, n in lp.items():
+                try:
+                    state.light_program[b] = int(n)
+                except (TypeError, ValueError):
+                    pass
+        log.info('Loaded persisted light program: %s', dict(state.light_program))
 
     global _ac_backend, _setpoint_debouncer, _active_backend
     _active_backend = backend

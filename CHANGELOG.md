@@ -3,6 +3,33 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.7.1 — HomeKit responsiveness, unified Lights UI, honest temp history
+
+**HomeKit "No Response" fixes**
+- Every slow `onSet` handler that navigates the Settings menu (~15s) — the
+  Heater Auto switch, the thermostat Heat/Off dial, Super Chlorinate, the light
+  TV power + scene, and the bridge-test button — is now **fire-and-forget** so it
+  returns immediately instead of timing out and showing "No Response". State
+  reconciles in the background (reverts on failure).
+
+**Lights — one unified cockpit section**
+- Pool and Spa lights share a single **Lights** card: label + power pill, then a
+  scene dropdown that **shows the current program** and a settings gear.
+- **Smart scene pick:** a different scene sets it; the current scene while off
+  just powers on; the current scene while on is ignored.
+- Scene position now **persists to `backend.json`** across restarts.
+- Visual polish: flat monochrome gear, dropdown chevron, muted text, larger
+  touch targets, fonts aligned with At a glance.
+
+**Temperature history**
+- A stale feed (pad/box unreachable) now records an **honest gap** instead of a
+  frozen last-value flatline; the pool/water temp is dropped while the spa is
+  active (shared sensor). Adds `clean_temp_history.py` to retroactively gap past
+  outage flats.
+
+**Docs**
+- Standard deploy is one block ending in the Homebridge restart.
+
 ## 0.7.0 — Lights that actually work, heater clarity, cockpit polish
 
 Resolves pool/spa light scene selection on real hardware, cleans up the heater

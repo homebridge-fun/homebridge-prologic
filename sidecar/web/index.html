@@ -51,14 +51,14 @@
   /* Fixed widths per state (centered, low padding) so every pill on every row
      is the same size regardless of its text — one width for off, a larger one
      for on (the "Auto" look). */
-  .card .condlist .pill, .card .swlist .pill {
-    font-size: 15px; line-height: 1.15; padding: 2px 8px; display: inline-block;
+  .card .condlist .pill, .card .swlist .pill, .card .lblock .pill {
+    font-size: 15px; line-height: 1.15; padding: 11px 14px; display: inline-block;
     box-sizing: border-box; text-align: center; }
   /* Active pills share one width, sized to fit the widest (the Pump-speed pill,
      e.g. "100% · Speed 4"), so the on-state pills line up instead of the speed
      pill bulging past the rest. */
-  .card .condlist .pill.on, .card .swlist .pill.on { min-width: 128px; }
-  .card .condlist .pill.off, .card .swlist .pill.off { min-width: 64px; }
+  .card .condlist .pill.on, .card .swlist .pill.on, .card .lblock .pill.on { min-width: 128px; }
+  .card .condlist .pill.off, .card .swlist .pill.off, .card .lblock .pill.off { min-width: 64px; }
   /* Tighter rows in the pill lists (At a glance / Lights). */
   .condlist .row, .swlist .row { min-height: 0; padding: 6px 0; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
@@ -91,7 +91,7 @@
   /* Dual-body (pool/spa) panel with the active one flagged */
   .duo { display: flex; gap: 10px; }
   .bd { flex: 1; background: var(--panel2); border: 1px solid var(--line);
-    border-radius: 10px; padding: 8px 10px; }
+    border-radius: 10px; padding: 6px 10px; }
   /* Active body: green tint fill + a 2px green ring. Green = active state across
      the UI; blue is reserved for "selected / being edited". */
   .bd.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset;
@@ -99,7 +99,7 @@
   .bd-k { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
   .bd-v { flex: 1; text-align: center; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .bd-v.pend { color: var(--accent); }
-  .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+  .setrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
   .step { width: 36px; height: 36px; flex: 0 0 auto; border-radius: 9px;
     border: 1px solid var(--line); background: var(--panel); color: var(--ink);
     font-size: 20px; font-weight: 700; line-height: 1; display: none;
@@ -157,10 +157,12 @@
   #apply { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: none;
     margin: 0 auto; max-width: 640px; color: var(--accent);
     background: var(--panel); border-top: 2px solid var(--accent);
-    /* Extra bottom clearance so iOS Safari's address bar doesn't cover the
-       buttons (env() alone only covers the home indicator, not the toolbar). */
-    padding: 12px 16px calc(34px + env(safe-area-inset-bottom)); font-weight: 600;
+    /* Base clearance for the home indicator. iOS Safari's variable toolbar is
+       handled dynamically in JS (VisualViewport) by lifting `bottom` above it —
+       a fixed padding guess was sometimes too small and clipped the buttons. */
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); font-weight: 600;
     align-items: center; justify-content: space-between; gap: 10px;
+    transition: bottom .15s ease;
     box-shadow: 0 -6px 22px rgba(0,0,0,.4); }
   #apply.show { display: flex; }
   #apply .n { font-size: 13px; }
@@ -250,8 +252,28 @@
     </div>
   </div>
 
-  <div class="card" id="switches_card" style="display:none">
+  <div class="card">
     <h2>Lights</h2>
+    <div class="lblock">
+      <div class="row"><span class="label">Pool</span><span class="pill ctl" id="pool_light_pill">—</span></div>
+      <div class="lrow2">
+        <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
+        <button class="gearbtn" id="pool_gear" title="Pool light settings">&#9881;&#65038;</button>
+      </div>
+      <div class="scene-msg" id="scene_msg"></div>
+    </div>
+    <div class="lblock">
+      <div class="row"><span class="label">Spa</span><span class="pill ctl" id="spa_light_pill">—</span></div>
+      <div class="lrow2">
+        <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
+        <button class="gearbtn" id="spa_gear" title="Spa light settings">&#9881;&#65038;</button>
+      </div>
+      <div class="scene-msg" id="spa_scene_msg"></div>
+    </div>
+  </div>
+
+  <div class="card" id="switches_card" style="display:none">
+    <h2>Other</h2>
     <div class="swlist" id="switches"></div>
   </div>
 
@@ -309,11 +331,26 @@
     .scene-sel { width: 100%; padding: 12px; font-size: 16px; border-radius: 10px;
       border: 1px solid var(--line); background: var(--panel2); color: var(--ink);
       -webkit-appearance: none; appearance: none; }
-    .scene-msg { margin-top: 10px; min-height: 1.2em; font-size: 14px; color: var(--dim); }
-    /* Current program badge in the light card header (driven by the status poll). */
-    .scene-now { font-size: 12px; font-weight: 700; color: #04263a; background: var(--ok);
-      padding: 3px 11px; border-radius: 999px; margin-left: auto; margin-right: 10px; }
-    .scene-now:empty { display: none; }
+    .scene-msg { margin-top: 6px; min-height: 0; font-size: 13px; color: var(--dim); }
+    .scene-msg:empty { display: none; }
+    /* One "Lights" box, two blocks (Pool, Spa). Each block: label + power pill
+       (fonts matched to At a glance), then the scene dropdown + settings gear. */
+    .lblock { padding: 2px 0; }
+    .lblock + .lblock { border-top: 1px solid rgba(159,182,207,.18); margin-top: 2px; }
+    .card .lblock .row { padding: 2px 0; }
+    .card .lblock .label { font-size: 16px; }
+    .lrow2 { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+    .lrow2 .scene-sel { flex: 1; width: auto; padding: 10px 34px 10px 12px; font-size: 15px;
+      border-radius: 9px; color: var(--dim);   /* match the rest of the UI text */
+      /* Chevron so it reads as a picker (native arrow is removed by appearance:none). */
+      background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%),
+                        linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+      background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+      background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+    /* Bare gear icon (no box), ~50% larger. */
+    .gearbtn { flex: none; border: 0; background: transparent; color: var(--dim);
+      font-size: 23px; line-height: 1; padding: 0 4px;
+      font-variant-emoji: text; }   /* flat, monochrome gear — not the color emoji */
     #light_modal { position: fixed; inset: 0; z-index: 41; display: none;
       background: rgba(2,8,16,.72); align-items: center; justify-content: center; padding: 16px; }
     #light_modal.show { display: flex; }
@@ -341,19 +378,6 @@
     .lm-hint { font-size: 13px; color: var(--dim); margin-top: 10px; }
     #lm_resyncrow { margin: 6px 0 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
   </style>
-  <div class="card">
-    <h2 class="hrow">Spa Light <span class="scene-now" id="spa_scene_now"></span>
-      <button class="lockbtn" id="spa_gear">⚙ Settings</button></h2>
-    <select class="scene-sel" id="spa_scene_sel"><option value="">Choose a scene…</option></select>
-    <div class="scene-msg" id="spa_scene_msg"></div>
-  </div>
-
-  <div class="card">
-    <h2 class="hrow">Pool Light <span class="scene-now" id="scene_now"></span>
-      <button class="lockbtn" id="pool_gear">⚙ Settings</button></h2>
-    <select class="scene-sel" id="scene_sel"><option value="">Choose a scene…</option></select>
-    <div class="scene-msg" id="scene_msg"></div>
-  </div>
 </main>
 
 <div id="light_modal">
@@ -469,6 +493,17 @@
     if (pick) staged[key] = pick; else delete staged[key];
     updateApplyBar();
   };
+  // Lets the light cards know not to overwrite an in-flight staged pick.
+  window.lightStaged = (body) => (body + 'Light') in staged;
+  // Light cards use these to decide power vs scene behavior on a pick.
+  window.circuitOn = (name) => !!(last.circuits && last.circuits[name]);
+  window.stageCircuitTo = (name, on) => {
+    const real = !!(last.circuits && last.circuits[name]);
+    const key = 'ckt:' + name;
+    if (on === real) delete staged[key]; else staged[key] = on;
+    updateApplyBar();
+    reRender();
+  };
   function chlorStep(cur, dir) {
     cur = cur || 0;
     if (dir > 0) return cur < 10 ? Math.min(10, cur + 1) : Math.min(100, cur + 5);
@@ -490,7 +525,9 @@
   }
   // Extra controllable circuits shown as toggles when the panel reports them.
   // FILTER lives in Pump Speed, POOL/SPA in Mode, HEATER_1 in Conditions.
-  const SWITCHES = [['LIGHTS', 'Lights'], ['AUX_1', 'Aux 1'], ['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover']];
+  // LIGHTS (pool) and AUX_1 (spa) have dedicated light cards with power + scenes;
+  // the generic "Other" card only carries the remaining aux circuits.
+  const SWITCHES = [['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover']];
   function stageCircuit(name) {
     if (busy) return;
     const real = !!(last.circuits && last.circuits[name]);
@@ -542,7 +579,7 @@
     for (const k in staged) delete staged[k];
     selectedSlot = null;
     setEditing(null);
-    document.querySelectorAll('.scene-sel').forEach(s => { s.value = ''; });
+    if (window.resetLightSelects) window.resetLightSelects();
     reRender();
   }
   // Apply — send each staged change in sequence (the panel is single-lane).
@@ -561,17 +598,20 @@
     if ('spaSpeed' in staged) items.push([`Set Spa Speed to ${staged.spaSpeed}%`, '/vsp/spa', { speed_pct: staged.spaSpeed }]);
     if ('spaLight' in staged) items.push(['Spa light → ' + staged.spaLight.name, '/lights/spa/program', { program: staged.spaLight.n }]);
     if ('poolLight' in staged) items.push(['Pool light → ' + staged.poolLight.name, '/lights/pool/program', { program: staged.poolLight.n }]);
-    for (const [name, dflt] of SWITCHES) {
-      const key = 'ckt:' + name;
-      if (key in staged) {
-        const label = (last.circuit_labels && last.circuit_labels[name]) || dflt;
-        items.push([(staged[key] ? 'Turn on ' : 'Turn off ') + label, '/circuit/' + name, { on: staged[key] }]);
-      }
+    // Any staged circuit toggle (light power pills stage ckt:LIGHTS / ckt:AUX_1;
+    // the Other card stages ckt:AUX_2 / ckt:SPILLOVER) — handle them generically
+    // so none are dropped now that the light circuits aren't in SWITCHES.
+    const CKT_LABEL = { LIGHTS: 'Pool light', AUX_1: 'Spa light', AUX_2: 'Aux 2', SPILLOVER: 'Spillover' };
+    for (const k in staged) {
+      if (!k.startsWith('ckt:')) continue;
+      const name = k.slice(4);
+      const label = (last.circuit_labels && last.circuit_labels[name]) || CKT_LABEL[name] || name;
+      items.push([(staged[k] ? 'Turn on ' : 'Turn off ') + label, '/circuit/' + name, { on: staged[k] }]);
     }
     for (const k in staged) delete staged[k];
     selectedSlot = null;
     setEditing(null);
-    document.querySelectorAll('.scene-sel').forEach(s => { s.value = ''; });
+    if (window.resetLightSelects) window.resetLightSelects();
     setBusy(true, items[0][0]);
     try {
       for (let i = 0; i < items.length; i++) {
@@ -905,6 +945,19 @@
     });
     $('switches_card').style.display = sw.children.length ? '' : 'none';
 
+    // Light card power pills (LIGHTS=pool, AUX_1=spa) — same staged circuit
+    // toggle as the generic switches, but rendered into the dedicated cards.
+    [['LIGHTS', 'pool_light_pill'], ['AUX_1', 'spa_light_pill']].forEach(([name, pid]) => {
+      const pill = $(pid);
+      if (!pill) return;
+      const key = 'ckt:' + name;
+      const real = !!(s.circuits && s.circuits[name]);
+      const eff = (key in staged) ? staged[key] : real;
+      pill.className = 'pill ctl' + (eff ? ' on' : ' off') + ((key in staged) ? ' staged' : '');
+      pill.textContent = eff ? 'On' : 'Off';
+      pill.onclick = () => { setEditing(null); stageCircuit(name); };
+    });
+
     // System faults (top of app)
     const fx = $('faults');
     const faults = Array.isArray(s.faults) ? s.faults : [];
@@ -1117,8 +1170,20 @@
   };
   function setupLightCard(body, ids) {
     const setMsg = m => { const e = el(ids.msg); if (e) e.textContent = m; };
-    const card = { body, cal: {}, setMsg, reload: load, mechanic: 'absolute', programs: [], current: null };
+    const card = { body, ids, cal: {}, setMsg, reload: load, mechanic: 'absolute', programs: [], current: null };
     let programs = [];
+    // Show the current program as the placeholder (the value="" option), keeping
+    // the select's value empty. That way the dropdown DISPLAYS the current scene
+    // but every pick — including re-picking the current one — is a real change
+    // event that stages. (Selecting the actual option would emit no change.)
+    function reflectCurrent() {
+      const sel = el(ids.sel);
+      const p = (card.programs || []).find(x => x.n === card.current);
+      const ph = sel.options[0];
+      if (ph && ph.value === '') ph.textContent = p ? p.name : 'Choose a scene…';
+      if (window.lightStaged && window.lightStaged(body)) return;
+      sel.value = '';
+    }
     function load() {
       fetch('/lights/programs?body=' + body).then(r => r.json()).then(d => {
         card.cal = d.calibration || {};
@@ -1134,33 +1199,67 @@
           o.textContent = p.name + (p.type === 'show' ? ' · show' : ' · static');
           sel.appendChild(o);
         });
+        reflectCurrent();
       }).catch(e => setMsg('load failed: ' + e.message));
     }
-    // Picking a scene only STAGES it into the shared apply bar (Cancel/Apply at
-    // the bottom, same as everything else) — nothing fires until Apply.
+    // Picking a scene STAGES into the shared apply bar (nothing fires until
+    // Apply). Behavior depends on whether it's the current scene and on/off:
+    //  • different scene            -> stage the scene change (powers on + sets)
+    //  • current scene, light OFF   -> just power it on (no scene re-run)
+    //  • current scene, light ON    -> ignore (already showing it)
+    const circuit = body === 'pool' ? 'LIGHTS' : 'AUX_1';
     el(ids.sel).onchange = () => {
       const p = programs.find(x => x.n === +el(ids.sel).value);
-      window.stageLight(body, p ? { n: p.n, name: p.name } : null);
+      if (!p) { window.stageLight(body, null); return; }
+      if (p.n === card.current) {
+        window.stageLight(body, null);            // no scene change
+        const isOn = window.circuitOn && window.circuitOn(circuit);
+        if (!isOn) window.stageCircuitTo(circuit, true);  // off -> power on
+        reflectCurrent();                          // back to placeholder
+        return;
+      }
+      window.stageLight(body, { n: p.n, name: p.name });
     };
     el(ids.gear).onclick = () => openModal(card);
+    // Reflect the current program in the dropdown (was a separate badge before).
     card.showCurrent = (n) => {
       card.current = n ?? null;
-      const p = (card.programs || []).find(x => x.n === n);
-      const e = el(ids.now);
-      if (e) e.textContent = p ? p.name : '';
+      reflectCurrent();
     };
+    card.resetSelect = reflectCurrent;
     lightCards[body] = card;
     load();
   }
   const lightCards = {};
-  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear', now: 'spa_scene_now' });
-  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear', now: 'scene_now' });
+  setupLightCard('spa', { sel: 'spa_scene_sel', msg: 'spa_scene_msg', gear: 'spa_gear' });
+  setupLightCard('pool', { sel: 'scene_sel', msg: 'scene_msg', gear: 'pool_gear' });
+  // Called by the apply bar (main scope) to revert dropdowns to current after
+  // Apply/Cancel, instead of blanking them.
+  window.resetLightSelects = () => { for (const b in lightCards) lightCards[b].resetSelect(); };
   // Driven by the main status poll: reflect each light's current program in its
   // card header (and keep the settings' tracked position in sync).
   window.updateLightCurrent = (lp) => {
     lp = lp || {};
     for (const body in lightCards) lightCards[body].showCurrent(lp[body]);
   };
+
+  // Keep the fixed Apply bar above iOS Safari's variable bottom toolbar (and the
+  // on-screen keyboard). The visual viewport shrinks from the layout viewport by
+  // exactly the toolbar/keyboard height; lift the bar's `bottom` by that gap so
+  // it's never partially covered. Falls back to bottom:0 without VisualViewport.
+  (function () {
+    const bar = el('apply');
+    const vv = window.visualViewport;
+    if (!bar || !vv) return;
+    const place = () => {
+      const gap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      bar.style.bottom = gap + 'px';
+    };
+    vv.addEventListener('resize', place);
+    vv.addEventListener('scroll', place);
+    window.addEventListener('orientationchange', place);
+    place();
+  })();
 })();
 </script>
 </body>

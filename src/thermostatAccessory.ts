@@ -122,22 +122,24 @@ export class ThermostatAccessory {
     }
   }
 
-  async handleSetMode(value: CharacteristicValue): Promise<void> {
+  // NOT async: the HEATER_1 enable navigates the Settings menu (~15s), which
+  // exceeds HomeKit's ~10s onSet timeout and shows "No Response" even though the
+  // toggle goes through. Fire-and-forget; reconcile on failure.
+  handleSetMode(value: CharacteristicValue): void {
     const on = (value as number) !== 0;
     this.platform.log.info(`[Thermostat ${this.body}] mode → ${on ? 'Heat' : 'Off'} (HEATER_1 circuit)`);
-    this.heaterEnabled = on;
-    try {
-      await this.platform.sidecar.setCircuit('HEATER_1', on);
-      // Keep the Heater Auto switch + the other heater thermostats in step
-      // immediately, rather than letting them lag until the next poll.
-      this.platform.pushHeaterEnabled(on);
-    } catch (err) {
-      this.heaterEnabled = !on;
-      this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);
-      throw new this.platform.api.hap.HapStatusError(
-        this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE,
-      );
-    }
+    this.heaterEnabled = on; // optimistic
+    this.platform.sidecar.setCircuit('HEATER_1', on)
+      .then(() => {
+        // Keep the Heater Auto switch + the other heater thermostats in step.
+        this.platform.pushHeaterEnabled(on);
+      })
+      .catch((err) => {
+        this.heaterEnabled = !on; // revert
+        this.service.updateCharacteristic(
+          this.platform.Characteristic.TargetHeatingCoolingState, this.heaterEnabled ? 1 : 0);
+        this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);
+      });
   }
 
   /**

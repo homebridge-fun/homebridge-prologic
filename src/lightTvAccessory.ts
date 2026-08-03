@@ -86,14 +86,17 @@ export class LightTvAccessory {
     this.tv.setCharacteristic(C.DisplayOrder, Buffer.from(order).toString('base64'));
   }
 
-  private async handleActive(value: CharacteristicValue): Promise<void> {
+  // NOT async: like handleSelect, return immediately so a slow/queued circuit
+  // write can't blow past HomeKit's ~10s onSet timeout and show "No Response".
+  private handleActive(value: CharacteristicValue): void {
     const on = (value as number) !== 0;
-    this.isOn = on;
-    try {
-      await this.platform.sidecar.setCircuit(this.circuit, on);
-    } catch (err) {
-      this.platform.log.error(`[Light ${this.body}] power ${on} failed:`, err);
-    }
+    this.isOn = on; // optimistic
+    this.platform.sidecar.setCircuit(this.circuit, on)
+      .catch((err) => {
+        this.isOn = !on; // revert on failure
+        this.tv.updateCharacteristic(this.platform.Characteristic.Active, this.isOn ? 1 : 0);
+        this.platform.log.error(`[Light ${this.body}] power ${on} failed:`, err);
+      });
   }
 
   // NOT async: HomeKit's ActiveIdentifier write must return immediately.
