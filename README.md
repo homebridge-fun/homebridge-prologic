@@ -181,10 +181,10 @@ backend — this is a setup requirement, not just an internal detail:**
 
 ## Acknowledgments
 
-- **[cupshir](https://github.com/cupshir)** — whose AquaConnect Homebridge plugin
-  I ran before building this one. It's the prior art and inspiration for the
-  AquaConnect approach here; this project grew out of wanting deeper control and a
-  fallback path.
+- **[cupshir/homebridge-aqua-connect-lite](https://github.com/cupshir/homebridge-aqua-connect-lite)**
+  — the AquaConnect Homebridge plugin I ran before building this one. It's the
+  prior art and inspiration for the AquaConnect approach here; this project grew
+  out of wanting deeper control and a fallback path.
 - **[`swilson/aqualogic`](https://github.com/swilson/aqualogic)** — the Python
   RS-485 protocol library that decodes the AquaLogic bus. It runs on the Pi pad
   bridge and is what makes the direct-RS-485 backend possible.
