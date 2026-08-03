@@ -23,20 +23,21 @@ TCP/WiFi bridge.
    ```bash
    bash ~/homebridge-prologic/deploy/install-pad.sh
    ```
-5. **Update the hop.** A fresh Tailscale node gets a **new tailnet IP**. Note it
-   (`tailscale ip -4` on the pad) and set `rs485bridgeHost` in the Homebridge
-   plugin config on the hop to match. If you use a bearer token, put the same
-   value in the hop-side sidecar config too.
+5. **Point the hop at the pad.** Set `rs485bridgeHost` in the Homebridge plugin
+   config on the hop to the pad's **MagicDNS name** (`pool`) — stable across
+   re-images, no re-editing — or its tailnet IP (`tailscale ip -4` on the pad).
+   The name needs the hop to accept tailnet DNS (`tailscale set --accept-dns=true`;
+   verify `getent hosts pool`). If you use a bearer token, put the same value in
+   the hop-side sidecar config too.
+6. **(Recommended) Harden the pad** once it's on the main LAN and Tailscale is
+   direct (`tailscale ping pool` says `direct`): `sudo bash deploy/harden-pad.sh`
+   locks it to tailnet-only access. Read the safety block first — SSH becomes
+   tailnet-only. See "Network placement" below.
 
 That's it — the service is enabled, starts on boot, survives USB replug (the
 udev rule re-pins `latency_timer=1`), and the installer also applies the
 memory-pressure hardening (persistent journal, earlyoom, `swappiness=10`) so a
 spike can't wedge the Pi.
-
-> **Tailnet IP tip:** to avoid re-editing the hop after every re-image, you can
-> give the pad a stable name/tag in the Tailscale admin console and point the
-> hop at that instead of the raw `100.x` — but MagicDNS may not resolve on the
-> hop, so the raw IP is the reliable default.
 
 ## What the installer sets up
 
@@ -96,34 +97,48 @@ under-voltage flag points at the USB supply / pad circuit, not software.
 - Tailnet IP is stable across network changes, so moving the Pi between Wi-Fi
   networks needs no reconfig.
 
-### Network placement — isolated (guest) network
+### Network placement — main LAN + host firewall (current)
 
-The Pi runs on the **isolated guest network**, not the main LAN. The tailnet
-bind already blocks inbound LAN access to the bridge, so the reason for guest
-placement is **outbound containment** (defense-in-depth): if the Pi were ever
-compromised — via SSH, `tailscaled`, or a bad pip dependency — an isolated
-network keeps it from pivoting to trusted devices on the main LAN. The tailnet
-bind does nothing for that direction; network isolation does.
+The Pi runs on the **main Wi-Fi** with a **host firewall** (`deploy/harden-pad.sh`)
+that makes it **tailnet-only reachable**. This replaced an earlier guest-network
+setup, for a concrete reason:
 
-It's functionally free because the Pi only ever talks over Tailscale (an overlay
-over the internet, not the LAN): bridge ↔ hop traffic is unaffected, and a guest
-network's client-to-client isolation doesn't touch it. Requirements for the
-guest network: **no captive portal / re-auth** (this is an always-on device),
-and **outbound internet allowed** (Tailscale needs it). A dedicated IoT VLAN is
-even better if the router gains one later.
+- **Guest-network isolation forced a DERP relay.** A guest network's
+  client-to-client isolation blocks the pad and the hop from reaching each other
+  directly, so Tailscale can't hole-punch and falls back to relaying every packet
+  through a public **DERP** server. That adds latency + a public-relay dependency
+  → intermittent brief timeouts (self-healing, but real), *despite* a strong
+  Wi-Fi signal. The relay never leaks anything (it only sees encrypted
+  WireGuard), so it's a **reliability** cost, not a security one.
+- **On the main LAN, Tailscale connects DIRECT** — verify from the hop:
+  `tailscale ping pool` should say `direct`, not `via DERP` — which removes the
+  relay and the blips.
 
-> **Gotcha:** guest isolation blocks LAN access to the Pi, so reach it **only via
-> its tailnet IP** — `ssh greg@<tailnet-ip>` from the hop or any Tailscale
-> device. The LAN name/IP won't resolve. The main-network Wi-Fi profile stays
-> saved on the Pi (`nmcli connection`) as a console fallback.
+`harden-pad.sh` then locks the host: `ufw default deny incoming` + allow only
+`tailscale0`, so SSH and the bridge API (:8899) are reachable **only over the
+tailnet**; the LAN sees nothing. Tailscale needs no inbound ports (its outbound
+hole-punch + the established/related rule carry the return traffic). Run it
+**only after** confirming tailnet SSH — see the safety block in the script.
 
-To move it (Pi OS uses NetworkManager) — the SSH session drops as it switches,
-then reconnect over the tailnet:
-```bash
-sudo nmcli device wifi connect "<GUEST_SSID>" password "<GUEST_PASS>"
-# session drops; reconnect: ssh greg@<tailnet-ip>, then verify:
-tailscale status | head -3 && systemctl is-active pool-bridge earlyoom
-```
+> **Tradeoff vs. the guest network.** Guest isolation also gave *outbound*
+> containment — a compromised Pi couldn't pivot to trusted LAN devices. On the
+> main LAN it can (the firewall restricts **inbound**, not outbound). This is the
+> inherent tension: **any isolation that contains the Pi's outbound also blocks
+> the direct Tailscale path and forces DERP.** We chose direct + tailnet-only
+> inbound; if outbound containment matters more to you, keep it isolated and
+> accept the DERP relay (it works fine). A middle path — outbound rules allowing
+> internet/tailnet but not other LAN hosts — is possible but router/DNS-dependent.
+
+> **Access:** reach the Pi **only over the tailnet** — `ssh <user>@pool` (MagicDNS
+> name) or its tailnet IP, from the hop or any Tailscale device. Keep a local
+> keyboard/monitor as the console fallback the first time you enable the firewall.
+> Switching Wi-Fi networks (Pi OS uses NetworkManager; the SSH session drops as
+> it switches, then reconnect over the tailnet):
+> ```bash
+> nmcli connection show                          # saved profiles
+> sudo nmcli connection up "<MAIN_SSID>"         # or: device wifi connect ... password ...
+> # reconnect over tailnet, then verify direct from the hop: tailscale ping pool
+> ```
 
 ### Auth: Tailscale ACL (recommended default — no secrets)
 
