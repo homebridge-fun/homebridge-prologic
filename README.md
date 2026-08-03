@@ -78,9 +78,19 @@ A+ → Pin 2 (DATA+), B− → Pin 3 (DATA−), GND → Pin 4 (GND).
 
 ### 1. Install the Python sidecar (on the Homebridge host)
 
-Install the sidecar service, then point it at your backend (AquaConnect box IP,
-or the pad bridge host). See `sidecar/` for the service unit and config. Verify
-it's running:
+`sidecar/install.sh` sets up a venv, installs Flask, and registers the
+`pool-sidecar` systemd service pointed at your chosen backend. Pick one:
+
+```bash
+# AquaConnect box (local HTTP) — use your box's IP:
+sudo bash sidecar/install.sh --backend aquaconnect --aquaconnect-host 192.168.50.100
+
+# OR the RS-485 pad bridge — set up the pad first (deploy/README-PAD.md), then
+# point at its tailnet IP (token via --rs485bridge-token if the bridge requires one):
+sudo bash sidecar/install.sh --backend rs485bridge --rs485bridge-host <pad-tailnet-ip>
+```
+
+Add `--dry-run` to preview the systemd unit without changing anything. Verify:
 
 ```bash
 sudo systemctl status pool-sidecar

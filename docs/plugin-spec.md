@@ -727,6 +727,7 @@ homebridge-prologic/
 │   ├── pool_service.py             ← dual-backend sidecar + Flask REST API (host)
 │   ├── rs485_bridge.py             ← RS-485 pad-bridge daemon (runs on the pad Pi)
 │   ├── web/index.html              ← self-contained web cockpit
+│   ├── install.sh                  ← host sidecar installer (venv + systemd unit)
 │   └── requirements.txt
 └── src/
     ├── index.ts

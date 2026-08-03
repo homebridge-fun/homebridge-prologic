@@ -1,2 +1,3 @@
-aqualogic>=2.4.0
+# Host sidecar (pool_service.py) — Flask only. The RS-485 aqualogic decode runs
+# on the pad bridge (deploy/install-pad.sh installs aqualogic + pyserial there).
 flask>=3.0.0
