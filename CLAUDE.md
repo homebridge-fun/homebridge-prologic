@@ -28,11 +28,13 @@
 
 ### Running a test sidecar instance (no prod impact)
 Use the venv python, an isolated config, and a spare API port; point it at the
-pad bridge by **tailnet IP** (MagicDNS name `pool` may not resolve on the hop):
+pad bridge by MagicDNS name `pool` (works now that the hop accepts tailnet DNS —
+`getent hosts pool` resolves; MagicDNS name survives a tailnet-IP change) or by
+tailnet IP (`100.113.118.4`):
 ```bash
 SIDECAR_CONFIG=/tmp/bridge-test.json /opt/pool-sidecar/venv/bin/python \
   sidecar/pool_service.py --backend rs485bridge \
-  --rs485bridge-host 100.107.169.120 --api-port 5758
+  --rs485bridge-host pool --api-port 5758
 ```
 `SIDECAR_CONFIG` isolates `backend.json` so the test can't read/clobber the
 production `/opt/pool-sidecar/backend.json`.
