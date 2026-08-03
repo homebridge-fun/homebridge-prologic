@@ -43,7 +43,8 @@ export class SwitchAccessory {
     const on = value as boolean;
     this.currentState = on; // optimistic update so onGet returns new value immediately
     this.writeInFlight = true;
-    try {
+
+    const doWrite = async () => {
       if (this.circuit === 'SUPER_CHLORINATE') {
         await this.platform.sidecar.setSuperChlorinate(on);
       } else {
@@ -53,6 +54,27 @@ export class SwitchAccessory {
       // the enable was toggled from the Heater Auto switch, rather than letting
       // them lag until the next poll.
       if (this.circuit === 'HEATER_1') this.platform.pushHeaterEnabled(on);
+    };
+
+    // HEATER_1 and SUPER_CHLORINATE writes navigate the Settings menu (~15s),
+    // which exceeds HomeKit's ~10s onSet timeout — awaiting them makes HomeKit
+    // show "No Response" even though the command goes through. Fire-and-forget
+    // for those: return immediately and reconcile state in the background.
+    const slow = this.circuit === 'HEATER_1' || this.circuit === 'SUPER_CHLORINATE';
+    if (slow) {
+      doWrite()
+        .catch((err) => {
+          this.currentState = !on; // revert the optimistic value
+          this.service.updateCharacteristic(this.platform.Characteristic.On, !on);
+          this.platform.log.error(`[${this.circuit}] set failed:`, err);
+        })
+        .finally(() => { this.writeInFlight = false; });
+      return; // don't await — let HomeKit's write complete right away
+    }
+
+    // Fast single-press circuits (FILTER/LIGHTS/AUX): await for prompt feedback.
+    try {
+      await doWrite();
     } catch (err) {
       this.currentState = !on; // revert on failure
       this.platform.log.error(`[${this.circuit}] set failed:`, err);
