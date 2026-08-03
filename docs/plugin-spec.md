@@ -56,14 +56,16 @@ The Python sidecar (`pool_service.py`) runs as a systemd service on the "hop" Pi
 interpreter `/opt/pool-sidecar/venv/bin/python`). The Homebridge TypeScript plugin polls the
 sidecar's `/status` REST endpoint every `pollInterval` ms (default 5000).
 
-**Navigation backends** (selected by `backend` in `backend.json` / `--backend`):
-**`rs485bridge`** (current/production — a thin daemon on a pad-mounted Pi Zero 2 W owns the
-serial link and timing, exposing a small HTTP API the hop consumes over Tailscale; §4.4) and
-`aquaconnect` (HTTP to the AquaConnect box; fallback). The legacy `rs485` backend (raw TCP
-serial bridge — reads work, **writes unreliable**) is **deprecated**: removed from the plugin
-UI/config 2026-07-10, superseded by `rs485bridge`. Its sidecar-internal code
-(`panel_thread`/`RealPanel`/`_install_key_burst` + the `/benchmark/rs485` & nav-sweep tooling)
-is slated for removal in a focused follow-up (see §10.2).
+**Navigation backends** (selected by `backend` in `backend.json` / `--backend`, default
+`aquaconnect`): **`rs485bridge`** (current/production — a thin daemon on a pad-mounted Pi Zero
+2 W owns the serial link and timing, exposing a small HTTP API the hop consumes over Tailscale;
+§4.4) and `aquaconnect` (HTTP to the AquaConnect box). A **former legacy `rs485` backend**
+(raw RS-485 frames over a WiFi/ethernet *transparent* TCP serial bridge like the USR-W610)
+never worked for writes — the panel only accepts a keypress in a narrow window after each
+keep-alive, which a transparent bridge can't hit reliably, so reads worked but writes dropped.
+It was removed from the plugin UI/config (2026-07-10) and **fully deleted from the sidecar in
+0.7.2** (~780 lines: `panel_thread`/`RealPanel`/`_install_key_burst`, the RS-485 observer, and
+the `/benchmark/rs485*` + `/debug/rawkey` + `/keytiming` tooling). The Pi pad bridge replaced it.
 
 ---
 
@@ -469,8 +471,8 @@ any UI (superseded by resync + auto-tracking).
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/backend` | `{"active": "aquaconnect"\|"rs485", "config": {...}}` |
-| POST | `/backend` | `{"backend", "aquaconnect_host"?, "rs485_host"?, "rs485_port"?}` — persists + restarts |
+| GET | `/backend` | `{"active": "aquaconnect"\|"rs485bridge", "config": {...}}` |
+| POST | `/backend` | `{"backend", "aquaconnect_host"?, "rs485bridge_host"?, "rs485bridge_port"?}` — persists + restarts |
 
 ### 6.8 Backend toggle, live stream, and benchmark
 
@@ -482,24 +484,17 @@ no cross-bridge contention. Toggling RS-485 → permanent is the production swap
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/backend/toggle` | Flip active backend to the other and restart into it (clears `observe_rs485` for clean single-transport). Returns `{from, to, restarting}` |
+| POST | `/backend/toggle` | Flip active backend (aquaconnect ⇄ rs485bridge) and restart into it. Returns `{from, to, restarting}` |
 | GET | `/stream` | SSE feed of LCD frames from the **active** backend (recent tail, then live). `data: {seq, ts, text, raw}`; `: heartbeat` on idle |
-| GET | `/stream/<name>` | SSE feed from a named backend's `FrameHub` (`aquaconnect`\|`rs485`) |
-| GET | `/backends` | List backends: `{name, role: active\|observer\|inactive, frames_seen, last_frame_ts}` |
-| POST | `/benchmark/<name>` | Nav speed test. Body `{laps?=3, slot?=1, key_predelay_ms?, key_burst?, key_timeout?, post_menu_settle?, min_gap?}`. Reports per-lap wall time, presses, drops, `drop_rate_pct`; RS-485 adds `avg_key_latency_ms`, AC adds `requests_per_press`. **Prefers the active backend** (`mode: active`, single-transport); falls back to the observer (`mode: observer`) only if rs485 is requested while AC is active |
-| POST | `/benchmark/rs485/sweep` | Sweep `predelays_ms` (default `[20,30,50,70,100,130,160,200]`) to find the panel's post-keep-alive accept window; ranks by drop rate; aborts early if the panel gets stuck |
+| GET | `/stream/<name>` | SSE feed from a named backend's `FrameHub` (`aquaconnect`\|`rs485bridge`) |
+| GET | `/backends` | List backends: `{name, role: active\|inactive, frames_seen, last_frame_ts}` |
+| POST | `/benchmark/<name>` | Nav speed test. Body `{laps?=3, slot?=1, key_timeout?, post_menu_settle?, min_gap?}`. Reports per-lap wall time, presses, drops, `drop_rate_pct`; AC adds `requests_per_press`. Runs on the **active** backend (`mode: active`, single-transport) |
 
-**RS-485 keypress timing.** The WiFi serial bridge has a narrow accept window
-after each keep-alive frame; `key_predelay_ms` (default 70) targets it. Missing
-it drops the key. Use `/benchmark/rs485/sweep` to find the lowest-drop predelay
-for the panel, then bake it into the sidecar's `--key-predelay-ms` startup arg.
-
-**Parallel observer (optional, off by default).** `--observe-rs485` runs an
-observe-only RS-485 listener alongside an active AquaConnect backend, streaming
-to `/stream/rs485` with an isolated state snapshot. It exists for a future live
-side-by-side dashboard, but is **not** the validation path — single-transport
-toggling is, because mixing a read on one bridge with a write on the other
-muddies measurements and doesn't reflect the swapped end-state.
+The two backends are complete, isolated interfaces; exactly one is active at a
+time. (The former legacy `rs485` keypress-timing tuning — `key_predelay_ms`, the
+`/benchmark/rs485/sweep` window sweep, and the `--observe-rs485` parallel
+observer — was removed with that backend in 0.7.2. The pad bridge owns RS-485
+timing on the Pi, so there is nothing to tune from the hop.)
 
 ### 6.9 Debug
 
@@ -884,7 +879,7 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 
 | Item | Priority | Notes |
 |---|---|---|
-| **Remove legacy `rs485` backend from the sidecar** | Med | Plugin UI/config already removed it (2026-07-10); production is on `rs485bridge`. Sidecar-internal excision is a ~400-line refactor entangled with key-timing globals (`KEY_BURST`/`KEY_PREDELAY_MS`), the wedge-probe machinery, and the `/benchmark/rs485` + `/debug/nav-sweep`/`nav-benchmark`/`rawkey`/`taptest` + `/keytiming` tooling — and touches the `/status` path. Do it as its OWN pass with a sidecar **boot-test on `rs485bridge` + `aquaconnect` + `--simulate`** before deploy (a `/status` regression takes HomeKit + cockpit offline). Remove: `panel_thread`, `RealPanel`, `rs485_observer_thread`, `_install_key_burst`, the `observe_rs485` args/config, and the rs485 debug/benchmark routes. KEEP: `SimPanel`/`--simulate`, `_get_panel`, `_get_navigator`. |
+| **Remove legacy `rs485` backend from the sidecar** | **DONE (0.7.2)** | Removed ~780 lines: `panel_thread`, `RealPanel`, `rs485_observer_thread`, `_install_key_burst`, the `KEY_*` keep-alive machinery, the `observe_rs485` args/config, and the rs485-only debug/benchmark routes (`/benchmark/rs485*`, `/debug/rawkey`, `/keytiming`, `/debug/keyburst`). `--backend` default flipped to `aquaconnect`; `--simulate` checked first. Kept `SimPanel`/`--simulate`, `_get_panel`, `_get_navigator`, wedge machinery, `/status` (byte-unchanged). Boot-tested on `aquaconnect` + `rs485bridge` + `--simulate`. |
 | **Code-review follow-ups (COMPLETE 2026-07-10)** | Done | Full 3-way code review done (sidecar/plugin/cockpit). HTML-escaping of fault/label innerHTML; FILTER-off-during-heater-cooldown cry-wolf guard; #1 removed pump/VSP speeds from HomeKit (plugin side — commit `366d259`); sidecar + cockpit dead-code cleanup; spec fixes; heater switch ⇄ thermostat sync — all done (sub-rows below). |
 | ↳ Sidecar dead-code cleanup | Done | Removed `activate_vsp_slot` + `/vsp/slot4*` compat routes + `read_vsp_slot4`/`set_vsp_slot4`/`activate_vsp_slot4` aliases; `keypad_press` (unreachable), `_wait_key_sent` (unused), `_AC_SETTLE_S` (unused const). Renamed module-level `_pct` → `_percentile`. Kept `/vsp/slot/<n>` set + `/vsp/spa` (cockpit uses them). |
 | ↳ Spec fixes | Done | (#3) Spa mode documented as the **SPA circuit switch** (renameable via `circuitLabels`); stale `spaModeAccessory.ts` / `enableSpaModeSwitch` references removed. (#4) Thermostat section now matches live behavior (`TargetHeatingCoolingState` driven from armed `heater_enabled`, not pinned to Heat). `HEATER_1` keycode corrected `0D`→`13`. automation-spec §15.4 rewritten for the frame-reader (retired the 3 s settle + `KeyId=00` reread). |
