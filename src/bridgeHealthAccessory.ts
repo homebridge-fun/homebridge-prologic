@@ -2,29 +2,35 @@ import type { PlatformAccessory, Service } from 'homebridge';
 import type { ProLogicPlatform } from './platform';
 
 /**
- * Switch tile that surfaces the AquaConnect command-path wedge condition AND
- * doubles as a manual "test the bridge now" button.
- * On (true)  = bridge is wedged, needs power-cycle.
- * Off (false) = command path OK.
+ * Switch tile that surfaces the bridge command-path health AND doubles as a
+ * manual "test the bridge now" button.
+ * On (true)  = bridge unhealthy. Off (false) = command path OK.
  *
- * Rendered as a switch so it sits alongside other switches in HomeKit and
- * highlights visibly when the bridge needs attention. Tapping it (either
- * direction) runs a live active command-path probe and snaps the tile to the
- * real result — so it works as a test button: tap it, and if the bridge is
- * healthy it falls back to off, if wedged it stays on.
+ * The MEANING of "on" is backend-dependent:
+ *  - AquaConnect: the box's command path wedged and needs a physical power-cycle
+ *    ("Bridge Needs Rebooting").
+ *  - RS-485 pad bridge: the pad is briefly unreachable; it self-heals when it
+ *    reconnects — no reboot, just check the pad's Wi-Fi ("Bridge Offline").
+ *
+ * Tapping it (either direction) runs a live command-path probe and snaps the
+ * tile to the real result, so it works as a test button.
  */
 export class BridgeHealthAccessory {
   private readonly service: Service;
   private wedged = false;
   private testing = false;
+  private readonly isRs485: boolean;
 
   constructor(
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
+    backend: string,
   ) {
+    this.isRs485 = backend === 'rs485bridge';
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Hayward')
-      .setCharacteristic(this.platform.Characteristic.Model, 'AquaConnect')
+      .setCharacteristic(this.platform.Characteristic.Model,
+        this.isRs485 ? 'RS-485 pad bridge' : 'AquaConnect')
       .setCharacteristic(this.platform.Characteristic.SerialNumber, 'bridge-health');
 
     // Self-heal: this accessory was originally a ContactSensor. If a cached
@@ -61,8 +67,11 @@ export class BridgeHealthAccessory {
     try {
       const wedged = await this.platform.sidecar.testBridge();
       this.wedged = wedged;
+      const bad = this.isRs485
+        ? 'OFFLINE — pad unreachable (self-heals on reconnect; check pad Wi-Fi)'
+        : 'WEDGED — power-cycle the box';
       this.platform.log.info(
-        `[BridgeHealth] Manual test result: ${wedged ? 'WEDGED — power-cycle the box' : 'healthy'}.`,
+        `[BridgeHealth] Manual test result: ${wedged ? bad : 'healthy'}.`,
       );
     } catch (err) {
       this.platform.log.warn(
@@ -84,11 +93,13 @@ export class BridgeHealthAccessory {
     this.wedged = wedged;
     this.service.updateCharacteristic(this.platform.Characteristic.On, wedged);
     if (wedged) {
-      this.platform.log.warn(
-        '[BridgeHealth] AquaConnect command path wedged — power-cycle the box to restore control.',
-      );
+      this.platform.log.warn(this.isRs485
+        ? '[BridgeHealth] RS-485 pad bridge offline — will self-heal when it reconnects (check pad Wi-Fi).'
+        : '[BridgeHealth] AquaConnect command path wedged — power-cycle the box to restore control.');
     } else {
-      this.platform.log.info('[BridgeHealth] AquaConnect command path recovered.');
+      this.platform.log.info(this.isRs485
+        ? '[BridgeHealth] RS-485 pad bridge back online.'
+        : '[BridgeHealth] AquaConnect command path recovered.');
     }
   }
 }
