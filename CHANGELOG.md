@@ -3,6 +3,43 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.7.0 — Lights that actually work, heater clarity, cockpit polish
+
+Resolves pool/spa light scene selection on real hardware, cleans up the heater
+readout, and slims the cockpit light settings.
+
+**Pool light (Hayward ColorLogic)**
+- **Corrected to the real light.** It's the **12-program ColorLogic (CL 4.0)**,
+  not the 17-program Universal ColorLogic we'd assumed — confirmed against the
+  user's manual and the hardware (one green, not two). Program list, dropdown,
+  and HomeKit tile now match.
+- **Reliable absolute selection via a resync anchor.** A single 11–14 s off
+  re-synchronizes the light to program 1 (Voodoo Lounge) — hardware-confirmed.
+  Scene selection steps the **minimum** number of off/on cycles from the tracked
+  position, or anchors + steps when the position is unknown.
+- **One-tap "Resync colors"** button in the pool light settings; a current-program
+  badge shows on the card header.
+
+**Spa light (Pentair IntelliBrite)**
+- Absolute count with the `offset=+1` calibration **baked into the sidecar** (no
+  longer a UI knob).
+
+**Heater**
+- **Enabled inferred from the relay.** A firing relay means the heater is armed,
+  so the mode can never read "Off" while it's actually running — fixes the
+  contradictory cockpit state. Cockpit labels are now **Heater: Enabled / Off**
+  and **Heating now: Running / Idle**.
+
+**Cockpit**
+- Light settings are **body-aware and slimmed**: pool shows Resync + timing;
+  spa shows timing + reset ms. Removed the UCL reset, manual toggle, set-current,
+  step, and raw-count tools. Press feedback on every settings button.
+
+**Docs**
+- `colorlogic-research.md` rewritten with one self-contained section per light
+  type and a "how we know it works" verification status; the superseded UCL
+  theory is moved to an appendix.
+
 ## 0.6.0 — Heater clarity, pad hardening, observability
 
 Refines the heater UX, makes the pad Pi freeze-proof, and adds the tooling to
