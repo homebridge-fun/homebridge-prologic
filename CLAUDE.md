@@ -38,16 +38,17 @@ SIDECAR_CONFIG=/tmp/bridge-test.json /opt/pool-sidecar/venv/bin/python \
 production `/opt/pool-sidecar/backend.json`.
 
 ### Standard deploy
-Block 1 — Homebridge terminal:
+Single block — Homebridge terminal. Put `restart homebridge` **last**: it kills
+this session but still completes, so it belongs at the end of the same block.
+Only add a **second** block when something must run *after* the restart (label
+it for an SSH / external terminal).
 ```bash
 cd /home/greg/development/homebridge-prologic
 git stash
-git pull --rebase origin claude/gracious-planck-1yz8v9
+git pull --rebase origin <current-branch>
 sudo cp sidecar/pool_service.py /opt/pool-sidecar/pool_service.py
+sudo cp sidecar/web/index.html /opt/pool-sidecar/web/index.html
 sudo systemctl restart pool-sidecar
 npm run build
-```
-Block 2 — SSH / external terminal:
-```bash
 sudo systemctl restart homebridge
 ```
