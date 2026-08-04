@@ -4097,13 +4097,21 @@ def _ac_heater_enable(which: str, on: bool) -> Response:
         return jsonify({'ok': True, 'already': True, 'which': which})
 
     if cur_mode == which:
-        # Active body → direct keypad press; LCD response confirms the new state.
+        # Active body → direct keypad press. The panel toggles immediately, but
+        # the armed (HEATER_AUTO_MODE) bit takes a frame or two to broadcast — a
+        # single instant read falsely 502'd, which bounced the HomeKit tile. Poll
+        # for the armed bit to settle (~up to 3s) before deciding.
         with _nav_lock:
             _ac_backend.send_nav_key('HEATER1')   # key code '13'
+        new = cur
+        for _ in range(15):
             with state_lock:
                 new = state.spa_heater_enabled if which == 'spa' else state.pool_heater_enabled
+            if new == on:
+                break
+            time.sleep(0.2)
         if new != on:
-            log.warning('Heater %s -> %s not confirmed from LCD (still %s)', which, on, new)
+            log.warning('Heater %s -> %s not confirmed (still %s)', which, on, new)
             _record_command_failure()
             _immediate_wedge_probe()
             return jsonify({
