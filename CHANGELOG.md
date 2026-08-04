@@ -3,6 +3,18 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.2 — Circuit toggles no longer bounce
+
+- **Filter / Lights / Aux / Spillover / Pool-Spa toggles stick.** Same race the
+  heater had (0.8.1): the sidecar confirmed each toggle with a single instant
+  read (~57ms after the press), before the panel's ~200ms LED broadcast reflected
+  the change, so it returned a false 502 and the plugin reverted the tile (the
+  bounce). Now it polls the circuit state / valve_mode for up to ~2-3s until it
+  matches the target before confirming. The body-mode switch also waits for each
+  press to register before pressing again (avoids overshoot). Note: this is a
+  distinct fix from the 0.7.1 "No Response" (onSet timeout) fire-and-forget change
+  — that fire-and-forget is what turned the false 502 into a visible bounce.
+
 ## 0.8.1 — Heater enable/disable no longer bounces
 
 - **Heater toggle sticks on the first try.** Two fixes: (1) derive the heater's
