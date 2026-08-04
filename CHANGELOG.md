@@ -3,6 +3,16 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.1 — Heater enable/disable no longer bounces
+
+- **Heater toggle sticks on the first try.** Two fixes: (1) derive the heater's
+  `enabled` (armed/Auto) state from the live `HEATER_AUTO_MODE` bit
+  (`circuits['HEATER_1']`) instead of inferring it from the firing relay — the old
+  inference forced "enabled" back on while the relay cooled down and broke the
+  disable confirmation; (2) poll that armed bit for up to ~3s until it settles
+  before confirming, instead of a single instant read that raced the panel's
+  broadcast and falsely returned 502 (which bounced the HomeKit tile).
+
 ## 0.8.0 — Host sidecar installer; docs/spec sync for publishing
 
 - **New host sidecar installer** (`sidecar/install.sh`) for a clean fresh setup:
