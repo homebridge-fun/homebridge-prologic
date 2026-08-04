@@ -4190,13 +4190,20 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
         # the LED poll confirms the target mode. No menu navigation needed —
         # this is a direct keypad press that the next read cycle confirms.
         with _nav_lock:
+            confirmed = False
             for _ in range(3):
                 _ac_backend.send_nav_key('POOL')  # 'POOL'/'SPA'/'SPILLOVER' all → key 07
-                with state_lock:
-                    if state.valve_mode == dest:
-                        break
-            with state_lock:
-                confirmed = state.valve_mode == dest
+                # Wait for the LED broadcast to reflect this press before pressing
+                # again — avoids overshoot AND the false-502 race from reading too
+                # fast (the mode change lags the keypress by a frame or two).
+                for _ in range(8):    # ~1.6s
+                    with state_lock:
+                        if state.valve_mode == dest:
+                            confirmed = True
+                            break
+                    time.sleep(0.2)
+                if confirmed:
+                    break
         if confirmed:
             _record_command_success()
             log.info('Body mode -> %s (AquaConnect circuit %s -> %s)', dest, key, 'ON' if on else 'OFF')
@@ -4221,9 +4228,17 @@ def _ac_set_circuit(key: str, on: bool) -> Response:
             heater_was_active = state.heater_active
         if cur == on:
             return jsonify({'ok': True, 'already': True})
-        _ac_backend.send_nav_key(keypad)   # press + settle + re-read (updates state)
+        _ac_backend.send_nav_key(keypad)   # press + settle
+    # The LED broadcast reflecting the toggle can lag the press by a frame or two;
+    # poll the circuit state to settle (~up to 3s) rather than a single instant
+    # read, which raced the broadcast, falsely 502'd, and bounced the HomeKit tile.
+    new = cur
+    for _ in range(15):
         with state_lock:
             new = state.circuits.get(key)
+        if new == on:
+            break
+        time.sleep(0.2)
     if new == on:
         _record_command_success()
         log.info('Circuit %s -> %s (AquaConnect)', key, 'ON' if on else 'OFF')
