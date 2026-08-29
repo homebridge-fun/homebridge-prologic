@@ -2862,11 +2862,27 @@ class MenuNavigator:
                 previous_pct = self._pct(txt)
                 # Step PLUS/MINUS to the target, re-reading after each press so
                 # dropped presses re-press and any overshoot corrects itself.
-                self._step_to(self._pct, target_pct,
-                              'PLUS', 'MINUS', self._STEP_MAX, label)
+                # Store what _step_to ACTUALLY confirmed, not the requested
+                # target — a hardware floor/ceiling makes it return early with a
+                # clamped value (not an exception), and blindly recording the
+                # target would make the sidecar believe a write landed when it
+                # only got partway. (Also fixes: this used to write into
+                # state.chlorinator_percent — the POOL field — unconditionally,
+                # so setting the SPA % corrupted the pool's cached value and
+                # never touched spa_chlorinator_percent at all.)
+                final = self._step_to(self._pct, target_pct,
+                                      'PLUS', 'MINUS', self._STEP_MAX, label)
+                reached = (final == target_pct)
                 with state_lock:
-                    state.chlorinator_percent = float(target_pct)
+                    if which == 'pool':
+                        state.chlorinator_percent = float(final)
+                    else:
+                        state.spa_chlorinator_percent = float(final)
+                if not reached:
+                    log.warning('Chlorinator %s reached %s%%, requested %s%% '
+                                '— keypresses may be dropping', which, final, target_pct)
                 return {'which': which, 'target_pct': target_pct,
+                        'actual_pct': final, 'reached': reached,
                         'previous_pct': previous_pct}
         finally:
             self.fast_exit()
@@ -2993,11 +3009,23 @@ class MenuNavigator:
         try:
             with _nav_lock:
                 self._goto_vsp_slot(slot)
-                self._step_to(self._pct, target_pct,
-                              'PLUS', 'MINUS', self._STEP_MAX, f'Filter Speed{slot}')
+                # Store what _step_to ACTUALLY confirmed, not the requested
+                # target — a hardware floor/ceiling makes it return early with a
+                # clamped value (not an exception), and blindly recording the
+                # target would make the sidecar believe a write landed when it
+                # only got partway (same class of bug fixed in set_heater/
+                # set_chlorinator).
+                final = self._step_to(self._pct, target_pct,
+                                      'PLUS', 'MINUS', self._STEP_MAX, f'Filter Speed{slot}')
+                reached = (final == target_pct)
                 with state_lock:
-                    state.vsp_slot_pct[slot] = target_pct
-                return {'slot': slot, 'target_pct': target_pct, 'result': self.text()}
+                    state.vsp_slot_pct[slot] = final
+                if not reached:
+                    log.warning('VSP slot%s reached %s%%, requested %s%% '
+                                '— keypresses may be dropping or hit a hardware limit',
+                                slot, final, target_pct)
+                return {'slot': slot, 'target_pct': target_pct,
+                        'actual_pct': final, 'reached': reached, 'result': self.text()}
         finally:
             self.fast_exit()
 
@@ -3030,11 +3058,18 @@ class MenuNavigator:
         try:
             with _nav_lock:
                 self._goto_spa_speed()
-                self._step_to(self._pct, target_pct,
-                              'PLUS', 'MINUS', self._STEP_MAX, 'Spa Speed')
+                # Store what _step_to ACTUALLY confirmed, not the requested
+                # target — see set_vsp_slot's comment for why.
+                final = self._step_to(self._pct, target_pct,
+                                      'PLUS', 'MINUS', self._STEP_MAX, 'Spa Speed')
+                reached = (final == target_pct)
                 with state_lock:
-                    state.spa_speed = target_pct
-                return {'spa_speed': target_pct}
+                    state.spa_speed = final
+                if not reached:
+                    log.warning('Spa Speed reached %s%%, requested %s%% '
+                                '— keypresses may be dropping or hit a hardware limit',
+                                final, target_pct)
+                return {'spa_speed': final, 'target_pct': target_pct, 'reached': reached}
         finally:
             self.fast_exit()
 
