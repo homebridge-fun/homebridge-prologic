@@ -4709,8 +4709,8 @@ def _apply_setpoint(which: str, temp_f: int) -> None:
         _record_command_failure()
         _immediate_wedge_probe()
         return
-    log.info('Heater %s setpoint -> %s°F (was_off=%s)',
-             which, temp_f, result['was_off'])
+    log.info('Heater %s setpoint -> %s°F (actual=%s°F, reached=%s)',
+             which, temp_f, result['actual_f'], result['reached'])
 
 
 @app.route('/heater/<which>/setpoint', methods=['POST'])
