@@ -22,18 +22,25 @@ export interface ThermostatState {
 export type ThermostatBody = 'auto' | 'pool' | 'spa';
 
 /**
- * §10 HomeKit thermostat accessories. One physical heater, two mode-driven
- * setpoints, exposed as three thermostats:
+ * §10 HomeKit thermostat accessory. One physical heater, two mode-driven
+ * setpoints. ONLY `body: 'auto'` is ever instantiated (see platform.ts) —
+ * mode-following mirror: points at whichever setpoint is active for the
+ * current valve mode, one tile ("Active Heat"). Its name is STATIC — see
+ * composeName()'s doc for why a body-swapping name was reverted (HomeKit
+ * doesn't reliably re-render a pushed Name change, so it could show the
+ * wrong body).
  *
- *   body = 'auto' → Accessory A: mode-following mirror. Points at whichever
- *                   setpoint is active for the current valve mode. Static
- *                   name ("Active Heat") — see composeName()'s doc for why a
- *                   body-swapping name was reverted (HomeKit doesn't reliably
- *                   re-render a pushed Name change, so it could show the wrong
- *                   body).
- *   body = 'pool' → Accessory B: always the Pool setpoint. Name carries its
- *                   state: "Pool Heat — Heating/Standby/Off".
- *   body = 'spa'  → Accessory C: always the Spa setpoint. Same naming scheme.
+ * `body: 'pool' | 'spa'` (dedicated always-that-body tiles, "Pool Heat" /
+ * "Spa Heat") is UNUSED DEAD CODE, not a shipping feature: there was
+ * originally a three-accessory design (see docs/aqualogic-automation-spec.md
+ * §10, marked historical) with dedicated `enablePoolHeaterThermostat` /
+ * `enableSpaHeaterThermostat` config options, but it was removed — one
+ * physical HEATER_1 enable rendered as three tiles was confusing (they could
+ * disagree on Heating/Standby and on which setpoint was "live"). Those config
+ * options and the accessories are gone; the `'pool'`/`'spa'` branches below
+ * are unreachable in production and kept only because nothing has needed
+ * removing them yet — don't treat comments describing them as current-state
+ * documentation.
  *
  * handleSetTarget writes the setpoint via menu navigation (§13.3).
  * handleSetMode toggles HEATER_1 (the single physical heater enable).
