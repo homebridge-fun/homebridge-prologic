@@ -1,5 +1,18 @@
 # Working with this repo
 
+## Git workflow — branch discipline
+- **Never edit code, or commit, directly on `main`.** All code changes happen
+  on a branch.
+- **If not already on a branch when a code change is needed, ASK first** which
+  branch to use / whether to create a new one — don't just create one silently.
+  Once confirmed, create it off latest `main` and make all edits there.
+- **Never merge/push a branch into `main`, and never commit directly to `main`,
+  without an explicit command from the user to do so in that moment.** Finishing
+  a fix and pushing the feature branch is NOT itself permission to merge —
+  wait to be told (e.g. "bring it back to main", "merge it").
+- This applies to every code change, however small — docs-only edits to files
+  like this one follow the same rule unless the user says otherwise.
+
 ## Response style
 - **Always say WHERE every command runs.** This is a multi-machine setup — the
   **hop** (Homebridge host: dev checkout, `pool-sidecar`, cockpit), the **pad**
