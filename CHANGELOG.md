@@ -3,6 +3,17 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.9 — Chlorinator/VSP-slot/spa-speed writes now record what actually landed
+
+- **Fixed: hitting a hardware floor/ceiling on chlorinator %, a VSP filter
+  slot, or spa speed silently recorded the requested value instead of the
+  clamped one it actually reached.** Same underlying pattern as the heater
+  setpoint fix, found via an audit of every setting-write for the same class
+  of bug.
+- **Fixed a separate bug in the same code: setting the SPA chlorinator %
+  overwrote the POOL's cached percentage instead of the spa's** — the write
+  always targeted the pool field regardless of which body was requested.
+
 ## 0.8.8 — Super Chlorinate now reverts immediately on a failed toggle
 
 - **Fixed: an unconfirmed Super Chlorinate toggle reported success anyway.**
