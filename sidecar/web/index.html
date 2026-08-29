@@ -527,7 +527,9 @@
   // FILTER lives in Pump Speed, POOL/SPA in Mode, HEATER_1 in Conditions.
   // LIGHTS (pool) and AUX_1 (spa) have dedicated light cards with power + scenes;
   // the generic "Other" card only carries the remaining aux circuits.
-  const SWITCHES = [['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover']];
+  // SUPER_CHLORINATE has no keypad key (menu-only) — applyStaged special-cases
+  // it to POST /superchlorinate instead of the generic /circuit/<name>.
+  const SWITCHES = [['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover'], ['SUPER_CHLORINATE', 'Super Chlorinate']];
   function stageCircuit(name) {
     if (busy) return;
     const real = !!(last.circuits && last.circuits[name]);
@@ -599,14 +601,18 @@
     if ('spaLight' in staged) items.push(['Spa light → ' + staged.spaLight.name, '/lights/spa/program', { program: staged.spaLight.n }]);
     if ('poolLight' in staged) items.push(['Pool light → ' + staged.poolLight.name, '/lights/pool/program', { program: staged.poolLight.n }]);
     // Any staged circuit toggle (light power pills stage ckt:LIGHTS / ckt:AUX_1;
-    // the Other card stages ckt:AUX_2 / ckt:SPILLOVER) — handle them generically
-    // so none are dropped now that the light circuits aren't in SWITCHES.
-    const CKT_LABEL = { LIGHTS: 'Pool light', AUX_1: 'Spa light', AUX_2: 'Aux 2', SPILLOVER: 'Spillover' };
+    // the Other card stages ckt:AUX_2 / ckt:SPILLOVER / ckt:SUPER_CHLORINATE) —
+    // handle them generically so none are dropped now that the light circuits
+    // aren't in SWITCHES. SUPER_CHLORINATE has no keypad key, so the sidecar
+    // only supports it via the dedicated /superchlorinate menu-nav endpoint —
+    // POSTing it to /circuit/SUPER_CHLORINATE 422s ("cannot be toggled").
+    const CKT_LABEL = { LIGHTS: 'Pool light', AUX_1: 'Spa light', AUX_2: 'Aux 2', SPILLOVER: 'Spillover', SUPER_CHLORINATE: 'Super Chlorinate' };
     for (const k in staged) {
       if (!k.startsWith('ckt:')) continue;
       const name = k.slice(4);
       const label = (last.circuit_labels && last.circuit_labels[name]) || CKT_LABEL[name] || name;
-      items.push([(staged[k] ? 'Turn on ' : 'Turn off ') + label, '/circuit/' + name, { on: staged[k] }]);
+      const path = name === 'SUPER_CHLORINATE' ? '/superchlorinate' : '/circuit/' + name;
+      items.push([(staged[k] ? 'Turn on ' : 'Turn off ') + label, path, { on: staged[k] }]);
     }
     for (const k in staged) delete staged[k];
     selectedSlot = null;

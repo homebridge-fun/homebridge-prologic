@@ -2817,19 +2817,23 @@ class MenuNavigator:
     def set_super_chlorinate(self, on: bool) -> dict:
         """Toggle Super Chlorinate on/off via Settings menu navigation.
 
-        Frame format (verified on hardware):
-          'Super Chlorinate <span class="WBON">Off</span>'
-          'Super Chlorinate <span class="WBON">On</span>'
-        PLUS = Off→On, MINUS = On→Off.
+        On the wire the raw frame carries HTML around the value (verified on
+        hardware): 'Super Chlorinate <span class="WBON">Off</span>'. But by the
+        time text reaches here, _parse()/LcdCapture has already stripped all HTML
+        tags, so `txt` is plain 'Super Chlorinate Off' — never contains '<'/'>'.
+        Matching on '>On<' therefore NEVER matched, so `current` was always False:
+        turning ON worked (mismatch -> press), but turning OFF silently no-opped
+        (False == False -> no press sent) while still reporting {'ok': True} and
+        writing the optimistic state — the physical circuit never turned off.
+        Match the actual (tag-stripped) text instead, as a standalone word so
+        'Off' can't accidentally satisfy an 'On' check.
         """
         try:
             with _nav_lock:
                 self._anchor()
                 txt = self._press_until('RIGHT', lambda t: 'Super Chlorinate' in t,
                                         self._NAV_MAX, 'Super Chlorinate')
-                # '>On<' is unambiguous; '>Off<' also matches. 'WBON' contains 'on'
-                # so a plain substring check would always be True.
-                current = bool(re.search(r'>\s*On\s*<', txt, re.I))
+                current = bool(re.search(r'\bOn\b', txt))
                 if current != on:
                     key = 'PLUS' if on else 'MINUS'
                     self._send(key)
