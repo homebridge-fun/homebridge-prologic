@@ -19,18 +19,31 @@ export interface ThermostatState {
   heaterActive: boolean;
 }
 
-export type ThermostatBody = 'auto' | 'pool' | 'spa';
-
 /**
- * §10 HomeKit thermostat accessories. One physical heater, two mode-driven
- * setpoints, exposed as three thermostats:
+ * §10 HomeKit thermostat accessory ("Active Heat"). One physical heater, two
+ * mode-driven setpoints, ONE tile: mirrors whichever setpoint is active for
+ * the current valve mode (pool or spa).
  *
- *   body = 'auto' → Accessory A: mode-following mirror. Points at whichever
- *                   setpoint is active for the current valve mode. Dynamic
- *                   name: "Heat — Pool" / "Heat — Spa".
- *   body = 'pool' → Accessory B: always the Pool setpoint. Name carries its
- *                   state: "Pool Heat — Heating/Standby/Off".
- *   body = 'spa'  → Accessory C: always the Spa setpoint. Same naming scheme.
+ * History: this used to also support dedicated always-that-body tiles
+ * ("Pool Heat" / "Spa Heat", a `body: 'pool'|'spa'` parameter) as part of a
+ * three-accessory design — see docs/aqualogic-automation-spec.md §10
+ * (marked historical). Removed: one physical HEATER_1 enable rendered as
+ * three tiles was confusing (they could disagree on Heating/Standby and on
+ * which setpoint was "live"). Only this single mirror tile ships now.
+ *
+ * The Name/ConfiguredName characteristic is set ONCE at registration and
+ * never touched again. An earlier version swapped the name between
+ * "Heat — Pool" / "Heat — Spa" on every mode change — confirmed on hardware
+ * (2026-08) that this doesn't work: HAP documents Name as not meant to
+ * change post-pairing, ConfiguredName in particular is user-owned (editable
+ * via the Home app), and a pushed update can get permanently stuck showing a
+ * stale value that no longer has anything to do with what the accessory
+ * sends — confirmed by the fact the display was wrong even after the code
+ * was changed to a constant that was never being pushed again. The fix that
+ * actually worked was renaming it BY HAND once in the Home app. Lesson: don't
+ * fight HomeKit for control of the name; the temperature/setpoint values
+ * (which DO update reliably) are the only thing this accessory should use to
+ * convey which body is active.
  *
  * handleSetTarget writes the setpoint via menu navigation (§13.3).
  * handleSetMode toggles HEATER_1 (the single physical heater enable).
@@ -41,27 +54,24 @@ export class ThermostatAccessory {
   private targetTempC = fahrenheitToCelsius(80);
   private heatingActive = false;
   private heaterEnabled = false;
-  private currentName = '';
   private setpointDebounce: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly platform: ProLogicPlatform,
     private readonly accessory: PlatformAccessory,
-    private readonly body: ThermostatBody,
   ) {
-    const serials: Record<ThermostatBody, string> = {
-      auto: 'heater-auto', pool: 'heater-pool', spa: 'heater-spa',
-    };
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
       .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Hayward')
       .setCharacteristic(this.platform.Characteristic.Model, 'ProLogic/AquaPlus')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, serials[this.body]);
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, 'heater-auto');
 
     this.service = this.accessory.getService(this.platform.Service.Thermostat)
       ?? this.accessory.addService(this.platform.Service.Thermostat);
 
-    this.currentName = accessory.displayName;
-    this.service.setCharacteristic(this.platform.Characteristic.Name, this.currentName);
+    // Set once at registration. Never pushed again — see the class doc above
+    // for why (HomeKit doesn't respect post-pairing Name/ConfiguredName
+    // pushes reliably; rename it in the Home app if you want something else).
+    this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.displayName);
 
     const { Characteristic: C } = this.platform;
 
@@ -85,12 +95,6 @@ export class ThermostatAccessory {
     this.service.getCharacteristic(C.TemperatureDisplayUnits).setValue(1);
   }
 
-  /** Which physical body's setpoint this accessory currently reflects. */
-  private targetBody(valveMode: 'pool' | 'spa' | null): 'pool' | 'spa' {
-    if (this.body === 'auto') return valveMode ?? 'pool';
-    return this.body;
-  }
-
   handleSetTarget(value: CharacteristicValue): void {
     const c = value as number;
     // HomeKit fires onSet for every step as the user drags the temperature
@@ -108,13 +112,13 @@ export class ThermostatAccessory {
 
   private async commitSetpoint(c: number): Promise<void> {
     const f = Math.round(celsiusToFahrenheit(c));
-    const which = this.targetBody(this.platform.currentValveMode);
-    this.platform.log.info(`[Thermostat ${this.body}] setpoint → ${f}°F (body: ${which})`);
+    const which = this.platform.currentValveMode ?? 'pool';
+    this.platform.log.info(`[Active Heat] setpoint → ${f}°F (body: ${which})`);
     try {
       await this.platform.sidecar.setHeaterSetpoint(which, f);
       this.targetTempC = c;
     } catch (err) {
-      this.platform.log.error(`[Thermostat ${this.body}] setpoint write failed:`, err);
+      this.platform.log.error('[Active Heat] setpoint write failed:', err);
       // Revert the dial to the last known good setpoint rather than leaving the
       // failed drag value showing.
       this.service.updateCharacteristic(
@@ -127,25 +131,25 @@ export class ThermostatAccessory {
   // toggle goes through. Fire-and-forget; reconcile on failure.
   handleSetMode(value: CharacteristicValue): void {
     const on = (value as number) !== 0;
-    this.platform.log.info(`[Thermostat ${this.body}] mode → ${on ? 'Heat' : 'Off'} (HEATER_1 circuit)`);
+    this.platform.log.info(`[Active Heat] mode → ${on ? 'Heat' : 'Off'} (HEATER_1 circuit)`);
     this.heaterEnabled = on; // optimistic
     this.platform.sidecar.setCircuit('HEATER_1', on)
       .then(() => {
-        // Keep the Heater Auto switch + the other heater thermostats in step.
+        // Keep the Heater Auto switch in step immediately.
         this.platform.pushHeaterEnabled(on);
       })
       .catch((err) => {
         this.heaterEnabled = !on; // revert
         this.service.updateCharacteristic(
           this.platform.Characteristic.TargetHeatingCoolingState, this.heaterEnabled ? 1 : 0);
-        this.platform.log.error(`[Thermostat ${this.body}] mode set failed:`, err);
+        this.platform.log.error('[Active Heat] mode set failed:', err);
       });
   }
 
   /**
    * Reflect a heater enable/disable that happened via another tile (the Heater
-   * Auto switch or another thermostat), without triggering a write. Keeps the
-   * Heat/Off dial in sync immediately instead of waiting for the next poll.
+   * Auto switch), without triggering a write. Keeps the Heat/Off dial in sync
+   * immediately instead of waiting for the next poll.
    */
   setModeOptimistic(enabled: boolean): void {
     if (this.heaterEnabled === enabled) return;
@@ -154,20 +158,9 @@ export class ThermostatAccessory {
       this.platform.Characteristic.TargetHeatingCoolingState, enabled ? 1 : 0);
   }
 
-  /** Compose the role-clear dynamic name (§10.1 / §10.2). */
-  private composeName(s: ThermostatState, which: 'pool' | 'spa', enabled: boolean): string {
-    const isCurrentMode = s.valveMode === which;
-    if (this.body === 'auto') {
-      return which === 'spa' ? 'Heat — Spa' : 'Heat — Pool';
-    }
-    const base = this.body === 'spa' ? 'Spa Heat' : 'Pool Heat';
-    if (!enabled) return `${base} — Off`;
-    return isCurrentMode ? `${base} — Heating` : `${base} — Standby`;
-  }
-
   updateState(s: ThermostatState): void {
     const { Characteristic: C } = this.platform;
-    const which = this.targetBody(s.valveMode);
+    const which = s.valveMode ?? 'pool';
 
     // Current temperature: the sensor for the body this accessory reflects
     const tempF = which === 'spa' ? s.spaTempF : s.poolTempF;
@@ -197,28 +190,15 @@ export class ThermostatAccessory {
     const enabled = enabledByBody ?? s.heater1Circuit;
 
     // CurrentHeatingCoolingState = HEAT only when the relay is actually FIRING
-    // right now (heater_active), NOT merely armed. heater1Circuit is the armed
-    // Auto-mode bit, so it must not drive this — that's the Auto/Off distinction,
-    // handled by `enabled` above. This is the Running (Heating) vs Idle line.
-    const isActiveNow = s.heaterActive && (s.valveMode === which || this.body === 'auto');
-    if (this.heatingActive !== isActiveNow) {
-      this.heatingActive = isActiveNow;
-      this.service.updateCharacteristic(C.CurrentHeatingCoolingState, isActiveNow ? 1 : 0);
+    // right now — this tile always mirrors whichever body is active, so it's
+    // just the raw heater_active signal (one physical relay, not body-specific).
+    if (this.heatingActive !== s.heaterActive) {
+      this.heatingActive = s.heaterActive;
+      this.service.updateCharacteristic(C.CurrentHeatingCoolingState, s.heaterActive ? 1 : 0);
     }
     if (this.heaterEnabled !== enabled) {
       this.heaterEnabled = enabled;
       this.service.updateCharacteristic(C.TargetHeatingCoolingState, enabled ? 1 : 0);
-    }
-
-    // Dynamic, role-clear name (§10.1 / §10.2)
-    const name = this.composeName(s, which, enabled);
-    if (name !== this.currentName) {
-      this.currentName = name;
-      this.service.updateCharacteristic(C.Name, name);
-      const cn = (C as { ConfiguredName?: unknown }).ConfiguredName;
-      if (cn) {
-        this.service.updateCharacteristic(cn as Parameters<typeof this.service.updateCharacteristic>[0], name);
-      }
     }
   }
 }

@@ -117,7 +117,7 @@ Add to your Homebridge `config.json`:
   "sidecarPort": 5757,
   "pollInterval": 5000,
   "circuits": ["POOL", "SPA", "FILTER", "LIGHTS", "HEATER_1"],
-  "enablePoolHeaterThermostat": true,
+  "enableActiveHeaterThermostat": true,
   "enableTemperatureSensors": true
 }
 ```
@@ -134,7 +134,7 @@ Available circuits: `POOL`, `SPA`, `FILTER`, `LIGHTS`, `SPILLOVER`, `AUX_1`, `AU
 | Lights | Switch | LIGHTS circuit |
 | Aux 1 / Aux 2 | Switch | AUX_1 / AUX_2 circuits |
 | Heater | Switch | Toggles heater auto-mode (see limitations) |
-| Pool Heater | Thermostat | Current temp + heating state; on/off via auto-mode |
+| Active Heat | Thermostat | Single mode-following tile — mirrors whichever body (pool/spa) is currently active; name stays static, only the values change. `enableActiveHeaterThermostat` |
 | Pool Temperature | Temperature Sensor | Read-only, °F→°C converted |
 | Air Temperature | Temperature Sensor | Read-only, °F→°C converted |
 

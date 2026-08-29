@@ -322,8 +322,11 @@ class Bridge:
             # fit the 2-byte REMOTE_WIRED key field. Let aqualogic build the
             # WIRELESS_KEY_EVENT frame; it queues to the same _send_queue our
             # keep-alive timing patch drains, so it gets the same accept-window
-            # targeting. NOTE: HEATER_1 over direct serial is UNVERIFIED — the
-            # AquaConnect path uses KeyId=13 instead; test deliberately.
+            # targeting. Confirmed working in production (2026-08): the send
+            # itself lands fine — the reliability issue we chased on the heater
+            # toggle turned out to be the SIDECAR reading its confirmation too
+            # early (one instant read racing the ~200ms LED broadcast), not this
+            # frame path. See pool_service.py's heater-enable confirm/retry.
             aq.send_key(k)
             self._lcd.wait_for_change(settle)
             return

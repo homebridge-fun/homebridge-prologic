@@ -146,11 +146,16 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
 
     // Single mode-following "active" thermostat (§10.1). One physical heater =
     // one tile; it mirrors whichever setpoint is active for the current valve
-    // mode (name shows "Heat — Pool" / "Heat — Spa").
+    // mode. Name ("Active Heat") is set once here and never pushed again — a
+    // body-swapping name was tried and confirmed broken on hardware (2026-08):
+    // ConfiguredName is user-owned by the Home app and can get permanently
+    // stuck showing a stale body, actively misleading rather than just stale.
+    // If you want a different name, rename it in the Home app; the temperature
+    // values (which DO update reliably) already convey which body is active.
     if (this.cfg.enableActiveHeaterThermostat) {
       const acc = register('Active Heat',
         this.api.hap.uuid.generate(`${PLUGIN_NAME}-thermostat-auto`));
-      this.thermostatAuto = new ThermostatAccessory(this, acc, 'auto');
+      this.thermostatAuto = new ThermostatAccessory(this, acc);
     }
 
     // Temperature sensors
