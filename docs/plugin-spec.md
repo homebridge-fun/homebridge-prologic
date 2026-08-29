@@ -404,7 +404,9 @@ backend-specific wiring. Seeing the frame sets it on; not seeing it for
 `_SUPERCHLOR_TTL_S` (150s, ~2x the natural scroll-cycle period) flips it off —
 evaluated lazily in `/status` via `_super_chlor_expire_if_stale()`, mirroring
 the `_wedge_cooling_down()` pattern (called outside `state_lock`, which is
-non-reentrant).
+non-reentrant). The captured `HH:MM` is also exposed as `/status`'s
+`super_chlor_remaining` (`None` when off) and shown in the cockpit's Other card
+as `On · HH:MM left` — same compound-pill style as Pump Speed's `75% · heat`.
 
 ### 5.9 Debug
 

@@ -945,7 +945,14 @@
       const row = document.createElement('div');
       row.className = 'row';
       const cls = 'pill ctl' + (eff ? ' on' : ' off') + ((key in staged) ? ' staged' : '');
-      row.innerHTML = `<span class="label">${esc(labels[name] || dflt)}</span><span class="${cls}">${eff ? 'On' : 'Off'}</span>`;
+      // Super Chlorinate: show its live countdown (passively read off the idle
+      // scroll) instead of a bare "On" — same "· " compound-pill style already
+      // used for Pump Speed ("75% · heat").
+      let pillText = eff ? 'On' : 'Off';
+      if (name === 'SUPER_CHLORINATE' && eff && s.super_chlor_remaining) {
+        pillText = `On · ${esc(s.super_chlor_remaining)} left`;
+      }
+      row.innerHTML = `<span class="label">${esc(labels[name] || dflt)}</span><span class="${cls}">${pillText}</span>`;
       row.querySelector('.pill').onclick = () => { setEditing(null); stageCircuit(name); };
       sw.appendChild(row);
     });

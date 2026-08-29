@@ -199,6 +199,10 @@ class PoolState:
     # Epoch time when wedge was first detected; used to enforce the power-cycle
     # cooldown window before commands are retried. None = not currently wedged.
     wedge_detected_at: Optional[float] = None
+    # Last-seen 'HH:MM' remaining on the Super Chlorinate countdown (passively
+    # scraped off the idle scroll — see _note_super_chlor_frame). None when off
+    # or never observed; may lag up to ~a scroll cycle behind the real clock.
+    super_chlor_remaining: Optional[str] = None
 
 state = PoolState()
 state_lock = threading.Lock()
@@ -544,7 +548,7 @@ def _mark_spa_active(now: float) -> None:
 # Presence of the frame -> definitely ON. Absence for a full scroll-cycle TTL
 # -> OFF (catches BOTH a physical off at the panel and the 24h auto-off — the
 # sidecar has no other way to learn about either).
-_SUPERCHLOR_RE = re.compile(r'Super\s*Chlorinate\s+\d{1,2}:\d{2}\s*remaining', re.I)
+_SUPERCHLOR_RE = re.compile(r'Super\s*Chlorinate\s+(\d{1,2}:\d{2})\s*remaining', re.I)
 _SUPERCHLOR_TTL_S = 150.0   # ~2x the natural scroll-cycle period
 _super_chlor_last_seen: Optional[float] = None
 _super_chlor_lock = threading.Lock()
@@ -552,9 +556,12 @@ _super_chlor_lock = threading.Lock()
 
 def _note_super_chlor_frame(text: str) -> None:
     """Called on every captured LCD frame (any backend). If it's the Super
-    Chlorinate countdown, mark it running now."""
+    Chlorinate countdown, mark it running now and record the HH:MM shown."""
     global _super_chlor_last_seen
-    if not text or not _SUPERCHLOR_RE.search(text):
+    if not text:
+        return
+    m = _SUPERCHLOR_RE.search(text)
+    if not m:
         return
     with _super_chlor_lock:
         _super_chlor_last_seen = time.time()
@@ -562,6 +569,7 @@ def _note_super_chlor_frame(text: str) -> None:
         if state.circuits.get('SUPER_CHLORINATE') is not True:
             state.circuits['SUPER_CHLORINATE'] = True
             log.info('Super Chlorinate detected running (idle-scroll countdown)')
+        state.super_chlor_remaining = m.group(1)
 
 
 def _super_chlor_expire_if_stale() -> None:
@@ -578,6 +586,7 @@ def _super_chlor_expire_if_stale() -> None:
             log.info('Super Chlorinate no longer on the idle scroll (>%.0fs) — '
                      'marking off (24h auto-off or turned off at the panel)',
                      _SUPERCHLOR_TTL_S)
+        state.super_chlor_remaining = None
 
 
 def _compact_history(hist: list, now: float) -> list:
@@ -2909,6 +2918,8 @@ class MenuNavigator:
                             break
                 with state_lock:
                     state.circuits['SUPER_CHLORINATE'] = confirmed
+                    if not confirmed:
+                        state.super_chlor_remaining = None
                 return {'ok': True, 'super_chlorinate': confirmed,
                         'requested': on, 'was': current}
         finally:
@@ -3259,6 +3270,7 @@ def get_status() -> Response:
             'pump_startup':            state.pump_startup,
             'spa_speed':               state.spa_speed,
             'light_program':           dict(state.light_program),
+            'super_chlor_remaining':   state.super_chlor_remaining,
             # heater setpoints are read via menu navigation, cached here after reads
             'pool_setpoint_f':     state.pool_setpoint_f,
             'spa_setpoint_f':      state.spa_setpoint_f,
