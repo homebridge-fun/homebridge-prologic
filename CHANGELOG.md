@@ -3,6 +3,33 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.9.1 — 1.0-prep docs pass, npm publish readiness
+
+- **README rewritten** for clarity/accuracy ahead of a wider release: a new
+  Mermaid architecture diagram (plugin/sidecar/cockpit/pad Pi/RS-485 bridge),
+  corrected install instructions (the plugin isn't on npm yet — from-source
+  steps instead of the old broken `npm install -g` instructions), an accurate
+  HomeKit accessory table, a new section documenting the web cockpit, and a
+  new "For contributors" section linking to the deeper spec docs.
+- **Added `LICENSE`** (MIT) — referenced by the README/package.json but
+  didn't exist as a file before.
+- **`docs/plugin-spec.md` and `docs/aqualogic-automation-spec.md` reviewed**
+  for accuracy: fixed a broken example config (nonexistent `rs485Host`/
+  `rs485Port` fields), a stale/contradictory note on which RS-485 frame type
+  the bridge actually sends, HomeKit accessory tiles documented as shipping
+  when they'd since been removed (VSP slot tiles — that control moved to the
+  cockpit), a stale version header, and several smaller staleness/clarity
+  fixes.
+- **Fixed a real bug:** `deploy/deploy.sh` (personal one-command deploy
+  script) hardcoded a since-deleted git branch and would have failed on next
+  use; also cleaned up the same stale branch reference from `deploy/README-PAD.md`
+  and `deploy/install-pad.sh`.
+- **npm publish readiness:** `package.json` now has `author`, `repository`,
+  `bugs`, `homepage`, and `displayName`, and a `files` allowlist so the
+  published tarball only ships what installers need (trimmed from ~700KB to
+  ~525KB unpacked — deploy scripts and dev-only sidecar debug tools no longer
+  ship over npm, still available via git).
+
 ## 0.9.0 — Active Heat tile name fixed; per-body thermostat dead code removed
 
 - **Fixed: the "Active Heat" thermostat tile's name could get permanently
