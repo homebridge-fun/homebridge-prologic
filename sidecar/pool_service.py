@@ -535,6 +535,51 @@ def _mark_spa_active(now: float) -> None:
     _spa_last_active_ts = now
 
 
+# Super Chlorinate has no keypad key and no broadcast LED bit (see the module
+# docstring) — the ONLY live signal is the idle status scroll showing e.g.
+# 'Super Chlorinate 24:00 remaining' while it runs (confirmed on hardware: it
+# starts a 24h countdown and switches itself off at zero). Detected passively,
+# universally across backends, from LcdCapture.text_updated() below (every
+# backend has its own LcdCapture instance, but they share that method body).
+# Presence of the frame -> definitely ON. Absence for a full scroll-cycle TTL
+# -> OFF (catches BOTH a physical off at the panel and the 24h auto-off — the
+# sidecar has no other way to learn about either).
+_SUPERCHLOR_RE = re.compile(r'Super\s*Chlorinate\s+\d{1,2}:\d{2}\s*remaining', re.I)
+_SUPERCHLOR_TTL_S = 150.0   # ~2x the natural scroll-cycle period
+_super_chlor_last_seen: Optional[float] = None
+_super_chlor_lock = threading.Lock()
+
+
+def _note_super_chlor_frame(text: str) -> None:
+    """Called on every captured LCD frame (any backend). If it's the Super
+    Chlorinate countdown, mark it running now."""
+    global _super_chlor_last_seen
+    if not text or not _SUPERCHLOR_RE.search(text):
+        return
+    with _super_chlor_lock:
+        _super_chlor_last_seen = time.time()
+    with state_lock:
+        if state.circuits.get('SUPER_CHLORINATE') is not True:
+            state.circuits['SUPER_CHLORINATE'] = True
+            log.info('Super Chlorinate detected running (idle-scroll countdown)')
+
+
+def _super_chlor_expire_if_stale() -> None:
+    """If Super Chlorinate was last seen running but hasn't reappeared on the
+    scroll within the TTL, mark it off. Call OUTSIDE state_lock (mirrors
+    _wedge_cooling_down — avoids the non-reentrant self-deadlock)."""
+    with _super_chlor_lock:
+        last_seen = _super_chlor_last_seen
+    if last_seen is None or (time.time() - last_seen) < _SUPERCHLOR_TTL_S:
+        return
+    with state_lock:
+        if state.circuits.get('SUPER_CHLORINATE') is True:
+            state.circuits['SUPER_CHLORINATE'] = False
+            log.info('Super Chlorinate no longer on the idle scroll (>%.0fs) — '
+                     'marking off (24h auto-off or turned off at the panel)',
+                     _SUPERCHLOR_TTL_S)
+
+
 def _compact_history(hist: list, now: float) -> list:
     """Apply two-tier retention: keep every sample within the last day, thin to
     one-per-15-min beyond that, drop older than 90 days. Order-preserving and
@@ -813,6 +858,11 @@ class LcdCapture:
             self.history.append((self._ts, text))
         if self._hub is not None:
             self._hub.publish(_norm(text), raw=text)
+        # Universal hook: every backend has its OWN LcdCapture instance, but they
+        # all share this method body, so this runs for any backend's frames
+        # (see _note_super_chlor_frame's docstring for why this is the only
+        # place Super Chlorinate can be passively detected).
+        _note_super_chlor_frame(text)
         self._event.set()
 
     # aqualogic may call other no-op methods on its _web object; absorb them.
@@ -3172,6 +3222,9 @@ def get_status() -> Response:
     # inside the `with state_lock:` block below self-deadlocks — pinning state_lock
     # forever and taking every status poll (and the whole accessory set) offline.
     cooldown = _wedge_cooling_down()
+    # Same reason: lazily flip Super Chlorinate off if its countdown hasn't been
+    # seen on the scroll in a while (24h auto-off / turned off at the panel).
+    _super_chlor_expire_if_stale()
     with state_lock:
         return jsonify({
             'circuits':            dict(state.circuits),

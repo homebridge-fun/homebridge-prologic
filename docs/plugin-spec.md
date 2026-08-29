@@ -381,9 +381,30 @@ activation success and also parsed passively from `Filter On:SpdN` scroll frames
 
 ### 5.8 Super Chlorinate Navigation
 
-`set_super_chlorinate(on)` navigates to the Settings menu item, detects current state via
-`re.search(r'>\s*On\s*<', txt)`, and presses PLUS (Off→On) or MINUS (On→Off) only if
-the state needs to change. Updates `state.circuits['SUPER_CHLORINATE']`.
+`set_super_chlorinate(on)` navigates to the Settings menu item and presses PLUS
+(Off→On) or MINUS (On→Off) only if the state needs to change. **Bug fixed
+2026-08:** current state used to be detected via `re.search(r'>\s*On\s*<', txt)`
+— written for the raw HTML frame, but by the time `txt` reaches this code
+`_parse()` has already stripped all tags, so the regex could never match and
+`current` was always `False`. Turning ON worked (mismatch → press); turning OFF
+silently no-op'd (`False == False` → no press sent) while still reporting
+`{'ok': True}` and writing the optimistic off state — the panel never actually
+turned off. Fixed to match the real (tag-stripped) text with `\bOn\b`.
+
+**Passive state detection.** Super Chlorinate has no keypad key and no
+broadcast LED bit, so `set_super_chlorinate()`'s optimistic write was the ONLY
+way `state.circuits['SUPER_CHLORINATE']` ever changed — it read stale/wrong
+after a sidecar restart, a physical toggle at the panel, or the automatic 24h
+timeout. Fixed by passively parsing the idle scroll: while running, the panel
+shows `Super Chlorinate HH:MM remaining` (confirmed on hardware — it starts a
+24h countdown and switches itself off at zero). `_note_super_chlor_frame()` is
+called from `LcdCapture.text_updated()` — a hook shared by every backend's own
+capture instance, so it works uniformly on AquaConnect and rs485bridge with no
+backend-specific wiring. Seeing the frame sets it on; not seeing it for
+`_SUPERCHLOR_TTL_S` (150s, ~2x the natural scroll-cycle period) flips it off —
+evaluated lazily in `/status` via `_super_chlor_expire_if_stale()`, mirroring
+the `_wedge_cooling_down()` pattern (called outside `state_lock`, which is
+non-reentrant).
 
 ### 5.9 Debug
 
@@ -758,7 +779,7 @@ homebridge-prologic/
 | Spa heater | Not yet confirmed |
 | AUX_1 | Spa light |
 | AUX_2 | Inert — safe for wedge canary probe |
-| Super Chlorinate | Verified toggle: PLUS=Off→On, MINUS=On→Off |
+| Super Chlorinate | Verified toggle: PLUS=Off→On, MINUS=On→Off. No keypad key, no LED bit — passively detected only from the idle scroll's `HH:MM remaining` countdown (§10.1); runs 24h then auto-off |
 | AquaConnect scroll rate | One frame rotation ~10–30s |
 | AquaConnect LED nibbles | 3=absent, 4=off, 5=on, 6=blink |
 | Slot-selection window frame | `Filter On:SpdN` / `+/- to change` |
@@ -866,7 +887,7 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 | Pump tile live speed | Done | Reads `pump_speed` (scroll); labeled "Filter Speed" |
 | LIGHTS / AUX_1 write | Verified | Tested on hardware; keycodes and LED confirmation correct |
 | ColorLogic / IntelliBrite scene selection | Done (2026-08) | Both lights work — see `docs/colorlogic-research.md` (authoritative). **Pool** = Hayward 12-program ColorLogic (CL 4.0), **relative** advance; absolute anchor is a single 11–14 s off → **resync to program 1 (Voodoo Lounge)**, hardware-confirmed. Selection steps minimally from the tracked position, or anchors+steps when position is unknown; cockpit **Resync colors** button. **Spa** = Pentair IntelliBrite, **absolute** count with `offset=+1` baked in. Each light is a HomeKit Television tile (scenes = inputs, `DisplayOrder` pinned, config-editable lists) and a cockpit card (staged Apply + current-program badge). Earlier 17-program UCL/mode-maze model was wrong for this install (superseded — see appendix). |
-| Super Chlorinate | Done | Settings menu nav; add to `circuits` config to expose |
+| Super Chlorinate | Done | Settings menu nav; add to `circuits` config to expose. Also in the cockpit's "Other" card (routes to `/superchlorinate`, not the generic `/circuit/<name>` — no keypad key). On/off state passively detected from the idle-scroll countdown (§5.8) |
 | Salt level sensor | Done | `enableSaltSensor`; AirQualitySensor/VOCDensity, `maxValue` raised to 4000 PPM (HAP default of 1000 was clamping the ~3200 reading) |
 | Fan spinning | Done | `CurrentFanState` set explicitly per tile on each poll; `Active=1` re-pushed every poll so HomeKit's reconnect reset doesn't stop the animation |
 | Heater two-switch model | Done | "Heater Auto" (armed/Auto-mode, tappable) + "Heater Running" (read-only relay-firing indicator from `led['heater']`). Replaced the abandoned three-state Fanv2 — Apple Home ignores `CurrentFanState` and spins any `Active=1` fan |
