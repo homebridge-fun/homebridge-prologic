@@ -121,16 +121,17 @@ the AquaConnect box.
 | Accessories | Pool Light, Aux 1, Aux 2 (3 toggles) | Circuits + heater Auto/Off + read-only temps/salt/chlorinator%/active-body |
 | Heater/spa | Explicitly unsupported by upstream ("I do not have a spa or heater... no plan to add support") | In scope for Auto/Off |
 
-**The owner's own fork of AquaConnect Lite already added heat control** on
-top of upstream — independent real-world precedent (beyond our own sidecar)
-that heater control is achievable via this same direct-HTTP model, not just
-a theoretical extrapolation from the sidecar's Python code. Worth
-confirming, when scoping this for real: whether that fork's heat control
-covers just the Auto/Off toggle (matches Tier 1's proposed scope exactly)
-or also setpoint writes (which our sidecar's own experience says needs
-menu-navigation — if the fork found a simpler path, that would change this
-design's "setpoint is out of scope" conclusion and is worth digging into
-before finalizing scope).
+**The owner's own fork adds heater and spa-mode support**
+([PR #7](https://github.com/cupshir/homebridge-aqua-connect-lite/pull/7)) —
+confirmed by inspection: it's an **Auto/Off toggle, single keypress, no
+setpoint and no menu navigation** (the PR's own thread notes the plugin can
+only represent HomeKit on/off, while the panel's actual states are "Auto
+Control"/"Manual Off" — same HomeKit-modeling constraint our own thermostat
+work ran into). This is exactly Tier 1's proposed heater scope — independent
+real-world confirmation (a second implementation, in production, by the
+project owner) that Auto/Off is reachable via plain direct HTTP, and that
+setpoint genuinely isn't reachable this way — the fork didn't attempt it
+either. No scope change from this; it validates the design as sketched.
 
 ### What would NOT need to exist in Tier 1
 
@@ -193,7 +194,3 @@ risk to what already works.
 3. Is there real demand for this, or is it worth shipping 1.0 first and
    gauging whether "I don't want to run a sidecar" is an actual recurring
    ask before investing here?
-4. What does the owner's AquaConnect Lite fork's heat control actually
-   cover — Auto/Off only, or setpoint too? If setpoint turns out to be
-   reachable without full menu-navigation, that changes what "limited" means
-   for Tier 1 and is worth investigating before finalizing scope.
