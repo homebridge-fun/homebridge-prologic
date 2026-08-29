@@ -639,19 +639,32 @@ could not be shown reliably. The two-switch split is unambiguous. The thermostat
 
 ### 7.5 Single Mode-Following Thermostat Model
 
-**"Active Heat"** (Accessory A, the only heater thermostat): follows `valve_mode` and shows
-the active body's temp/setpoint. One physical heater = one tile. **Name is static** ("Active
-Heat", never renamed after registration) — an earlier design swapped the name to "Heat — Pool"
-/ "Heat — Spa" on mode change, but the iOS Home app's room-tile summary doesn't reliably
-re-render a pushed `Name`/`ConfiguredName` update (HAP itself documents `Name` as not meant to
-change post-pairing), so after switching bodies the temperature VALUES updated correctly but
-the label could keep showing the previous body — actively wrong, not just stale. Reverted
-2026-08; the values alone already convey which body is active. The earlier dedicated per-body
-"Pool Heat" / "Spa Heat" thermostats
-(`enablePoolHeaterThermostat` / `enableSpaHeaterThermostat`) were **removed**: one physical
-`HEATER_1` enable rendered as three tiles read as out of sync (they could disagree on
-Heating/Standby and on which setpoint was live). Their config options and code are gone, and
-any stale `thermostat-pool` / `thermostat-spa` accessories are unregistered on startup.
+**"Active Heat"** (`ThermostatAccessory`, the only heater thermostat — the class no longer even
+has a concept of other bodies, see below): follows `valve_mode` and shows the active body's
+temp/setpoint. One physical heater = one tile.
+
+**Name is set once at registration and never pushed again.** An earlier design swapped the name
+to "Heat — Pool" / "Heat — Spa" on every mode change. **Confirmed broken on hardware, 2026-08:**
+after switching bodies the temperature VALUES updated correctly but the label kept showing the
+previous body — actively wrong, not just stale. First fix tried: make the name a constant
+("Active Heat") but keep pushing it. That *also* didn't display correctly, which was the tell —
+`ConfiguredName` is a HAP characteristic the Home app treats as **user-owned** (edited by the
+person, via the Home app's rename field), not something an accessory is expected to keep
+writing. A pushed value can get stuck showing something that no longer corresponds to anything
+the accessory is sending, which is exactly what was observed. **The fix that actually worked:
+renaming it by hand once in the Home app.** The plugin now sets `Name` once at construction and
+never touches it again — if you want a different label, rename the tile yourself in the Home
+app; the temperature/setpoint values (which do update reliably) are what conveys which body is
+active.
+
+This also resolved a related backlog item (§10.2's "dedicated `Pool Heat`/`Spa Heat` per-body
+tiles"): that design was already removed from `platform.ts` (no
+`enablePoolHeaterThermostat`/`enableSpaHeaterThermostat` config), but the code still *supported*
+it — `ThermostatAccessory` took a `body: 'auto'|'pool'|'spa'` parameter with dead `'pool'`/`'spa'`
+branches nothing ever exercised. Removed entirely in the same pass (2026-08): the class now has
+no `body` parameter at all, just the single mode-following tile. Any stale `thermostat-pool` /
+`thermostat-spa` accessories from an older install are unregistered on startup (generic
+cached-accessory cleanup, unrelated to this specific change).
 
 `TargetHeatingCoolingState` is **driven from the armed state** (`heater_enabled` for the
 active body, falling back to the `HEATER_1` LED circuit when the sidecar hasn't

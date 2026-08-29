@@ -250,9 +250,11 @@ All items resolved. No remaining `[PENDING]` items.
 > tiles) were built, then **removed**: one physical `HEATER_1` enable rendered
 > as three tiles read as genuinely confusing (they could disagree on
 > Heating/Standby and on which setpoint was "live"). There is no
-> `enablePoolHeaterThermostat`/`enableSpaHeaterThermostat` config, and
-> `platform.ts` only ever instantiates **Accessory A** (`body: 'auto'`) — see
-> `docs/plugin-spec.md` §7.5, the authoritative current-state doc. §10.1 below
+> `enablePoolHeaterThermostat`/`enableSpaHeaterThermostat` config. `platform.ts`
+> only ever instantiates **Accessory A**, and (2026-08) `ThermostatAccessory`
+> was simplified to match: it no longer even takes a `body` parameter — there
+> is no code path left that could build B or C. See `docs/plugin-spec.md` §7.5,
+> the authoritative current-state doc. §10.1 below
 > (Accessory A) is current; §10.2/10.3's "B and C" framing is historical only,
 > kept for the design rationale, not because B/C exist today.
 
@@ -268,8 +270,10 @@ One physical heater with two mode-driven setpoints was originally designed as **
   target-temperature VALUE correctly jumped to the new body's setpoint, but the tile's LABEL
   stayed on the previous body, actively misreporting which body was active rather than merely
   looking stale. (HAP itself documents `Name` as not intended to change post-pairing, which
-  matches what was observed.) The name is now **static** ("Active Heat") and carries no
-  mode information — the temperature values, which DO update reliably, are the only source of
+  matches what was observed.) The name is now set **once at construction and never pushed
+  again** — see §10.4 for the fuller story, including why "keep it constant but keep pushing
+  it" *also* didn't work and the fix that did (a manual rename in the Home app). It carries no
+  mode information; the temperature values, which DO update reliably, are the only source of
   truth for which body is currently active.
 - **Forced-off:** when the active heater is forced-off (`Manual Off`), A shows OFF regardless of mode.
 
@@ -290,13 +294,22 @@ One physical heater with two mode-driven setpoints was originally designed as **
 - Adjustments were meant to be allowed from **both** surfaces: A (mode-labeled, live) and B/C (fixed, hidden in the room). None of this applies now that only A exists.
 
 ### 10.4 Known HomeKit rough edges
-- **Dynamic accessory names don't reliably update — confirmed, not just theoretical.**
-  §10.1's original mode-swapping name (`Heat — Pool` / `— Spa`) was actually shipped, and on
-  real hardware the iOS Home app's room-tile summary kept showing the previous body's name
-  after a mode switch even though the temperature values updated correctly. Reverted 2026-08 —
-  Accessory A's name is now static. Lesson for any future dynamic-name idea: don't; use value
-  characteristics (which do update reliably) to carry state instead.
-- There is **no native "enabled but inactive" thermostat state.** "Standby" must be approximated — likely OFF with the distinction carried in the name. (Moot today with B/C removed and only Accessory A shipping — revisit if B/C are ever rebuilt.)
+- **`ConfiguredName` is user-owned, not accessory-owned — confirmed on hardware, not just
+  theoretical, and root-caused all the way through.** §10.1's original mode-swapping name
+  (`Heat — Pool` / `— Spa`) was actually shipped; on real hardware the Home app kept showing
+  the previous body's name after a mode switch even though the temperature values updated
+  correctly. First attempted fix: make the name a constant ("Active Heat") but keep pushing it
+  at every poll. That *still* didn't display correctly (the room-tile summary and the
+  accessory's own settings screen showed two different, neither-matching values) — the tell
+  that this wasn't a rendering quirk but that HAP's `ConfiguredName` is designed to be edited
+  by the *person* in the Home app, and a value the app already has cached can simply stop
+  reflecting anything the accessory sends. **Confirmed fix: the user renamed the tile by hand,
+  once, in the Home app** — immediately correct, and stable, because the plugin no longer
+  contests it. Final state (2026-08): `ThermostatAccessory` sets `Name` once at construction and
+  never touches it again for the life of the accessory. Lesson for any future dynamic-name
+  idea: don't — not even as a constant kept alive by repeated pushes; set it once, or don't set
+  it at all, and use value characteristics (which do update reliably) to carry state.
+- There is **no native "enabled but inactive" thermostat state.** "Standby" must be approximated — likely OFF with the distinction carried in the name. (Moot today — B/C were removed and `ThermostatAccessory` no longer even has a `body` parameter to support rebuilding them without further work.)
 
 ---
 
