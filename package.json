@@ -1,6 +1,6 @@
 {
   "name": "homebridge-prologic",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Homebridge plugin + web cockpit for Hayward ProLogic/AquaLogic/AquaPlus pools — heat setpoints, light scenes, chlorinator, and pump presets, over AquaConnect or a Raspberry Pi RS-485 bridge",
   "license": "MIT",
   "main": "dist/index.js",

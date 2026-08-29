@@ -3,6 +3,18 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.3 — Super Chlorinate OFF fix; added to the cockpit
+
+- **Fixed: Super Chlorinate OFF was a silent no-op.** The on/off detector matched
+  HTML markup (`>On<`) that never reaches the code (tags are stripped upstream),
+  so it always read "off" — turning it ON worked by coincidence, but turning it
+  OFF sent no key at all while still reporting success, leaving it on at the
+  panel. Fixed to match the actual plain text.
+- **Super Chlorinate now has a toggle in the cockpit** (the "Other" card), for
+  parity with the existing HomeKit switch. Known caveat: its state isn't
+  passively read from the panel, so it shows Off until the first toggle after a
+  restart (same as the HomeKit switch already behaves).
+
 ## 0.8.2 — Circuit toggles no longer bounce
 
 - **Filter / Lights / Aux / Spillover / Pool-Spa toggles stick.** Same race the
