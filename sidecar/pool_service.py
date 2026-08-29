@@ -5432,6 +5432,20 @@ def set_super_chlorinate() -> Response:
         # AquaConnect and RS-485 (via navigator): use Settings menu navigation.
         try:
             result = nav.set_super_chlorinate(on)
+            if result.get('super_chlorinate') != on:
+                # set_super_chlorinate() already retried against a live re-read
+                # (immediate confirmation — no need to wait for the passive idle
+                # scroll) and still didn't reach the target. Report it as a
+                # failure (matching every other circuit's confirm pattern) so
+                # HomeKit's fire-and-forget write reverts the optimistic tile
+                # instead of leaving it stuck on a state the panel never reached.
+                log.warning('Super-chlorinate -> %s NOT CONFIRMED (now=%s)',
+                           'ON' if on else 'OFF', result.get('super_chlorinate'))
+                _record_command_failure()
+                _immediate_wedge_probe()
+                return jsonify({**result, 'error': 'super-chlorinate toggle not confirmed',
+                                'bridge_wedged': state.bridge_wedged}), 502
+            _record_command_success()
             log.info(f'Super-chlorinate -> {"ON" if on else "OFF"} (menu nav)')
             return jsonify(result)
         except Exception as e:

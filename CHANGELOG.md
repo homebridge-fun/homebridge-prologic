@@ -3,6 +3,15 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.8 — Super Chlorinate now reverts immediately on a failed toggle
+
+- **Fixed: an unconfirmed Super Chlorinate toggle reported success anyway.**
+  `/superchlorinate` always returned 200 even when the write never actually
+  confirmed on the panel, so HomeKit's optimistic tile had no failure to react
+  to and could only self-correct on the next status poll instead of reverting
+  right away. Now returns a proper failure when the confirmed state doesn't
+  match the request, matching every other circuit's behavior.
+
 ## 0.8.7 — Cockpit shows the Super Chlorinate countdown
 
 - **The cockpit's Super Chlorinate row now shows its live countdown** —
