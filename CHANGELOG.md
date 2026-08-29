@@ -3,6 +3,18 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.4 — Super Chlorinate state is now live (supersedes 0.8.3's caveat)
+
+- **Super Chlorinate on/off is now passively tracked from the panel.** 0.8.3
+  noted it wasn't read from the panel and would show Off until the first
+  toggle — that's no longer true. The panel shows `Super Chlorinate HH:MM
+  remaining` on its idle scroll while running (it runs a 24h countdown, then
+  switches itself off automatically); the sidecar now watches for that frame on
+  every backend and reflects it — including catching the automatic 24h off and
+  a physical toggle at the panel, neither of which the sidecar could see
+  before. State expires (flips off) if the countdown hasn't been seen in ~2.5
+  minutes.
+
 ## 0.8.3 — Super Chlorinate OFF fix; added to the cockpit
 
 - **Fixed: Super Chlorinate OFF was a silent no-op.** The on/off detector matched
