@@ -26,8 +26,11 @@ export type ThermostatBody = 'auto' | 'pool' | 'spa';
  * setpoints, exposed as three thermostats:
  *
  *   body = 'auto' → Accessory A: mode-following mirror. Points at whichever
- *                   setpoint is active for the current valve mode. Dynamic
- *                   name: "Heat — Pool" / "Heat — Spa".
+ *                   setpoint is active for the current valve mode. Static
+ *                   name ("Active Heat") — see composeName()'s doc for why a
+ *                   body-swapping name was reverted (HomeKit doesn't reliably
+ *                   re-render a pushed Name change, so it could show the wrong
+ *                   body).
  *   body = 'pool' → Accessory B: always the Pool setpoint. Name carries its
  *                   state: "Pool Heat — Heating/Standby/Off".
  *   body = 'spa'  → Accessory C: always the Spa setpoint. Same naming scheme.
@@ -154,12 +157,22 @@ export class ThermostatAccessory {
       this.platform.Characteristic.TargetHeatingCoolingState, enabled ? 1 : 0);
   }
 
-  /** Compose the role-clear dynamic name (§10.1 / §10.2). */
+  /** Compose the role-clear dynamic name (§10.1 / §10.2).
+   *
+   * The 'auto' tile's name is kept STATIC ('Active Heat', its registered name)
+   * rather than swapping 'Heat — Pool' / 'Heat — Spa' with the valve mode. HAP's
+   * Name characteristic is documented as not meant to change post-pairing, and
+   * in practice the iOS Home app's room-tile summary does not reliably re-render
+   * a pushed Name/ConfiguredName update — so after switching bodies the tile's
+   * TEMPERATURE VALUES update correctly (confirmed) but the LABEL can be stuck
+   * showing the previous body, actively misleading rather than just stale
+   * cosmetics. The values alone already convey which body is active; a name
+   * that can silently lie about it is worse than a neutral one. */
   private composeName(s: ThermostatState, which: 'pool' | 'spa', enabled: boolean): string {
-    const isCurrentMode = s.valveMode === which;
     if (this.body === 'auto') {
-      return which === 'spa' ? 'Heat — Spa' : 'Heat — Pool';
+      return 'Active Heat';
     }
+    const isCurrentMode = s.valveMode === which;
     const base = this.body === 'spa' ? 'Spa Heat' : 'Pool Heat';
     if (!enabled) return `${base} — Off`;
     return isCurrentMode ? `${base} — Heating` : `${base} — Standby`;

@@ -249,7 +249,16 @@ One physical heater with two mode-driven setpoints is exposed as **three thermos
 ### 10.1 Accessory A — mode-following mirror (favorite on Home tab)
 - **Reads:** mirrors whichever of B/C is active per current valve mode; shows current water temp + active target.
 - **Writes:** routes the write to whichever setpoint is currently active (Pool in pool mode, Spa in spa mode). Stores nothing itself.
-- **Mode label:** the active mode must be legible. Since HomeKit thermostats have little free text, carry it in the **dynamic accessory/service name**, e.g. `Pool/Spa Heat — Pool` / `— Spa`. When mode flips, A repoints, the displayed target jumps to the new setpoint, and the name jumps with it (so the change reads as intentional, not a glitch).
+- **Mode label — reverted 2026-08.** The original design carried the active mode in a
+  **dynamic accessory/service name** (`Heat — Pool` / `— Spa`), swapped on every mode flip. In
+  practice the iOS Home app's room-tile summary does not reliably re-render a pushed
+  `Name`/`ConfiguredName` update — confirmed on hardware: after switching valve mode, the
+  target-temperature VALUE correctly jumped to the new body's setpoint, but the tile's LABEL
+  stayed on the previous body, actively misreporting which body was active rather than merely
+  looking stale. (HAP itself documents `Name` as not intended to change post-pairing, which
+  matches what was observed.) The name is now **static** ("Active Heat") and carries no
+  mode information — the temperature values, which DO update reliably, are the only source of
+  truth for which body is currently active.
 - **Forced-off:** when the active heater is forced-off (`Manual Off`), A shows OFF regardless of mode.
 
 ### 10.2 Accessories B & C — fixed-mode controls (in Pool room detail)

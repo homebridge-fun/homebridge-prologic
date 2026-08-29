@@ -640,8 +640,14 @@ could not be shown reliably. The two-switch split is unambiguous. The thermostat
 ### 7.5 Single Mode-Following Thermostat Model
 
 **"Active Heat"** (Accessory A, the only heater thermostat): follows `valve_mode` and shows
-the active body's temp/setpoint (name conveys "Heat — Pool" / "Heat — Spa"). One physical
-heater = one tile. The earlier dedicated per-body "Pool Heat" / "Spa Heat" thermostats
+the active body's temp/setpoint. One physical heater = one tile. **Name is static** ("Active
+Heat", never renamed after registration) — an earlier design swapped the name to "Heat — Pool"
+/ "Heat — Spa" on mode change, but the iOS Home app's room-tile summary doesn't reliably
+re-render a pushed `Name`/`ConfiguredName` update (HAP itself documents `Name` as not meant to
+change post-pairing), so after switching bodies the temperature VALUES updated correctly but
+the label could keep showing the previous body — actively wrong, not just stale. Reverted
+2026-08; the values alone already convey which body is active. The earlier dedicated per-body
+"Pool Heat" / "Spa Heat" thermostats
 (`enablePoolHeaterThermostat` / `enableSpaHeaterThermostat`) were **removed**: one physical
 `HEATER_1` enable rendered as three tiles read as out of sync (they could disagree on
 Heating/Standby and on which setpoint was live). Their config options and code are gone, and
