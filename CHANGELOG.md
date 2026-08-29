@@ -3,6 +3,13 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.7 — Cockpit shows the Super Chlorinate countdown
+
+- **The cockpit's Super Chlorinate row now shows its live countdown** —
+  `On · HH:MM left` instead of a bare "On" — using the same passive idle-scroll
+  read that drives its on/off state. Clears when it turns off (by timeout or a
+  toggle). Also exposed via `/status` as `super_chlor_remaining`.
+
 ## 0.8.6 — Super Chlorinate OFF fixed for real (while counting down)
 
 - **Fixed: turning Super Chlorinate off while it was actively counting down
