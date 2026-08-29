@@ -2871,25 +2871,46 @@ class MenuNavigator:
         hardware): 'Super Chlorinate <span class="WBON">Off</span>'. But by the
         time text reaches here, _parse()/LcdCapture has already stripped all HTML
         tags, so `txt` is plain 'Super Chlorinate Off' — never contains '<'/'>'.
-        Matching on '>On<' therefore NEVER matched, so `current` was always False:
-        turning ON worked (mismatch -> press), but turning OFF silently no-opped
-        (False == False -> no press sent) while still reporting {'ok': True} and
-        writing the optimistic state — the physical circuit never turned off.
-        Match the actual (tag-stripped) text instead, as a standalone word so
-        'Off' can't accidentally satisfy an 'On' check.
+        Matching on '>On<' therefore never matched (fixed in 0.8.3 to match
+        '\bOn\b' instead). BUT: while running, this menu item ALSO displays the
+        live 'Super Chlorinate HH:MM remaining' countdown (same as the idle
+        scroll — see _SUPERCHLOR_RE) instead of a bare 'On' — that text has no
+        standalone 'On' word, so '\bOn\b' alone still misread it as off, and
+        turning OFF while it was counting down silently no-opped again (0.8.4
+        regression report: "off got lost in the timer menu" — nothing was
+        actually stuck; the OFF command just never got sent). Recognize both
+        forms of 'on' here, exactly matching the passive-detection regex.
+
+        Second issue, independent of detection: the countdown ticks every
+        second, and that tick is itself a 'the text changed' event — which can
+        fool _send()'s single-shot wait-for-change into believing a DROPPED
+        PLUS/MINUS press landed (RS-485 presses drop regularly elsewhere in this
+        codebase). So don't trust the request blindly: re-read the on/off state
+        after pressing and retry (PLUS/MINUS are directional, not a shared
+        toggle, so re-pressing the same key is safe) until it actually confirms,
+        and report what was actually confirmed, not just what was requested.
         """
+        def _is_on(t: str) -> bool:
+            return bool(re.search(r'\bOn\b', t)) or bool(_SUPERCHLOR_RE.search(t))
+
         try:
             with _nav_lock:
                 self._anchor()
                 txt = self._press_until('RIGHT', lambda t: 'Super Chlorinate' in t,
                                         self._NAV_MAX, 'Super Chlorinate')
-                current = bool(re.search(r'\bOn\b', txt))
+                current = _is_on(txt)
+                confirmed = current
                 if current != on:
                     key = 'PLUS' if on else 'MINUS'
-                    self._send(key)
+                    for _ in range(4):
+                        txt = self._send(key)
+                        confirmed = _is_on(txt)
+                        if confirmed == on:
+                            break
                 with state_lock:
-                    state.circuits['SUPER_CHLORINATE'] = on
-                return {'ok': True, 'super_chlorinate': on, 'was': current}
+                    state.circuits['SUPER_CHLORINATE'] = confirmed
+                return {'ok': True, 'super_chlorinate': confirmed,
+                        'requested': on, 'was': current}
         finally:
             self.fast_exit()
 
