@@ -9,7 +9,8 @@ AquaConnect web box, exposed to HomeKit as heater + VSP control.
 > for the plugin/sidecar/cockpit surface, or the top-level
 > [`README.md`](../README.md) to install and use the plugin. Historical
 > sections are labeled inline (e.g. §10.2/10.3) — treat those as design
-> rationale, not current behavior.
+> rationale, not current behavior. The provenance tags below are unique to
+> this file; plugin-spec.md doesn't use them.
 
 **Provenance tags used throughout:**
 - `[VERIFIED]` — observed live by walking the AquaConnect web UI at `http://192.168.50.100`.
@@ -240,7 +241,7 @@ Everything outside the permitted branches the owner handles manually.
 
 ---
 
-## 9. Pending live confirmations
+## 9. Resolved live confirmations (formerly pending)
 
 All items resolved. No remaining `[PENDING]` items.
 
@@ -267,7 +268,7 @@ All items resolved. No remaining `[PENDING]` items.
 > (Accessory A) is current; §10.2/10.3's "B and C" framing is historical only,
 > kept for the design rationale, not because B/C exist today.
 
-One physical heater with two mode-driven setpoints was originally designed as **three thermostat accessories**, but only **Accessory A ships** — see the note above.
+Only **Accessory A** (below) ships today.
 
 ### 10.1 Accessory A — mode-following mirror (favorite on Home tab)
 - **Reads:** mirrors whichever of B/C is active per current valve mode; shows current water temp + active target.
@@ -453,6 +454,11 @@ Without the cached "was Off" fact, the navigator would leave the heater **enable
 ---
 
 ## 14. Plugin configuration `[OWNER]`
+
+> **Implemented** — see `docs/plugin-spec.md` §7.1/§7.3 for the shipped config
+> shape (`activeBodies`, `circuits`, `circuitLabels`). This section is the
+> original design rationale, kept for context; it predates and doesn't
+> describe the exact config keys that shipped.
 
 The plugin must be configurable to match the panel's actual setup and the user's preferences, rather than assuming a fixed layout.
 
