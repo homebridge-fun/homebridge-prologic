@@ -3,6 +3,17 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.6 — Super Chlorinate OFF fixed for real (while counting down)
+
+- **Fixed: turning Super Chlorinate off while it was actively counting down
+  silently did nothing** — the panel's Settings-menu item shows the live
+  `HH:MM remaining` countdown while running, which 0.8.3's on/off detection
+  didn't recognize as "on", so the OFF command matched (wrongly) and no press
+  was ever sent. Also hardened against a dropped PLUS/MINUS press being
+  misread as landed (the countdown's own per-second tick can fool a
+  single-shot "did the text change" check) — it now re-verifies the actual
+  on/off state and retries until confirmed, instead of trusting the request.
+
 ## 0.8.5 — Fixed a false "setpoint failed" alert on every heater temp change
 
 - **Fixed: every heater setpoint write threw a KeyError right after succeeding,**
