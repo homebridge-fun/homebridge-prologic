@@ -3,6 +3,31 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.9.0 — Active Heat tile name fixed; per-body thermostat dead code removed
+
+- **Fixed: the "Active Heat" thermostat tile's name could get permanently
+  stuck showing the wrong body** (e.g. "Spa" after switching back to pool).
+  Root-caused all the way through: dynamically swapping the name on every
+  mode change didn't work, and neither did switching to a constant name while
+  still pushing it every poll — `ConfiguredName` is a HomeKit characteristic
+  the Home app treats as **user-owned** (edited by the person, not the
+  accessory), and a pushed value can get stuck showing something with no
+  relation to what's actually being sent. The fix that worked: the plugin now
+  sets the name **once** at registration and never touches it again. If you
+  want a different label, rename the tile yourself in the Home app — the
+  temperature/setpoint values, which do update reliably, are what convey
+  which body is active.
+- **Removed dead code:** `ThermostatAccessory` used to support dedicated
+  always-pool / always-spa tiles (`body: 'pool'|'spa'`) left over from an
+  earlier three-accessory design that was removed from config long ago but
+  never fully removed from the class. Only the single mode-following tile has
+  shipped for some time; the class no longer has any code path that could
+  rebuild the old per-body tiles.
+- **Docs corrected** to match: a few places (including a broken example in the
+  README's sample config) still described the removed per-body thermostats as
+  a current feature. Also cleaned up several stale backlog references to code
+  removed earlier this cycle (the legacy `rs485` backend, an old monkeypatch).
+
 ## 0.8.9 — Chlorinator/VSP-slot/spa-speed writes now record what actually landed
 
 - **Fixed: hitting a hardware floor/ceiling on chlorinator %, a VSP filter
