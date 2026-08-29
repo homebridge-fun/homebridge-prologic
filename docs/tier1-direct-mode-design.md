@@ -73,21 +73,64 @@ the project. That tradeoff is why Tier 1 should stay deliberately
 The AquaConnect HTTP quirks the sidecar had to hand-discover are not
 optional politeness — skip them and keypresses silently drop:
 
-- **Byte-exact raw socket request.** `urllib`'s default headers make the
-  GoAhead "Webs" firmware silently ignore the key (0/20 landed in testing).
-  Node's `http`/`fetch` would need the same lean, curl-equivalent header set
-  — this needs verifying against Node's HTTP client, not assumed to carry
-  over from the Python fix.
+- **Request transport.** The sidecar's `_post`/`_read` hand-build a raw
+  socket request because `urllib`'s default headers made the GoAhead "Webs"
+  firmware silently ignore the key (0/20 landed in testing) — but this looks
+  like a `urllib`-specific problem, not a fact about the box. See
+  "Comparison to `homebridge-aqua-connect-lite`" below: that plugin talks to
+  the same box reliably using plain **`axios`** with just `Content-Type:
+  application/x-www-form-urlencoded`, `Content-Length`, and `Connection:
+  close`. `axios` is already a dependency here (`sidecarClient.ts` uses it),
+  so Tier 1 likely does **not** need a raw-socket workaround at all — worth
+  confirming against real hardware, but this de-risks what was the biggest
+  unknown in the port.
 - **Exact request bodies.** `KeyId=NN&` for a keypress vs. `Update Local
   Server&` for a read — using `KeyId=00&` for reads injects ~29,000 phantom
   keypad events/day and wedges the box (learned the hard way, see
-  `pool_service.py` around `_read()`).
+  `pool_service.py` around `_read()`). `aqua-connect-lite` uses the same two
+  body strings.
 - **Minimum inter-request gap** (`_AC_MIN_GAP_S`) — the panel ignores a key
-  sent within ~0.5–1s of the previous one.
-- **LED-nibble decode** (`_AC_LED_MAP`) for confirming a toggle landed.
+  sent within ~0.5–1s of the previous one. Notably, `aqua-connect-lite` has
+  **no** gap enforcement at all — Tier 1 should keep ours rather than follow
+  that example, since our own experience says skipping it risks wedging the
+  box under repeated presses.
+- **LED-nibble decode** (`_AC_LED_MAP`) for confirming a toggle landed —
+  identical table to `aqua-connect-lite`'s (`3`=no-key, `4`=off, `5`=on,
+  `6`=blink), independent confirmation this mapping is a fact about the
+  firmware, not something we got wrong.
 
-None of this is hard to port — it's well understood and already
-Python-tested — but it's real code, not a stub.
+None of this is hard to port — it's well understood, already Python-tested,
+and now cross-confirmed by a second independent implementation — but it's
+real code, not a stub.
+
+## Comparison to `homebridge-aqua-connect-lite`
+
+[`homebridge-aqua-connect-lite`](https://github.com/cupshir/homebridge-aqua-connect-lite)
+(cupshir — already credited in the README's Acknowledgments as prior art) is
+worth comparing directly, since it's an existing, shipping plugin doing
+almost exactly what Tier 1 proposes: no sidecar, plugin talks straight to
+the AquaConnect box.
+
+| | AquaConnect Lite | Tier 1 (proposed) |
+|---|---|---|
+| External service | None | None (same) |
+| HTTP client | `axios` | `axios` (already a dependency here) |
+| Request bodies | Same `KeyId=NN&` / `Update Local Server&` pair | Same — identical firmware, identical protocol |
+| LED decode | Same nibble table | Same |
+| Timing/gap enforcement | None | Keep `_AC_MIN_GAP_S`-equivalent (Lite's lack of this is a gap, not a model to copy) |
+| Accessories | Pool Light, Aux 1, Aux 2 (3 toggles) | Circuits + heater Auto/Off + read-only temps/salt/chlorinator%/active-body |
+| Heater/spa | Explicitly unsupported by upstream ("I do not have a spa or heater... no plan to add support") | In scope for Auto/Off |
+
+**The owner's own fork of AquaConnect Lite already added heat control** on
+top of upstream — independent real-world precedent (beyond our own sidecar)
+that heater control is achievable via this same direct-HTTP model, not just
+a theoretical extrapolation from the sidecar's Python code. Worth
+confirming, when scoping this for real: whether that fork's heat control
+covers just the Auto/Off toggle (matches Tier 1's proposed scope exactly)
+or also setpoint writes (which our sidecar's own experience says needs
+menu-navigation — if the fork found a simpler path, that would change this
+design's "setpoint is out of scope" conclusion and is worth digging into
+before finalizing scope).
 
 ### What would NOT need to exist in Tier 1
 
@@ -118,9 +161,13 @@ Python-tested — but it's real code, not a stub.
 This is a real, scoped feature — not a trivial docs change — but it's also
 not open-ended:
 
-- **Protocol port** (raw-socket POST, read/write body formats, LED decode,
-  timing gate): well-understood, already solved once in Python. Mechanical
-  but not quick — probably the single biggest chunk.
+- **Protocol port** (POST via `axios`, read/write body formats, LED decode,
+  timing gate): well-understood, solved once in Python, and now
+  cross-confirmed by a second independent plugin (`aqua-connect-lite`) using
+  the exact HTTP client this repo already depends on. Smaller/lower-risk
+  than originally estimated — the raw-socket workaround the sidecar needed
+  looks like it was a `urllib`-specific problem, not something Node/`axios`
+  will also hit.
 - **New backend + accessory gating in the plugin**: moderate — mostly
   wiring, following the existing `sidecarClient.ts`/`platform.ts` pattern.
 - **Testing against real hardware**: the biggest unknown/risk, same as
@@ -146,3 +193,7 @@ risk to what already works.
 3. Is there real demand for this, or is it worth shipping 1.0 first and
    gauging whether "I don't want to run a sidecar" is an actual recurring
    ask before investing here?
+4. What does the owner's AquaConnect Lite fork's heat control actually
+   cover — Auto/Off only, or setpoint too? If setpoint turns out to be
+   reachable without full menu-navigation, that changes what "limited" means
+   for Tier 1 and is worth investigating before finalizing scope.
