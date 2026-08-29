@@ -14,10 +14,9 @@ TCP/WiFi bridge.
    curl -fsSL https://tailscale.com/install.sh | sh
    sudo tailscale up
    ```
-3. Clone this repo to `$HOME` (check out the working branch if not yet merged):
+3. Clone this repo to `$HOME`:
    ```bash
-   git clone <repo-url> ~/homebridge-prologic
-   cd ~/homebridge-prologic && git checkout claude/gracious-planck-1yz8v9
+   git clone https://github.com/homebridge-fun/homebridge-prologic.git ~/homebridge-prologic
    ```
 4. Run the installer:
    ```bash

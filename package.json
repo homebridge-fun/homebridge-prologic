@@ -1,9 +1,30 @@
 {
   "name": "homebridge-prologic",
-  "version": "0.9.0",
+  "displayName": "ProLogic",
+  "version": "0.9.1",
   "description": "Homebridge plugin + web cockpit for Hayward ProLogic/AquaLogic/AquaPlus pools — heat setpoints, light scenes, chlorinator, and pump presets, over AquaConnect or a Raspberry Pi RS-485 bridge",
   "license": "MIT",
+  "author": "homebridge-fun",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/homebridge-fun/homebridge-prologic.git"
+  },
+  "bugs": {
+    "url": "https://github.com/homebridge-fun/homebridge-prologic/issues"
+  },
+  "homepage": "https://github.com/homebridge-fun/homebridge-prologic#readme",
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "sidecar/pool_service.py",
+    "sidecar/rs485_bridge.py",
+    "sidecar/web",
+    "sidecar/install.sh",
+    "sidecar/requirements.txt",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",

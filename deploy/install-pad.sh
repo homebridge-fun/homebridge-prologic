@@ -9,7 +9,7 @@
 #   1. Flash Raspberry Pi OS Lite, boot, enable SSH, set hostname 'pool'.
 #   2. Install + log into Tailscale:   curl -fsSL https://tailscale.com/install.sh | sh
 #                                       sudo tailscale up
-#   3. Clone this repo to $HOME:        git clone <repo-url> ~/homebridge-prologic
+#   3. Clone this repo to $HOME:        git clone https://github.com/homebridge-fun/homebridge-prologic.git ~/homebridge-prologic
 #   4. Run this:                        bash ~/homebridge-prologic/deploy/install-pad.sh
 #   5. Copy the printed token into the Homebridge plugin / sidecar config.
 #

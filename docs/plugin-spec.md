@@ -1,17 +1,22 @@
 # Homebridge ProLogic Plugin — Authoritative Specification
 
-> **Version**: 3.2 — heater two-switch model, salt sensor max 4000, VSP slot tile
-> robustness (pre-fetch/debounce/zero-guard/floor), nav timing optimization (0.6s gap +
-> adaptive reads), `/debug/nav-sweep` + `/debug/nav-benchmark` harnesses
-> **Updated**: 2026-06-20
-> **Status**: Implemented and running on hardware (v0.2.0)
+> **Audience:** this is a deep engineering reference for contributors — sidecar
+> internals, the RS-485/AquaConnect protocol, and the full HomeKit/cockpit
+> surface, updated alongside the code as it changes. If you just want to
+> **install and use** the plugin, start with [`README.md`](../README.md)
+> instead; you don't need anything here.
+>
+> **Status:** living document — kept in sync with `main`, not a point-in-time
+> snapshot. §10.2 (below) is the running backlog/changelog of what's done vs.
+> open. For the current shipped version, see `package.json` or the
+> [CHANGELOG](../CHANGELOG.md).
 
 ---
 
 ## 1. Project Goal
 
-A Homebridge 2.0 platform plugin that controls a **Hayward Goldline AquaPlus PS-8** pool
-controller via a Python sidecar that supports two interchangeable backends:
+A Homebridge 2.0 platform plugin that controls a **Hayward ProLogic/AquaLogic/AquaPlus
+PS-series** pool controller via a Python sidecar that supports two interchangeable backends:
 
 - **RS-485 smart bridge** (`rs485bridge`, **production primary**): a thin daemon on a
   pad-mounted Pi Zero 2 W owns a direct USB-RS485 serial link to the panel's J2/J4 RS-485
@@ -547,8 +552,8 @@ timing on the Pi, so there is nothing to tune from the hop.)
   "pollInterval": 5000,
   "backend": "aquaconnect",
   "aquaconnectHost": "192.168.50.100",
-  "rs485Host": "192.168.68.101",
-  "rs485Port": 8899,
+  "rs485bridgeHost": "pool",
+  "rs485bridgePort": 8899,
   "circuits": ["SPA", "FILTER", "LIGHTS", "HEATER_1", "AUX_1", "AUX_2", "SUPER_CHLORINATE"],
   "activeBodies": ["pool", "spa"],
   "enableActiveHeaterThermostat": true,
@@ -758,11 +763,13 @@ from config. Sidecar restarts via systemd; plugin tolerates a few failed polls d
 
 ```
 homebridge-prologic/
-├── package.json                    (version 0.1.0)
+├── package.json                    ← current version is authoritative; not restated here
 ├── config.schema.json
 ├── CLAUDE.md                       ← deploy instructions, response style
 ├── docs/
 │   ├── plugin-spec.md              ← this file
+│   ├── aqualogic-automation-spec.md            ← panel protocol / menu-nav reference
+│   ├── colorlogic-research.md                  ← ColorLogic/IntelliBrite scene research
 │   ├── aquaconnect-screen-refresh-handoff.md   ← research handoff (archived)
 │   └── aquaconnect-screen-refresh-findings.md  ← Update Local Server& discovery
 ├── sidecar/
@@ -780,6 +787,7 @@ homebridge-prologic/
     ├── temperatureAccessory.ts     ← read-only temperature sensor
     ├── fanAccessory.ts             ← chlorinator % fan tile + CurrentFanState (VSP speeds are cockpit-only, not in HomeKit)
     ├── saltSensorAccessory.ts      ← AirQualitySensor/VOCDensity for salt PPM
+    ├── lightTvAccessory.ts         ← Television light-scene tile (ColorLogic/IntelliBrite)
     ├── bridgeHealthAccessory.ts    ← wedge indicator + live test button
     ├── sidecarClient.ts            ← HTTP client for sidecar REST API
     └── settings.ts                 ← constants, types, PoolStatus interface
@@ -811,6 +819,11 @@ homebridge-prologic/
 
 ## 10. Known Limitations and Future Work
 
+> §10.0/10.0b are dated changelog entries (10.0b is the *older* week, 10.0 the
+> *newer* one — read 10.0b first for chronological order). §10.0a and §10.0c
+> are undated reference subsections, not additional changes on top of 10.0 —
+> they document current architecture/tuning, not a later point in time.
+
 ### 10.0 Recent changes (week of 2026-06-29)
 
 - **Cockpit moves to interactive (stage-then-Apply).** The web cockpit is no longer read-only. Controls stage locally and **nothing is sent until Apply** (single busy-lock mirroring the panel's one-lane nav). Tap-to-edit ± steppers (the +/- only appear once you tap a controllable item), a lockable manual-nav D-pad, and a single Apply/Cancel bar. The in-flight progress now shows **in the top header** instead of a sticky banner.
@@ -832,7 +845,7 @@ homebridge-prologic/
 - **Cockpit "At a glance" card.** Conditions renamed; temps (Water/Air/Salt) on one row with units (`°F`/`ppm`) rendered small and inline; a divided list below for Filter (first), Heater mode, and Calling-for-heat with larger pills.
 - **Cockpit polish.** Apply bar is now a **fixed floating bottom bar** (overlays content, never reflows the page); highlight colors unified (**green = live/active**, **cyan = staged/selected**); pill toggles enlarged for touch.
 - **`circuitLabels` rename fix.** Renaming a circuit (e.g. Spa → "Spa Mode") was silently ignored for cached accessories (UUID is stable; displayName was only set at creation). The plugin now updates `displayName` + `updatePlatformAccessories` when the configured label changes. (Note: a name set in the Apple Home app still wins over the plugin's.)
-- **RS-485 key-event frame type — finding + harness.** The `aqualogic` library transmits **LOCAL_WIRED** (`00 02`) for keys ≤ 0xffff and **WIRELESS** (`00 83`) for keys > 0xffff (incl. `HEATER_1`); it **never** transmits **REMOTE_WIRED** (`00 03`). Untested whether a bus-attached remote needs REMOTE_WIRED. `POST /debug/rawkey` now supports `local|remote|wireless` to sweep this on direct serial. See automation-spec §0.
+- **RS-485 key-event frame type — resolved.** The stock `aqualogic` library only ever transmits **LOCAL_WIRED** (`00 02`) for keys ≤ 0xffff and **WIRELESS** (`00 83`) for keys > 0xffff (incl. `HEATER_1`) — it never sends **REMOTE_WIRED** (`00 03`). The `/debug/rawkey` sweep (`local|remote|wireless`) found LOCAL_WIRED unreliable for nav keys over the old TCP bridge, so `rs485_bridge.py` sends **REMOTE_WIRED** by default for keys ≤ 0xffff (with `local=True` available as an override) and falls back to WIRELESS for keys > 0xffff, since those don't fit REMOTE_WIRED's 2-byte field. See automation-spec §16.4 for the daemon-side detail.
 - **Caddy password helper.** `deploy/set-cockpit-password.sh` sets the Basic-auth credential in one sudo step (hidden prompt → hash → update Caddyfile → validate → reload → verify). Kept out of the Homebridge UI on purpose (no sudoers/escalation path for the plugin).
 
 ### 10.0a Access architecture
@@ -902,9 +915,9 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 
 | Item | Status | Notes |
 |---|---|---|
-| VSP slot tiles | Done | `enableVspSlotTiles`; generalized sidecar nav for slots 1–4 |
-| VSP slot tile robustness | Done | Pre-fetch `/vsp/slots` on startup so tiles show real values; 600ms debounce on the speed slider (one menu walk per drag, not per intermediate value); `onSet(0)` treated as no-op so a tap-without-drag can't set the slot to 0% and stop the pump |
-| VSP slot floor guard | Done | Per-slot `vspSlotMinPct` (slot 1 defaults to 35%) sets the HomeKit slider's `minValue` so it can't target a speed the panel clamps; sidecar `_step_to` also stops stepping once a value stalls at a hardware floor/ceiling instead of burning the full press budget |
+| VSP slot tiles *(removed from HomeKit — see §7.2/§7.6)* | Superseded | Originally shipped as `enableVspSlotTiles` with generalized sidecar nav for slots 1–4. Pump/VSP speed control was later pulled out of HomeKit entirely and now lives only in the web cockpit; the sidecar-side nav these tiles used still backs the cockpit's speed controls |
+| VSP slot tile robustness *(HomeKit tiles removed — sidecar behavior lives on in the cockpit)* | Superseded | Pre-fetch `/vsp/slots` on startup so speed reads show real values; 600ms debounce on the speed control (one menu walk per drag, not per intermediate value); a tap-without-drag can't set the slot to 0% and stop the pump |
+| VSP slot floor guard | Done | Per-slot minimum floor (e.g. slot 1 defaults to 35%) so a request can't target a speed the panel clamps; sidecar `_step_to` also stops stepping once a value stalls at a hardware floor/ceiling instead of burning the full press budget |
 | Pump tile live speed | Done | Reads `pump_speed` (scroll); labeled "Filter Speed" |
 | LIGHTS / AUX_1 write | Verified | Tested on hardware; keycodes and LED confirmation correct |
 | ColorLogic / IntelliBrite scene selection | Done (2026-08) | Both lights work — see `docs/colorlogic-research.md` (authoritative). **Pool** = Hayward 12-program ColorLogic (CL 4.0), **relative** advance; absolute anchor is a single 11–14 s off → **resync to program 1 (Voodoo Lounge)**, hardware-confirmed. Selection steps minimally from the tracked position, or anchors+steps when position is unknown; cockpit **Resync colors** button. **Spa** = Pentair IntelliBrite, **absolute** count with `offset=+1` baked in. Each light is a HomeKit Television tile (scenes = inputs, `DisplayOrder` pinned, config-editable lists) and a cockpit card (staged Apply + current-program badge). Earlier 17-program UCL/mode-maze model was wrong for this install (superseded — see appendix). |

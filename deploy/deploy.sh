@@ -11,7 +11,7 @@
 set -e
 
 REPO=/home/greg/development/homebridge-prologic
-BRANCH=claude/gracious-planck-1yz8v9
+BRANCH=main
 MODE="${1:-sidecar}"
 
 cd "$REPO"
