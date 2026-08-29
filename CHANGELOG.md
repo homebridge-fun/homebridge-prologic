@@ -3,6 +3,17 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.8.5 — Fixed a false "setpoint failed" alert on every heater temp change
+
+- **Fixed: every heater setpoint write threw a KeyError right after succeeding,**
+  surfacing a scary cockpit alert (`debounced write spa=93 failed: 'was_off'`)
+  even though the temperature change had already landed on the panel. A
+  long-standing (pre-dates this session) copy-paste bug: the setpoint write's
+  success-log line read a `was_off` field that only exists on the *heater
+  enable/disable* function's return value, not the *setpoint* function's. Fixed
+  to log the fields that actually exist. No functional impact on the write
+  itself — this was purely a false alarm in the log/alert path.
+
 ## 0.8.4 — Super Chlorinate state is now live (supersedes 0.8.3's caveat)
 
 - **Super Chlorinate on/off is now passively tracked from the panel.** 0.8.3
