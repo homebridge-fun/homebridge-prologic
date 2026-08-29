@@ -2,6 +2,15 @@
 Target: RS-485 navigation of a Hayward AquaLogic/ProLogic PS controller, fronted by an
 AquaConnect web box, exposed to HomeKit as heater + VSP control.
 
+> **Audience:** the deepest technical layer in this repo — byte-level protocol
+> notes, menu-navigation state machines, and key codes for anyone working on
+> `MenuNavigator`/`AquaConnectBackend`/`rs485_bridge.py` directly. Most
+> contributors won't need this; see [`docs/plugin-spec.md`](plugin-spec.md)
+> for the plugin/sidecar/cockpit surface, or the top-level
+> [`README.md`](../README.md) to install and use the plugin. Historical
+> sections are labeled inline (e.g. §10.2/10.3) — treat those as design
+> rationale, not current behavior.
+
 **Provenance tags used throughout:**
 - `[VERIFIED]` — observed live by walking the AquaConnect web UI at `http://192.168.50.100`.
 - `[MANUAL]` — from the Hayward AquaLogic PS4/PS8/PS16 Operation Manual; not independently re-verified on this unit.

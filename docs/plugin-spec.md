@@ -1,10 +1,15 @@
 # Homebridge ProLogic Plugin — Authoritative Specification
 
-> **Version**: 3.2 — heater two-switch model, salt sensor max 4000, VSP slot tile
-> robustness (pre-fetch/debounce/zero-guard/floor), nav timing optimization (0.6s gap +
-> adaptive reads), `/debug/nav-sweep` + `/debug/nav-benchmark` harnesses
-> **Updated**: 2026-06-20
-> **Status**: Implemented and running on hardware (v0.2.0)
+> **Audience:** this is a deep engineering reference for contributors — sidecar
+> internals, the RS-485/AquaConnect protocol, and the full HomeKit/cockpit
+> surface, updated alongside the code as it changes. If you just want to
+> **install and use** the plugin, start with [`README.md`](../README.md)
+> instead; you don't need anything here.
+>
+> **Status:** living document — kept in sync with `main`, not a point-in-time
+> snapshot. §10.2 (below) is the running backlog/changelog of what's done vs.
+> open. For the current shipped version, see `package.json` or the
+> [CHANGELOG](../CHANGELOG.md).
 
 ---
 

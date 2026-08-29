@@ -244,6 +244,20 @@ this is a setup requirement, not just an internal detail:**
   often, the fix is physical (improve the pad's Wi-Fi signal or wire it to
   the main LAN — see `deploy/README-PAD.md`), not a recovery automation.
 
+## For contributors
+
+The docs above cover installing and using the plugin. For the deeper
+engineering detail — sidecar internals, the RS-485/AquaConnect wire protocol,
+menu-navigation state machines, and the full HomeKit/cockpit surface — see:
+
+- **[`docs/plugin-spec.md`](docs/plugin-spec.md)** — plugin, sidecar, and
+  cockpit architecture and behavior.
+- **[`docs/aqualogic-automation-spec.md`](docs/aqualogic-automation-spec.md)**
+  — panel protocol and menu-navigation detail underneath the sidecar.
+
+There's no separate `CONTRIBUTING.md` yet; open an issue or PR and start a
+conversation.
+
 ## Acknowledgments
 
 - **[cupshir/homebridge-aqua-connect-lite](https://github.com/cupshir/homebridge-aqua-connect-lite)**
