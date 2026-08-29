@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # All branches, not just main. This repo develops on feature branches and
+    # merges to main directly (often without a PR), so restricting to main
+    # would only run CI *after* the merge — too late to catch anything.
+    # Tags are skipped: a release tag points at a commit CI already checked.
+    tags-ignore: ['**']
   pull_request:
   # Allow running by hand from the Actions tab (handy after changing the
   # workflow itself, or to re-check a branch without pushing an empty commit).
