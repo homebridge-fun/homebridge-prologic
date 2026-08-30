@@ -5,8 +5,14 @@ on:
     # All branches, not just main. This repo develops on feature branches and
     # merges to main directly (often without a PR), so restricting to main
     # would only run CI *after* the merge — too late to catch anything.
-    # Tags are skipped: a release tag points at a commit CI already checked.
-    tags-ignore: ['**']
+    #
+    # NOTE: this MUST be `branches`, not `tags-ignore`. Per GitHub's docs,
+    # "if you define only tags/tags-ignore or only branches/branches-ignore,
+    # the workflow won't run for events affecting the other type" — so a
+    # push trigger with ONLY `tags-ignore` never fires on a branch push at
+    # all, silently and with no error. Defining `branches` (and no `tags`)
+    # gives what we want: every branch, no tags.
+    branches: ['**']
   pull_request:
   # Allow running by hand from the Actions tab (handy after changing the
   # workflow itself, or to re-check a branch without pushing an empty commit).
