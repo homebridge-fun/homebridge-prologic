@@ -934,6 +934,10 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 
 ### 10.2 Backlog (open)
 
+> **Open work now lives in [`docs/backlog.md`](backlog.md)**, which is the
+> single prioritized list. The table below is kept as the historical record
+> of what was done and when; still-open rows are mirrored into the backlog.
+
 | Item | Priority | Notes |
 |---|---|---|
 | **Remove legacy `rs485` backend from the sidecar** | **DONE (0.7.2)** | Removed ~780 lines: `panel_thread`, `RealPanel`, `rs485_observer_thread`, `_install_key_burst`, the `KEY_*` keep-alive machinery, the `observe_rs485` args/config, and the rs485-only debug/benchmark routes (`/benchmark/rs485*`, `/debug/rawkey`, `/keytiming`, `/debug/keyburst`). `--backend` default flipped to `aquaconnect`; `--simulate` checked first. Kept `SimPanel`/`--simulate`, `_get_panel`, `_get_navigator`, wedge machinery, `/status` (byte-unchanged). Boot-tested on `aquaconnect` + `rs485bridge` + `--simulate`. |

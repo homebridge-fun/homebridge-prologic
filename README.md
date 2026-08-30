@@ -268,6 +268,10 @@ menu-navigation state machines, and the full HomeKit/cockpit surface — see:
   cockpit architecture and behavior.
 - **[`docs/aqualogic-automation-spec.md`](docs/aqualogic-automation-spec.md)**
   — panel protocol and menu-navigation detail underneath the sidecar.
+- **[`docs/backlog.md`](docs/backlog.md)** — the prioritized list of open
+  work, including what is deliberately *not* being done.
+- **[`docs/testing-strategy.md`](docs/testing-strategy.md)** — what a real
+  test suite would cover here, and in what order.
 
 There's no separate `CONTRIBUTING.md` yet; open an issue or PR and start a
 conversation.

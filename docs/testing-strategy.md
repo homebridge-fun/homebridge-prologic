@@ -27,9 +27,11 @@ argument here, and it's the one that takes calendar time rather than effort.
 
 ## What exists today
 
-Honest baseline — **there is no automated test suite**:
+Honest baseline — **there is CI, but no automated test suite**:
 
-- No `.github/workflows/`, no CI of any kind.
+- `.github/workflows/ci.yml` exists as of 0.9.2: lint + build on Node 22/24,
+  a Python syntax check, and `scripts/check_docs.py`. That catches broken
+  builds and stale docs — it asserts nothing about behaviour.
 - No test runner in `package.json` (no Jest/Vitest), none in
   `sidecar/requirements.txt` (no pytest).
 - `SimPanel` (`sidecar/pool_service.py`) is a genuinely good panel simulator
@@ -352,6 +354,9 @@ current LTS set).
 ---
 
 ## Suggested order
+
+> These are folded into [`backlog.md`](backlog.md) alongside the non-testing
+> work; that page is the master ordering.
 
 Ordered by value-per-effort, not by tier letter:
 
