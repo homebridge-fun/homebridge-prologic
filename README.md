@@ -103,6 +103,14 @@ board): A+ → Pin 2 (DATA+), B− → Pin 3 (DATA−), GND → Pin 4 (GND).
 
 Not yet on npm — install from source for now.
 
+> **Addresses below are placeholders — substitute your own.**
+>
+> | Placeholder | What it stands for |
+> |---|---|
+> | `<aquaconnect-ip>` | Your AquaConnect box on the LAN — a private `192.168.x.y` address. Find it in your router's client list |
+> | `<pad-tailnet-ip>` | The pad Pi's Tailscale address (`tailscale ip -4` on the pad), or its MagicDNS name, e.g. `pool` |
+> | `127.0.0.1` | Not a placeholder — the sidecar binds localhost deliberately and is reached there from the Homebridge host |
+
 ### 1. Get the code
 
 ```bash
@@ -119,7 +127,7 @@ npm run build
 
 ```bash
 # AquaConnect box (local HTTP) — use your box's IP:
-sudo bash sidecar/install.sh --backend aquaconnect --aquaconnect-host 192.168.50.100
+sudo bash sidecar/install.sh --backend aquaconnect --aquaconnect-host <aquaconnect-ip>
 
 # OR the RS-485 pad bridge — set up the pad first (deploy/README-PAD.md), then
 # point at its tailnet IP (token via --rs485bridge-token if the bridge requires one):
@@ -154,7 +162,7 @@ settings form, which reads `config.schema.json`):
   "platform": "ProLogic",
   "name": "ProLogic",
   "backend": "aquaconnect",
-  "aquaconnectHost": "192.168.50.100",
+  "aquaconnectHost": "<aquaconnect-ip>",
   "sidecarHost": "127.0.0.1",
   "sidecarPort": 5757,
   "pollInterval": 5000,

@@ -3,7 +3,7 @@
 AquaConnect timing characterization tests.
 
 Runs three independent experiments against the AquaConnect box at
-192.168.50.100 to determine safe timing parameters for _AC_MIN_GAP_S and
+the AquaConnect box to determine safe timing parameters for _AC_MIN_GAP_S and
 _AC_SETTLE_S.
 
   Test 1 – Press-drop threshold
@@ -19,7 +19,7 @@ _AC_SETTLE_S.
     Confirms reads don't overload the box and measures latency distribution.
 
 Usage:
-    python3 ac_characterize.py [--host 192.168.50.100] [--test 1|2|3|all]
+    python3 ac_characterize.py --host <aquaconnect-ip> [--test 1|2|3|all]
 
 All timings are printed as a summary table at the end. Run this while the
 pool controller is idle (showing the default time/temperature screen) so the
@@ -28,13 +28,14 @@ restores it — don't run other navigation simultaneously.
 """
 
 import argparse
+import os
 import re
 import socket
 import statistics
 import time
 from typing import Optional
 
-HOST = '192.168.50.100'
+HOST = os.environ.get('AC_HOST', '')  # set AC_HOST or pass --host
 PORT = 80
 MIN_GAP = 1.8   # enforced gap before every request (this is what we're testing)
 
@@ -291,6 +292,8 @@ def main():
     ap.add_argument('--test', default='all', choices=['1', '2', '3', 'all'])
     args = ap.parse_args()
     HOST = args.host
+    if not HOST:
+        ap.error('no AquaConnect host: pass --host <ip> or set AC_HOST')
 
     print(f'AquaConnect characterization against {HOST}')
     print(f'MIN_GAP enforcement: {MIN_GAP}s before every request in _req()')

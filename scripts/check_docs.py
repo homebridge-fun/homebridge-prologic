@@ -11,6 +11,8 @@ safe:
      adding or renaming one fails CI until the picture is updated.
   3. Every source file the diagram names really exists.
   4. Every relative link and image path in the Markdown docs resolves.
+  5. No literal host addresses are committed in the docs -- they should use
+     the placeholders defined in README.md.
 
 Check 2 is the one that catches genuine staleness -- 1 only proves the SVG
 matches its generator, not that the generator matches reality.
@@ -113,6 +115,39 @@ def check_markdown_links() -> None:
                 fail(f'{doc.relative_to(ROOT)}: link target does not exist -> {t}')
 
 
+def check_no_real_ips_in_docs() -> None:
+    """5. No real host addresses committed in the Markdown docs.
+
+    Documentation should use the placeholders defined in the README
+    (<aquaconnect-ip>, <pad-tailnet-ip>) rather than a literal address from
+    someone's actual network -- both because it leaks a real topology and
+    because a valid-looking address can be pasted verbatim and silently talk
+    to the wrong device.
+
+    Loopback and wildcard addresses are legitimate and allowed: the sidecar
+    really does bind 127.0.0.1, and the pad bridge really does default to
+    0.0.0.0.
+    """
+    allowed = {'127.0.0.1', '0.0.0.0', '255.255.255.255'}
+    quad = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+
+    docs = [ROOT / 'README.md', ROOT / 'CHANGELOG.md', ROOT / 'CLAUDE.md']
+    docs += sorted((ROOT / 'docs').glob('*.md'))
+    docs += sorted((ROOT / 'deploy').glob('*.md'))
+
+    for doc in docs:
+        if not doc.exists():
+            continue
+        for n, line in enumerate(doc.read_text().splitlines(), 1):
+            for hit in quad.findall(line):
+                if hit in allowed:
+                    continue
+                if not all(o.isdigit() and int(o) < 256 for o in hit.split('.')):
+                    continue  # a version string like 1.2.3.4-rc, not an address
+                fail(f'{doc.relative_to(ROOT)}:{n}: literal IP address "{hit}" -- '
+                     f'use a placeholder (see the table in README.md) instead')
+
+
 def main() -> int:
     for svg in SVGS:
         if not svg.exists():
@@ -123,6 +158,7 @@ def main() -> int:
         check_backends_in_diagram()
         check_files_named_in_diagram()
     check_markdown_links()
+    check_no_real_ips_in_docs()
 
     if failures:
         print('Documentation checks FAILED:\n', file=sys.stderr)
