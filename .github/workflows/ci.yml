@@ -33,7 +33,10 @@ jobs:
       # break is version-specific is most of the diagnosis.
       fail-fast: false
       matrix:
-        node: ['20', '22', '24']
+        # Matches engines.node (^22 || ^24), which in turn matches what
+        # homebridge@2 itself requires. Testing Node 20 would be testing a
+        # configuration no user can be in — Homebridge 2 won't run there.
+        node: ['22', '24']
     steps:
       - uses: actions/checkout@v4
 
