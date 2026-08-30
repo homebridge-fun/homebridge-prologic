@@ -20,6 +20,29 @@ HomeKit and a browser, not just toggles:
 > **Status:** pre-1.0, not yet published to npm. See [Installation](#installation)
 > for installing from source.
 
+## What you'll need
+
+This is **not a single-package install.** The plugin depends on a Python
+sidecar service running alongside Homebridge, and depending on your setup, a
+second Raspberry Pi. Worth knowing before you invest any time:
+
+| | Requirement |
+|---|---|
+| **Homebridge** | 2.0 or newer, running on **Node 22 or 24** |
+| **Host** | A Linux host that can run a `systemd` service alongside Homebridge — normally the same Pi |
+| **Link to the panel** | **One of:** an existing **AquaConnect (ACHN) box** on your LAN, **or** a spare **Pi Zero + USB-RS485 adapter** wired to the panel's bus |
+| **Comfort level** | Terminal access — cloning a repo, running an installer, editing config by hand. There is no install-from-the-Homebridge-UI path today |
+
+The sidecar is what makes the deeper features possible. Setpoints, light
+scenes, chlorinator %, and pump speeds all require *navigating the panel's
+real settings menus*, which is a stateful, timing-sensitive job that can't be
+done from inside a Homebridge plugin process. That's the reason for the extra
+moving part.
+
+> **If all you want is a few on/off switches**, this project is heavier than
+> you need — the sidecar only earns its keep if you want the settings-level
+> control listed above.
+
 ## How it fits together
 
 ```mermaid
