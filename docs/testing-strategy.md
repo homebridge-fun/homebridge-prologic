@@ -1,9 +1,8 @@
 # Testing strategy — design sketch
 
 > **Status:** design sketch, not built. Written to size the work and pick an
-> order. Independent of the Tier 1 proposal
-> ([`tier1-direct-mode-design.md`](tier1-direct-mode-design.md)) — this is
-> worth doing whether or not Tier 1 ever ships.
+> order. Independent of the proposed "Tier 1" direct-mode backend — this is
+> worth doing whether or not that ever ships.
 
 ## Why now
 

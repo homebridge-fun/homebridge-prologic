@@ -45,31 +45,14 @@ moving part.
 
 ## How it fits together
 
-```mermaid
-flowchart LR
-    Panel["Hayward AquaLogic / ProLogic panel"]
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture-dark.svg">
+  <img alt="Architecture: the Hayward panel connects over RS-485 to either an AquaConnect box or a Pi Zero pad bridge; exactly one of those connects to the Python sidecar, which serves both the Homebridge plugin and the web cockpit. The pad bridge, sidecar and plugin are filled, marking them as pieces you install and run yourself." src="docs/architecture-light.svg" width="100%">
+</picture>
 
-    Panel <-->|RS-485 bus| AC["AquaConnect box<br/>(existing hardware)"]
-    Panel <-->|RS-485 bus, USB adapter| Pad["Pad Pi<br/>rs485_bridge.py"]
-
-    AC <-->|local HTTP| Sidecar
-    Pad <-->|HTTP over Tailscale| Sidecar
-
-    Sidecar["Python sidecar<br/>pool_service.py — REST API"]
-
-    Sidecar <--> Plugin["Homebridge plugin"]
-    Sidecar <--> Cockpit["Web cockpit<br/>(any browser)"]
-
-    Plugin <-->|HAP| HomeKit["Apple HomeKit / Home app"]
-
-    style Panel fill:#e8f0fe,stroke:#4285f4,color:#000
-    style Sidecar fill:#fef7e0,stroke:#f9ab00,color:#000
-    style AC fill:#fff,stroke:#999,color:#000
-    style Pad fill:#fff,stroke:#999,color:#000
-    style Plugin fill:#fff,stroke:#999,color:#000
-    style Cockpit fill:#fff,stroke:#999,color:#000
-    style HomeKit fill:#fff,stroke:#999,color:#000
-```
+**Filled boxes are the pieces you install and run.** Everything else either
+already exists (your panel, an AquaConnect box) or comes along for free (the
+cockpit is served by the sidecar).
 
 Everything talks to the **Python sidecar** (`sidecar/pool_service.py`), a REST
 API that owns the connection to your panel and is the single source of truth
