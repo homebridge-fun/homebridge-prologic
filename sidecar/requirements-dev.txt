@@ -1,0 +1,9 @@
+# Test-only dependencies. Kept separate from requirements.txt so the host
+# sidecar and the pad Pi install stay lean -- neither needs pytest to run.
+#
+#   pip install -r sidecar/requirements-dev.txt
+#   python -m pytest sidecar/tests -q
+
+-r requirements.txt
+
+pytest>=8.0

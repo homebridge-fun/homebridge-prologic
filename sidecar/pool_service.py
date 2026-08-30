@@ -1807,46 +1807,85 @@ def _current_faults() -> list:
         return sorted(p for p, ts in _active_faults.items() if ts >= cutoff)
 
 
+def parse_ac_scroll(lcd: str, valve_mode: Optional[str] = None) -> dict:
+    """Extract every reading an AquaConnect scroll/menu frame carries.
+
+    PURE: no globals, no locks, no side effects. This is the half of the old
+    `_apply_ac_scroll_to_state` that can be tested directly — feed it a real
+    captured frame, assert on the dict. `_apply_ac_scroll_to_state` below is
+    now just the part that folds the result into shared state.
+
+    `valve_mode` is needed because an unprefixed heater line ("Heater1 Auto")
+    refers to whichever body is currently active; pass `state.valve_mode`.
+    Falls back to 'pool' when unknown, matching the previous inline behaviour.
+
+    Returns a dict of PoolState field -> value containing ONLY the fields this
+    frame actually spoke to, so an empty dict means "this frame told us
+    nothing". `vsp_slot_pct`, when present, is a {slot: pct} mapping intended
+    to be MERGED into the existing dict rather than replace it.
+    """
+    out: dict = {}
+
+    for field, pat in _AC_SCROLL_PATTERNS:
+        m = pat.search(lcd)
+        if m:
+            out[field] = int(m.group(1))
+
+    su = _pump_startup_from_lcd(lcd)
+    if su is not None:
+        out['pump_startup'] = su
+
+    hm = _AC_HEATER_STATE_RE.search(lcd)
+    if hm:
+        prefix = (hm.group(1) or '').strip().lower()
+        which = prefix or valve_mode or 'pool'
+        enabled = 'auto' in hm.group(2).lower()
+        out['spa_heater_enabled' if which == 'spa' else 'pool_heater_enabled'] = enabled
+
+    # Menu-only values captured passively when their frame is on screen. Note
+    # this runs AFTER the heater-state branch and may overwrite its result —
+    # a visible setpoint implies the heater is enabled. Order is load-bearing.
+    sm = _AC_HEATER_SETPOINT_RE.search(lcd)
+    if sm:
+        sp = int(sm.group(2))
+        if 40 <= sp <= 110:   # sanity-bound a real setpoint
+            if sm.group(1).lower() == 'spa':
+                out['spa_setpoint_f'] = sp
+                out['spa_heater_enabled'] = True
+            else:
+                out['pool_setpoint_f'] = sp
+                out['pool_heater_enabled'] = True
+
+    vm = _AC_VSP_SLOT_RE.search(lcd)
+    if vm:
+        pct = int(vm.group(2))
+        if 0 <= pct <= 100:
+            out['vsp_slot_pct'] = {int(vm.group(1)): pct}
+
+    return out
+
+
+# Fields that do NOT bump state.last_update on their own. `pump_startup` was
+# set without touching last_update in the original inline version; that is
+# preserved here deliberately so this refactor changes no behaviour. It looks
+# like an oversight rather than intent — see docs/backlog.md before "fixing".
+_SCROLL_NO_TOUCH = frozenset({'pump_startup'})
+
+
 def _apply_ac_scroll_to_state(lcd: str) -> None:
     """Pull numeric readings + heater enable out of a scroll/menu LCD screen."""
     _check_faults(lcd)
     with state_lock:
-        for field, pat in _AC_SCROLL_PATTERNS:
-            m = pat.search(lcd)
-            if m:
-                setattr(state, field, int(m.group(1)))
-                state.last_update = time.time()
-        su = _pump_startup_from_lcd(lcd)
-        if su is not None:
-            state.pump_startup = su
-        hm = _AC_HEATER_STATE_RE.search(lcd)
-        if hm:
-            prefix = (hm.group(1) or '').strip().lower()
-            which = prefix or state.valve_mode or 'pool'
-            enabled = 'auto' in hm.group(2).lower()
-            if which == 'spa':
-                state.spa_heater_enabled = enabled
-            else:
-                state.pool_heater_enabled = enabled
+        parsed = parse_ac_scroll(lcd, state.valve_mode)
+        if not parsed:
+            return
+        slots = parsed.pop('vsp_slot_pct', None)
+        for field, value in parsed.items():
+            setattr(state, field, value)
+        if slots:
+            state.vsp_slot_pct.update(slots)
+        if (set(parsed) - _SCROLL_NO_TOUCH) or slots:
             state.last_update = time.time()
-        # Menu-only values captured passively when their frame is on screen.
-        sm = _AC_HEATER_SETPOINT_RE.search(lcd)
-        if sm:
-            sp = int(sm.group(2))
-            if 40 <= sp <= 110:   # sanity-bound a real setpoint
-                if sm.group(1).lower() == 'spa':
-                    state.spa_setpoint_f = sp
-                    state.spa_heater_enabled = True
-                else:
-                    state.pool_setpoint_f = sp
-                    state.pool_heater_enabled = True
-                state.last_update = time.time()
-        vm = _AC_VSP_SLOT_RE.search(lcd)
-        if vm:
-            pct = int(vm.group(2))
-            if 0 <= pct <= 100:
-                state.vsp_slot_pct[int(vm.group(1))] = pct
-                state.last_update = time.time()
 
 
 def _apply_ac_led_to_state(led: dict) -> None:

@@ -17,9 +17,9 @@ Small, high-leverage, each lands value on its own.
 
 | # | Item | Size | Why now |
 |---|---|---|---|
-| 1.1 | **Extract `parse_ac_scroll`** from `_apply_ac_scroll_to_state` | ~40 lines | Parsing currently can't be tested — it mutates module-global `state` under a lock. Nothing else in the test plan is possible until this is split. |
+| ~~1.1~~ | ~~**Extract `parse_ac_scroll`**~~ | — | **Done.** Split into a pure `parse_ac_scroll(lcd, valve_mode) -> dict` plus a thin fold. Behaviour-preserving, including the quirk that `pump_startup` alone doesn't bump `last_update` (pinned by a test rather than silently changed — see 4.7). |
 | 1.2 | **Frame-corpus plumbing** — `scripts/harvest_frames.py` (dedupes against the corpus), `sidecar/tests/frames.jsonl`, coverage report | Small | Start early: some frames only appear seasonally or during rare conditions, so the corpus accrues over months rather than in one sitting. See [testing-strategy § Tier B](testing-strategy.md). |
-| 1.3 | **Pure-function tests** — LED nibble decode, every scroll regex, WBON stripping, °F/°C | Small | Where most bugs this project has actually shipped have lived. |
+| 1.3 | **Pure-function tests** — remaining scroll regexes, WBON stripping, °F/°C (TS side) | Small | **Started:** `sidecar/tests/test_parse_scroll.py` covers the scroll parser, heater body-routing, setpoint bounds and LED nibble decode (19 tests, running in CI). Extend as the corpus grows. |
 | 1.4 | **`/status` contract fixture** | Small | There is *already* drift: `/status` returns `pump_startup`, `super_chlor_remaining`, `wedge_cooldown_remaining_s`, `backend`, `circuit_labels`, `faults`, `alerts` — none declared in the TS `PoolStatus`. Harmless in that direction; a rename in the other direction breaks the plugin silently. |
 | 1.5 | **`@types/node` `^20` → `^22`** | Trivial | We now declare `engines.node: ^22 \|\| ^24`. Types for a runtime we no longer support can mask or invent API differences. |
 | 1.6 | **`shellcheck` job in CI** for `deploy/*.sh` | Small | Deliberately left out of the first CI pass because shellcheck wasn't available locally to confirm it'd be green. `deploy/deploy.sh` has already shipped one real bug (a hardcoded deleted branch). |
@@ -59,6 +59,7 @@ Carried over from `plugin-spec.md` §10.2; unchanged in substance.
 | 4.4 | **Valve-mode detection lag (~10–30 s)** | Scroll-dependent; no event-driven update |
 | 4.5 | **Fault-phrase discovery** | Ongoing, manual. Unrecognised alert-looking frames are logged `FAULT-CANDIDATE` and persisted; periodically pull `GET /faults/candidates` and promote real wording into `_FAULT_PHRASES`. |
 | 4.6 | **Plugin-side (TypeScript) tests** | Accessory gating, `SidecarClient` against a mocked HTTP layer, value mapping. Worth doing alongside 3.1 if that's built. |
+| 4.7 | **`pump_startup` doesn't bump `last_update`** | Pre-existing quirk, now pinned by a test. Looks like an oversight rather than intent; fixing it is a deliberate behaviour change, not a refactor. |
 
 ---
 
