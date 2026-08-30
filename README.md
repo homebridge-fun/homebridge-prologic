@@ -264,6 +264,28 @@ menu-navigation state machines, and the full HomeKit/cockpit surface — see:
 There's no separate `CONTRIBUTING.md` yet; open an issue or PR and start a
 conversation.
 
+## How this was built
+
+This project was written with **[Claude Code](https://claude.com/claude-code)**,
+working agent-first: the maintainer set direction, made the judgement calls, and
+verified everything against real hardware, while the agent did the bulk of the
+implementation, protocol reverse-engineering, and documentation.
+
+That shows up in the repo in a few ways worth knowing about:
+
+- **The specs in [`docs/`](docs/) are unusually detailed** because they serve as
+  the agent's working reference as much as a human's. They record *why* things
+  are the way they are — which timings wedge the panel, which frame formats
+  actually appear on the bus, which approaches were tried and abandoned.
+- **The protocol work was empirical**, not derived from vendor documentation.
+  Behaviors were found by observing a live panel, and the specs tag findings by
+  provenance (verified on hardware, from the manual, or inferred).
+- **It has been validated on one physical installation** — a ProLogic PS-series
+  panel with pool + spa, no spillover or solar. Other configurations should
+  work, but haven't been proven. Bug reports that include a
+  `/display/history` dump are especially useful, since they capture real panel
+  output from hardware the maintainer doesn't have.
+
 ## Acknowledgments
 
 - **[cupshir/homebridge-aqua-connect-lite](https://github.com/cupshir/homebridge-aqua-connect-lite)**
