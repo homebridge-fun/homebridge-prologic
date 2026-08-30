@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    # All branches, not just main. This repo develops on feature branches and
+    # merges to main directly (often without a PR), so restricting to main
+    # would only run CI *after* the merge — too late to catch anything.
+    #
+    # NOTE: this MUST be `branches`, not `tags-ignore`. Per GitHub's docs,
+    # "if you define only tags/tags-ignore or only branches/branches-ignore,
+    # the workflow won't run for events affecting the other type" — so a
+    # push trigger with ONLY `tags-ignore` never fires on a branch push at
+    # all, silently and with no error. Defining `branches` (and no `tags`)
+    # gives what we want: every branch, no tags.
+    branches: ['**']
+  pull_request:
+  # Allow running by hand from the Actions tab (handy after changing the
+  # workflow itself, or to re-check a branch without pushing an empty commit).
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older run — no point burning
+# minutes on a commit that's already been superseded.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin:
+    name: Plugin — Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't cancel the other Node versions when one fails; knowing whether a
+      # break is version-specific is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        # Matches engines.node (^22 || ^24), which in turn matches what
+        # homebridge@2 itself requires. Testing Node 20 would be testing a
+        # configuration no user can be in — Homebridge 2 won't run there.
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `ci` (not `install`) so the lockfile is authoritative and a drifted
+      # package-lock.json fails here rather than silently resolving differently.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  sidecar:
+    name: Sidecar — Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches the deployment target (Raspberry Pi OS Bookworm ships 3.11).
+        python: ['3.11']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Zero-dependency syntax check: catches a syntax error or a bad f-string
+      # in the sidecar/bridge before it reaches the Pi, without needing Flask,
+      # pyserial, or aqualogic installed. This is deliberately NOT a test suite
+      # — see docs/testing-strategy.md for what a real one would cover.
+      - name: Syntax check
+        run: python -m compileall -q sidecar

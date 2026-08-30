@@ -3,6 +3,35 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.9.2 — CI, corrected Node support, dependency cleanup
+
+- **Fixed: `engines.node` advertised Node versions the plugin cannot run
+  on.** It declared `>=18.0.0`, but this plugin depends on Homebridge 2,
+  which itself requires `^22 || ^24`. Node 18 and 20 were never viable —
+  Homebridge 2 won't start on them — so the package was claiming support it
+  couldn't deliver, and contradicting its own peer dependency. Now correctly
+  `^22 || ^24`, which also matches Homebridge's verified-plugin requirement
+  to support the current LTS releases.
+- **Added CI** (`.github/workflows/ci.yml`) — the repo had none. Runs
+  `npm ci` + lint + build on Node 22 and 24, plus a zero-dependency Python
+  syntax check over `sidecar/`, on every branch push and pull request. The
+  `lint` and `build` scripts already existed but nothing ran them
+  automatically.
+- **Upgraded ESLint 8 → 10** and migrated `.eslintrc.json` to flat config
+  (`eslint.config.js`). ESLint 8 was end-of-life and warned on every
+  install. Rules are ported 1:1, so this changes the config format, not what
+  gets flagged. Dev-only — nothing here ships to users.
+- **`npm audit` now reports 0 vulnerabilities**, down from 3 high. Two
+  (`brace-expansion`, `js-yaml`) were dev-only transitive dependencies of
+  ESLint 8 and cleared with that upgrade. The third was `axios`, whose
+  lockfile pin moved 1.17.0 → 1.20.0; the declared range stays `^1.6.0`, so
+  consumers are unaffected by the pin itself.
+- **Added [`docs/testing-strategy.md`](docs/testing-strategy.md)** — a
+  design sketch for a real test suite (what's cheaply testable here, what
+  can only be verified against live hardware, and a suggested order),
+  written ahead of opening the project to outside users. Nothing
+  implemented yet beyond the CI above.
+
 ## 0.9.1 — 1.0-prep docs pass, npm publish readiness
 
 - **README rewritten** for clarity/accuracy ahead of a wider release: a new
