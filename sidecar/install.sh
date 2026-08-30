@@ -4,7 +4,7 @@
 # cockpit) talk to; it reaches the panel through one of two backends:
 #
 #   AquaConnect (local HTTP to the AquaConnect box):
-#     sudo bash install.sh --backend aquaconnect --aquaconnect-host 192.168.50.100
+#     sudo bash install.sh --backend aquaconnect --aquaconnect-host <aquaconnect-ip>
 #
 #   RS-485 pad bridge (a Raspberry Pi at the pad running deploy/install-pad.sh,
 #   reached over Tailscale — set that up first, see deploy/README-PAD.md):

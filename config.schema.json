@@ -45,8 +45,8 @@
       "aquaconnectHost": {
         "title": "AquaConnect Host",
         "type": "string",
-        "default": "192.168.50.100",
-        "description": "IP of the AquaConnect web box (used when backend = aquaconnect)."
+        "placeholder": "192.168.x.y",
+        "description": "IP of the AquaConnect web box on your LAN (used when backend = aquaconnect). Required for that backend — there is deliberately no default, since guessing an address would point at whatever device happens to occupy it. Find it in your router's client list."
       },
       "rs485bridgeHost": {
         "title": "RS-485 Smart Bridge Host",

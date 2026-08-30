@@ -47,7 +47,7 @@ export interface PlatformConfig {
   sidecarPort: number;
   pollInterval: number;
   backend: 'aquaconnect' | 'rs485bridge';
-  aquaconnectHost: string;
+  aquaconnectHost?: string;
   rs485bridgeHost?: string;
   rs485bridgePort: number;
   circuits: Circuit[];

@@ -49,7 +49,7 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       sidecarPort: config['sidecarPort'] ?? 5757,
       pollInterval: config['pollInterval'] ?? 5000,
       backend: config['backend'] ?? 'aquaconnect',
-      aquaconnectHost: config['aquaconnectHost'] ?? '192.168.50.100',
+      aquaconnectHost: config['aquaconnectHost'] || undefined,
       rs485bridgeHost: config['rs485bridgeHost'] || undefined,
       rs485bridgePort: config['rs485bridgePort'] ?? 8899,
       circuits: config['circuits'] ?? ['FILTER', 'LIGHTS', 'HEATER_1'],

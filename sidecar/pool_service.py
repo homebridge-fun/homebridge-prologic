@@ -1138,7 +1138,7 @@ class AquaConnectBackend:
     overlaps a key-send (two concurrent POSTs confuse the box).
     """
 
-    def __init__(self, host: str = '192.168.50.100', poll_s: float = 3.0):
+    def __init__(self, host: str, poll_s: float = 3.0):
         self._host = host
         self.lcd = LcdCapture(hub=_get_hub('aquaconnect'))
         self._http_lock = threading.Lock()   # serializes all socket access
@@ -5706,8 +5706,10 @@ def main() -> None:
                         default='aquaconnect',
                         help='Navigation backend: aquaconnect (HTTP, default), '
                              'or rs485bridge (pad-Pi smart bridge over HTTP/Tailscale).')
-    parser.add_argument('--aquaconnect-host', default='192.168.50.100',
-                        help='AquaConnect box IP for --backend aquaconnect. Default 192.168.50.100.')
+    parser.add_argument('--aquaconnect-host', default=None,
+                        help='AquaConnect box IP for --backend aquaconnect. Required unless '
+                             'already persisted in backend.json. No default: guessing an '
+                             'address would silently talk to whatever device occupies it.')
     parser.add_argument('--rs485bridge-host', default=None,
                         help='Pad-Pi bridge host for --backend rs485bridge (e.g. its '
                              'tailnet IP or "pool").')
@@ -5815,6 +5817,8 @@ def main() -> None:
         return
 
     if backend == 'aquaconnect':
+        if not aquaconnect_host:
+            parser.error('--aquaconnect-host is required for --backend aquaconnect')
         _ac_backend = AquaConnectBackend(host=aquaconnect_host)
         log.info('AquaConnect backend: http://%s/WNewSt.htm', aquaconnect_host)
         threading.Thread(target=_canary_probe_loop, daemon=True,
