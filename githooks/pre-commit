@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# No committing directly on main. Every code change goes on a branch and
+# reaches main by an explicit merge -- a rule this project has had in writing
+# since the start (CLAUDE.md, "Git workflow -- branch discipline") with nothing
+# enforcing it.
+#
+# The merge-staleness check lives in `pre-push`, not here -- see
+# githooks/README.md for why `pre-merge-commit` cannot do that job.
+#
+# This is escapable with `git commit --no-verify` -- deliberately. A guard you
+# cannot get past when you genuinely need to gets uninstalled, and then it
+# guards nothing.
+set -uo pipefail
+
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    # A merge commit onto main is the sanctioned way changes land there, so the
+    # branch guard below does not apply to it.
+    exit 0
+fi
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [ "$branch" = "main" ]; then
+    echo >&2
+    echo "pre-commit: REFUSING -- this is a direct commit on main." >&2
+    echo >&2
+    echo "  Every code change goes on a branch (CLAUDE.md). Move this one:" >&2
+    echo >&2
+    echo "    git stash" >&2
+    echo "    git checkout -b <branch>" >&2
+    echo "    git stash pop" >&2
+    echo >&2
+    echo "  If this really is meant to be on main, --no-verify says so out loud." >&2
+    echo >&2
+    exit 1
+fi
+
+exit 0
