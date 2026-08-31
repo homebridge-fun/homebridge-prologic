@@ -69,8 +69,9 @@ curl -s http://$(tailscale ip -4 | head -1):8899/health
 
 A systemd timer samples the Pi every 5 min into `/var/log/pad-health.csv`
 (rotated daily, 30 kept). Columns: memory/swap MB, load, `throttled` bitmask,
-under-voltage flags, SoC temp, the bridge daemon's RSS, Wi-Fi dBm, and whether
-the systemd journal is actually persisting (see below).
+under-voltage flags, SoC temp, the bridge daemon's RSS, Wi-Fi dBm, whether
+the systemd journal is actually persisting, and how much SD it is using
+(see below).
 
 ```bash
 # last ~2 hours at a glance
@@ -121,6 +122,34 @@ journalctl --list-boots
 If any row of the health CSV says `VOLATILE`, crash forensics are not being
 kept and `journalctl -b -1` will be empty after the next reboot. Re-run
 `install-pad.sh` to repair it.
+
+### Journal size on the SD card
+
+Persisting the journal is a deliberate trade: crash forensics in exchange for
+some card writes. Note it is **system-wide** — every unit, kernel messages and
+user sessions, not just `pool-bridge`. That is intentional: a Wi-Fi crash or a
+memory livelock shows up in kernel and systemd messages, not in the bridge's
+own output, so persisting only the bridge would miss exactly the failures this
+is for.
+
+The `journal_mb` column tracks what it actually costs, so the trade stays
+visible instead of being a question someone has to remember to ask:
+
+```bash
+# journal size trend (should plateau at the SystemMaxUse cap, not climb)
+awk -F, 'NR>1{print $1, $14" MB"}' /var/log/pad-health.csv | tail -20
+
+# and the canonical figure
+journalctl --disk-usage
+```
+
+It should plateau near the 64 MB cap and stop. If it keeps climbing past that,
+the cap isn't being applied and the drop-in needs checking.
+
+If the volume is higher than you want, the first lever is quieting the routine
+timer chatter — `pool-healthlog`, `pool-netwatch` and `pool-serialwatch` each
+log a start/finish line per firing, which can out-volume the daemon itself.
+Add `LogLevelMax=notice` to those units rather than giving up persistence.
 
 ## Security posture
 

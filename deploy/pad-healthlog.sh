@@ -44,7 +44,7 @@ py_rss="${py_rss:-0}"
 wifi="$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/signal/{gsub(/ ?dBm/,"",$2); gsub(/ /,"",$2); print $2}')"
 wifi="${wifi:-NA}"
 
-HEADER="iso,epoch,mem_total_mb,mem_avail_mb,swap_used_mb,load1,throttled,uv_now,uv_since_boot,soc_temp_c,py_rss_mb,wifi_dbm,journal"
+HEADER="iso,epoch,mem_total_mb,mem_avail_mb,swap_used_mb,load1,throttled,uv_now,uv_since_boot,soc_temp_c,py_rss_mb,wifi_dbm,journal,journal_mb"
 
 # Header on a fresh/truncated file (logrotate copytruncate empties it).
 #
@@ -69,4 +69,12 @@ else
   journal="VOLATILE"
 fi
 
-echo "$now_iso,$now_epoch,$mem_total,$mem_avail,$swap_used,$load1,$thr,$uv_now,$uv_ever,$temp,$py_rss,$wifi,$journal" >>"$LOG"
+# How much SD the journal is actually consuming. Persisting the journal is a
+# deliberate trade -- crash forensics in exchange for some card writes -- and
+# this turns "is that trade still reasonable?" into a trend you can see rather
+# than a question someone has to remember to ask. Capped by SystemMaxUse, so
+# it should plateau; a number that keeps climbing means the cap isn't applying.
+journal_mb="$(du -sm /var/log/journal 2>/dev/null | awk '{print $1}')"
+journal_mb="${journal_mb:-NA}"
+
+echo "$now_iso,$now_epoch,$mem_total,$mem_avail,$swap_used,$load1,$thr,$uv_now,$uv_ever,$temp,$py_rss,$wifi,$journal,$journal_mb" >>"$LOG"
