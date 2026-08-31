@@ -204,3 +204,39 @@ def test_control_bytes_become_spaces_rather_than_shifting_columns():
     l1, _ = cap.lines()
     assert len(l1) == ps._LCD_COLS
     assert '\x03' not in l1
+
+
+# ── status vs menu: getting this wrong strands the panel or walks it needlessly ──
+
+def _is_status(text):
+    """_is_status only reads a class attribute, so the class serves as self."""
+    return ps.MenuNavigator._is_status(ps.MenuNavigator, ps._norm(text))
+
+
+def test_super_chlorinate_countdown_is_a_status_frame():
+    """It appears on the idle cycle. Treating it as a menu made the scroll
+    sweep think it had drifted and walk the menus back to the default display
+    it was already sitting on.
+    """
+    assert _is_status('  Super Chlorinate    23:58 remaining  ')
+
+
+def test_super_chlorinate_settings_screens_are_still_menus():
+    """The Settings menu has its own Super Chlorinate screens, so a bare
+    prefix cannot go in _STATUS_PREFIXES -- real drift would stop being
+    detected and the panel would be left stranded in a menu. Only the
+    'HH:MM remaining' shape is on the idle cycle.
+    """
+    for menu in ('  Super Chlorinate        24 hours      ',
+                 '  Super Chlorinate          Off         ',
+                 '  Super Chlorinate           On         ',
+                 '      Settings              Menu        '):
+        assert not _is_status(menu), menu
+
+
+def test_the_ordinary_idle_scroll_items_are_status():
+    for f in ('     Salt Level           3000 PPM      ',
+              '  Pool Temp  78', '  Air Temp  91',
+              '   Filter Speed 50% Speed2',
+              '       Monday              12:49P       '):
+        assert _is_status(f), f

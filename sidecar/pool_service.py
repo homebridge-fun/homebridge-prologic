@@ -2920,7 +2920,18 @@ class MenuNavigator:
                         'Heater1', 'Filter Speed', 'Filter On')
 
     def _is_status(self, norm: str) -> bool:
-        return any(norm.startswith(p) for p in self._STATUS_PREFIXES)
+        """Is this frame part of the idle status cycle (as opposed to a menu)?
+
+        The Super Chlorinate COUNTDOWN is a status-cycle item, but a bare
+        'Super Chlorinate' prefix cannot go in _STATUS_PREFIXES: the Settings
+        menu has its own 'Super Chlorinate 24 hours / On / Off' screens, and
+        treating those as status would stop real drift being detected and
+        strand the panel in a menu. Only the 'HH:MM remaining' form is on the
+        idle cycle, so match that shape specifically.
+        """
+        if any(norm.startswith(p) for p in self._STATUS_PREFIXES):
+            return True
+        return bool(_SUPERCHLOR_RE.search(norm or ''))
 
     def fast_exit(self) -> None:
         """Return to the Default (status-cycle) display via MENU until 'Default Menu'.
@@ -3536,6 +3547,7 @@ class MenuNavigator:
         frames = []
         t0 = time.time()
         drifted = False
+        found = False
         with _nav_lock:
             txt = self._lcd.text()
             for _ in range(max(1, max_presses)):
@@ -3546,9 +3558,13 @@ class MenuNavigator:
                     frames.append({'frame': txt, 'status': self._is_status(txt)})
                     seen.add(txt)
                     if until is not None and until(txt):
+                        found = True
                         break          # found what the caller came for
                 txt = self._send('RIGHT')
-            drifted = bool(txt) and not self._is_status(txt)
+            # Stopping on the frame the caller asked for is success, not
+            # drift. Exiting here would walk the menus to return to the
+            # default display we are already sitting on.
+            drifted = (not found) and bool(txt) and not self._is_status(txt)
         if drifted:
             self.fast_exit()   # re-acquires _nav_lock; call outside the block
         return {'frames': frames, 'count': len(frames),
