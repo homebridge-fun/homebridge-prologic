@@ -1178,14 +1178,18 @@ class LcdCapture:
         """
         with self._lock:
             text = self._latest or ''
-        # Control bytes would render as garbage in the mirror, but replacing
-        # them with spaces keeps every following column where it belongs.
-        text = ''.join(c if ord(c) >= 0x20 else ' ' for c in text)
+        # Split BEFORE cleaning: the newline is itself a control byte, so
+        # blanking control bytes first would destroy the simulation separator
+        # and send both lines through the positional split.
         if '\n' in text:                      # simulation emits real lines
             l1, l2 = text.split('\n', 1)
         else:
             l1, l2 = text[:_LCD_COLS], text[_LCD_COLS:]
-        return l1.ljust(_LCD_COLS), l2.ljust(_LCD_COLS)
+        # Remaining control bytes would render as garbage, but replacing them
+        # with spaces keeps every following column where it belongs.
+        clean = lambda ln: ''.join(  # noqa: E731
+            c if ord(c) >= 0x20 else ' ' for c in ln).ljust(_LCD_COLS)
+        return clean(l1), clean(l2)
 
     def text(self) -> str:
         """Return the latest LCD frame normalized to a single matchable string."""
