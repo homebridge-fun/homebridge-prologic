@@ -608,6 +608,9 @@ _frame_shapes_last_flush = 0.0
 _SHAPE_CTRL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _SHAPE_TAGS = re.compile(r'<[^>]+>')
 _SHAPE_DEGREE = re.compile(r'[_\u00b0]\s*F\b')
+# The clock's colon blinks, so the idle screen alternates between '12:49P' and
+# '12 49P' -- the same screen, and the highest-traffic one on the panel.
+_SHAPE_CLOCK = re.compile(r'\b(\d{1,2})[: ](\d{2})\s*([AP])\b')
 _SHAPE_DIGITS = re.compile(r'\d+')
 _SHAPE_WS = re.compile(r'\s+')
 
@@ -630,6 +633,7 @@ def frame_shape(text: str) -> str:
     # otherwise splits one screen into two shapes -- observed on hardware for
     # the sensor and cell-diagnostic screens.
     t = _SHAPE_DEGREE.sub('\u00b0F', t)
+    t = _SHAPE_CLOCK.sub(r'\1:\2\3', t)
     return _SHAPE_DIGITS.sub('<N>', t)
 
 

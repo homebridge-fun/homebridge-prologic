@@ -172,6 +172,39 @@ def looks_like_noise(text: str) -> str:
     return ''
 
 
+def is_partial_of(a: str, b: str) -> bool:
+    """Is shape `a` the same screen as `b`, caught mid-repaint?
+
+    The LCD repaints field by field, so a screen is captured several times
+    with different fields still blank:
+
+        'Filter T<N>-all <N>:<N>A to'            <- end time not drawn yet
+        'Filter T<N>-all to <N>:<N>P'            <- start time already cleared
+        'Filter T<N>-all <N>:<N>A to <N>:<N>P'   <- the actual screen
+
+    Those fragments are real frames but not distinct screens, and they bury
+    the genuine discoveries. A fragment's tokens always appear in the complete
+    screen, in order -- a subsequence -- so that is the test.
+    """
+    ta, tb = a.split(), b.split()
+    if len(ta) >= len(tb):
+        return False
+    it = iter(tb)
+    return all(tok in it for tok in ta)
+
+
+def group_partials(rows):
+    """Split rows into (complete, partials-of-something-complete)."""
+    shapes = [(r, shape(r[0].get('text', ''))) for r in rows]
+    complete, partial = [], []
+    for row, sh in shapes:
+        if any(sh != other and is_partial_of(sh, other) for _, other in shapes):
+            partial.append(row)
+        else:
+            complete.append(row)
+    return complete, partial
+
+
 def handled_elsewhere(text: str) -> str:
     """Is this frame consumed by something other than parse_ac_scroll?
 
@@ -257,8 +290,18 @@ def cmd_anomalies(base: str, corpus: list[dict], show_noise: bool = False) -> in
         print()
 
     print(f'{len(entries)} distinct shapes in the ledger\n')
+    # A header caught before its value arrived is not a parser bug.
+    needs_parser, np_partial = group_partials(needs_parser)
+    unknown, un_partial = group_partials(unknown)
+    partials = np_partial + un_partial
+
     show(needs_parser, 'NEEDS PARSER — recognised condition, but nothing parsed')
     show(unknown, 'UNKNOWN — nothing parsed, no known condition')
+    if partials:
+        print(f'PARTIAL RENDERS — same screen caught mid-repaint ({len(partials)})')
+        print(f"  e.g. {partials[0][0].get('text','')!r}")
+        print('  Fragments of a complete screen listed above; not separate '
+              'findings.\n')
     show(elsewhere, 'HANDLED ELSEWHERE — read by another path, not parse_ac_scroll')
     if noise:
         print(f'LIKELY NOISE — mis-decoded serial, not LCD content ({len(noise)})')

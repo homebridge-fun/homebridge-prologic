@@ -192,3 +192,18 @@ def test_corroborated_shapes_are_not_evicted():
     ps._note_frame_shape('Something Brand New 12')
     with ps._frame_shapes_lock:
         assert len(ps._frame_shapes) == ps._FRAME_SHAPES_MAX
+
+
+def test_blinking_clock_colon_is_one_shape():
+    """The idle screen's colon blinks, so it alternates between '12:49P' and
+    '12 49P'. Highest-traffic screen on the panel; it was counted twice."""
+    assert (ps.frame_shape('       Monday              12 49P       ')
+            == ps.frame_shape('       Monday              12:49P       '))
+
+
+def test_clock_normalisation_leaves_timer_ranges_alone():
+    """The timer screens carry real times that must not be merged together."""
+    t1 = ps.frame_shape('   Filter T1-all      07:00A to 08:00A  ')
+    t3 = ps.frame_shape('   Filter T3-all       9:30P to 10:30P  ')
+    assert t1 != t3
+    assert 'to' in t1
