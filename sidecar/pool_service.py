@@ -102,6 +102,19 @@ class _AlertBuffer(logging.Handler):
         except Exception:
             pass
 
+    def resolve(self, needle: str) -> int:
+        """Drop alerts whose message contains `needle`; returns how many.
+
+        Alerts otherwise only age out on a timer, so one describing a
+        condition that has SINCE RESOLVED keeps presenting as current for the
+        rest of the window. Call this the moment the underlying condition
+        clears, so the banner reflects now rather than the recent past.
+        """
+        with self._lock:
+            before = len(self._buf)
+            self._buf = [e for e in self._buf if needle not in e['msg']]
+            return before - len(self._buf)
+
     def recent(self, window_s=None, limit=None):
         with self._lock:
             items = list(self._buf)
@@ -227,6 +240,10 @@ _wedge_lock = threading.Lock()
 # packet but fast enough to reflect a real outage. Reachability-driven and
 # self-clearing; there is no power-cycle cooldown for direct serial.
 _BRIDGE_OFFLINE_MISSES = 3
+# Alert text for that offline condition. Shared by the raise site and the
+# resolve-on-reconnect call so the two can never drift apart -- a reworded
+# message that no longer matches would silently stop clearing.
+_BRIDGE_OFFLINE_ALERT = 'RS-485 bridge unreachable'
 
 
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
@@ -1690,6 +1707,13 @@ class RS485BridgeBackend:
                     self._apply(snap)
                     if snap.get('connected') and state.bridge_wedged:
                         _record_command_success()   # clears the offline flag
+                        # The alert says "self-clears on reconnect" -- make that
+                        # true of the alert too, not just the state flag. Without
+                        # this the banner keeps showing a resolved outage until
+                        # its 10-minute window expires.
+                        n = _alert_buffer.resolve(_BRIDGE_OFFLINE_ALERT)
+                        log.info('RS-485 bridge reachable again — cleared %d '
+                                 'offline alert(s)', n)
                     with self._frame_cond:
                         self._frame_cond.notify_all()
                 else:
@@ -1700,8 +1724,9 @@ class RS485BridgeBackend:
                         with state_lock:
                             state.bridge_wedged = True
                             state.wedge_detected_at = None   # NO power-cycle cooldown
-                        log.warning('RS-485 bridge unreachable (%d consecutive polls) — '
-                                    'marking offline; self-clears on reconnect', fails)
+                        log.warning('%s (%d consecutive polls) — marking offline; '
+                                    'self-clears on reconnect',
+                                    _BRIDGE_OFFLINE_ALERT, fails)
             except Exception as e:  # noqa: BLE001
                 # A malformed snapshot must NEVER kill this thread — a dead poll
                 # loop was what left the flag stuck with no way to self-heal.
