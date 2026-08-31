@@ -293,10 +293,20 @@ The sidecar drives the panel's Settings-menu navigation, not just the
 `aqualogic` library's raw toggle/read surface — so setpoints, chlorinator
 output, and pump speeds are fully **adjustable**, not just readable.
 
-**Still panel-only:** freeze protection, timers/schedules, relay/valve
-configuration, and the clock — these aren't automated. Light scene selection
-is **open-loop** (the panel doesn't report which program is showing, so the
-displayed scene is the last one commanded, not a live read).
+**Not currently exposed — by choice, not by limitation:** timers and
+schedules, relay/valve configuration, freeze protection, and the clock. The
+sidecar drives the *same* menu system a person uses at the keypad, so these
+screens are reachable and readable like any other; a menu walk shows filter
+timers, cell diagnostics and firmware revisions perfectly legibly. What's
+exposed in HomeKit and the cockpit is a deliberate selection — surfacing
+every menu item would mean a great many tiles for things you set once a
+season, and the write paths for scheduling deserve more care than a
+read-only reading does. If something here would earn its place, it's a
+scope decision to revisit, not a wall.
+
+**Genuinely limited:** light scene selection is **open-loop** — the panel
+doesn't report which program is showing, so the displayed scene is the last
+one commanded rather than a live read.
 
 Menu-navigated writes (setpoints, chlorinator %, VSP, super-chlorinate) walk
 the panel's single-lane menu, so they take a couple of seconds and are
