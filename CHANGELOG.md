@@ -3,6 +3,73 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## 0.10.0 — Configurable lights, first test suite, frame-capture tooling
+
+### Added
+
+- **The light standard and relay are configurable per body.** Which light is
+  on which circuit was hardcoded to one installation (pool = Hayward
+  ColorLogic on `LIGHTS`, spa = Pentair IntelliBrite on `AUX_1`). The two
+  standards select colours differently — ColorLogic steps relatively from the
+  current colour, IntelliBrite counts absolutely from a reset — so a
+  mismatched install landed every scene on the wrong colour, and two lights of
+  the same standard could not be expressed at all. Set
+  `poolLightType`/`poolLightCircuit` and `spaLightType`/`spaLightCircuit` in
+  the Homebridge UI. Defaults are the previous values, so nothing changes
+  unless you set them.
+  **Not supported:** Hayward OmniDirect (networked ColorLogic on OmniLogic),
+  which selects colours directly instead of by power cycling. Different
+  platform, different protocol — not something configuration can reach.
+- **The first automated tests — 138 of them**, plus CI running lint, build,
+  a Python syntax check and documentation checks on every push.
+- **Frame-capture tooling for the test corpus.** The sidecar now records every
+  distinct LCD screen it has ever seen (`GET /display/shapes`), surviving both
+  the 60-frame display ring and a restart, so a fault that appears at 3am is
+  still there in the morning. `scripts/harvest_frames.py` turns that into test
+  fixtures and reports which screens the parser does not understand.
+
+### Fixed
+
+- **The bridge-offline alert did not clear when the bridge came back.** The
+  banner kept showing a resolved outage for the remainder of its ten-minute
+  window, while claiming to be current — and its own text promised it
+  self-cleared on reconnect.
+- **The panel mirror reflowed whenever a field blinked.** At the panel a
+  blinking value blanks in place; in the cockpit everything to its right
+  shifted, which is disorienting exactly when navigating menus. The mirror now
+  renders the raw 20x2 frame with column positions preserved.
+- **The pad Pi's persistent journal never worked.** `install-pad.sh` set
+  `Storage=persistent` in `journald.conf`, which Raspberry Pi OS overrides with
+  a vendor drop-in forcing volatile storage — so every reboot wiped the crash
+  logs the setting existed to keep. It now writes a drop-in that wins, and
+  verifies the result instead of assuming it. The health log gained columns
+  reporting whether the journal is persisting and what it costs on the SD card.
+
+### Changed
+
+- **`engines.node` is now `^22 || ^24`** — matching what Homebridge 2 itself
+  requires. The previous `>=18.0.0` advertised versions the plugin cannot run
+  on, and contradicted its own peer dependency.
+- **No default AquaConnect address is shipped.** It previously defaulted to one
+  installation's box IP, so a fresh install would silently talk to whatever
+  device occupied that address on the user's network. The host must now be
+  configured; an unset host is an error rather than a guess.
+- **Super Chlorinate moved into the Chlorinator card** in the cockpit, below
+  the pool and spa output controls, rather than sitting among the generic aux
+  switches.
+- `parse_ac_scroll` was extracted as a pure function, separating LCD parsing
+  from state mutation. Behaviour-preserving; it makes the most bug-prone code
+  in the project testable.
+
+### Known limitations
+
+- The captured frame corpus ships with its expectations unreviewed, so those
+  tests currently assert that behaviour has not *changed* rather than that it
+  is *correct*.
+- Reading a value that only appears on the panel's idle scroll can lag by up to
+  a minute. Sweeping the scroll on demand would fix that but is what used to
+  lock up the AquaConnect box, so the delay is deliberate.
+
 ## 0.9.2 — CI, corrected Node support, dependency cleanup
 
 - **Fixed: `engines.node` advertised Node versions the plugin cannot run
