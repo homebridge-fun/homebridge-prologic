@@ -1,0 +1,74 @@
+{"name": "TODO_1", "text": "       Monday               3 33P       ", "expect": {}, "reviewed": false}
+{"name": "TODO_2", "text": "  - 0.00V   -0.00A     76_F   0000 PPM  ", "expect": {}, "reviewed": false}
+{"name": "TODO_3", "text": "     Air Sensor             74_F        ", "expect": {}, "reviewed": false}
+{"name": "TODO_4", "text": "  Air Temp   74_F                       ", "expect": {"air_temp": 74}, "reviewed": false}
+{"name": "TODO_5", "text": "       Beeper             Enabled       ", "expect": {}, "reviewed": false}
+{"name": "TODO_6", "text": "  Cell Temp Sensor          76\u00b0F        ", "expect": {}, "reviewed": false}
+{"name": "TODO_7", "text": "  Chlorinator Off      Percentage met   ", "expect": {}, "reviewed": false}
+{"name": "TODO_8", "text": "   Configuration       Menu-Locked      ", "expect": {}, "reviewed": false}
+{"name": "TODO_9", "text": "      Default               Menu        ", "expect": {}, "reviewed": false}
+{"name": "TODO_10", "text": "     Diagnostic             Menu        ", "expect": {}, "reviewed": false}
+{"name": "TODO_11", "text": "   Display Light                        ", "expect": {}, "reviewed": false}
+{"name": "TODO_12", "text": "  Display Software     Revision         ", "expect": {}, "reviewed": false}
+{"name": "TODO_13", "text": "    Filter Speed       50% Speed2       ", "expect": {"pump_speed": 50, "vsp_active_slot": 2, "pump_startup": false}, "reviewed": false}
+{"name": "TODO_14", "text": "    Filter Speed1                       ", "expect": {}, "reviewed": false}
+{"name": "TODO_15", "text": "    Filter Speed1           90%         ", "expect": {"vsp_slot_pct": {"1": 90}}, "reviewed": false}
+{"name": "TODO_16", "text": "   Filter T1-Spd1           90%         ", "expect": {}, "reviewed": false}
+{"name": "TODO_17", "text": "   Filter T4-all         --- Off        ", "expect": {}, "reviewed": false}
+{"name": "TODO_18", "text": "   Filter T4-all         --- Off ---    ", "expect": {}, "reviewed": false}
+{"name": "TODO_19", "text": "   Filter T1-all      07:00A to         ", "expect": {}, "reviewed": false}
+{"name": "TODO_20", "text": "   Filter T1-all      07:00A to 08:00A  ", "expect": {}, "reviewed": false}
+{"name": "TODO_21", "text": "   Filter T2-all       8:00A to 09:30P  ", "expect": {}, "reviewed": false}
+{"name": "TODO_22", "text": "   Filter T3-all      09:30P to         ", "expect": {}, "reviewed": false}
+{"name": "TODO_23", "text": "   Filter T3-all       9:30P to 10:30P  ", "expect": {}, "reviewed": false}
+{"name": "TODO_24", "text": "   Filter T4-all             Off ---    ", "expect": {}, "reviewed": false}
+{"name": "TODO_25", "text": "   Filter T1-all             to 08:00A  ", "expect": {}, "reviewed": false}
+{"name": "TODO_26", "text": "   Filter T2-all             to 09:30P  ", "expect": {}, "reviewed": false}
+{"name": "TODO_27", "text": "    Flow Switch             Flow        ", "expect": {}, "reviewed": false}
+{"name": "TODO_28", "text": "      Heater1            Manual Off     ", "expect": {"pool_heater_enabled": false}, "reviewed": false}
+{"name": "TODO_29", "text": "    Instant Salt      0000 PPM          ", "expect": {}, "reviewed": false}
+{"name": "TODO_30", "text": "    Instant Salt      0000 PPM(+=save)  ", "expect": {}, "reviewed": false}
+{"name": "TODO_31", "text": "   Main Software       Revision  4.46   ", "expect": {}, "reviewed": false}
+{"name": "TODO_32", "text": "N\tatqv|hhhhKEQF><G", "expect": {}, "reviewed": false}
+{"name": "TODO_33", "text": "  Pool Chlorinator                      ", "expect": {}, "reviewed": false}
+{"name": "TODO_34", "text": "  Pool Chlorinator          60%         ", "expect": {"chlorinator_percent": 60}, "reviewed": false}
+{"name": "TODO_35", "text": "  Pool Heater1                          ", "expect": {}, "reviewed": false}
+{"name": "TODO_36", "text": "  Pool Heater1           Manual Off     ", "expect": {"pool_heater_enabled": false}, "reviewed": false}
+{"name": "TODO_37", "text": "  Pool Temp  80\u00b0F                       ", "expect": {"pool_temp": 80}, "reviewed": false}
+{"name": "TODO_38", "text": "  RF Base Software     r3.00  ID:203A   ", "expect": {}, "reviewed": false}
+{"name": "TODO_39", "text": "     Salt Level           3000 PPM      ", "expect": {"salt_level": 3000}, "reviewed": false}
+{"name": "TODO_40", "text": "  Set Day and Time    Monday      :34   ", "expect": {}, "reviewed": false}
+{"name": "TODO_41", "text": "  Set Day and Time    Monday     3:  P  ", "expect": {}, "reviewed": false}
+{"name": "TODO_42", "text": "  Set Day and Time    Monday     3:34P  ", "expect": {}, "reviewed": false}
+{"name": "TODO_43", "text": "  Set Day and Time               3:34P  ", "expect": {}, "reviewed": false}
+{"name": "TODO_44", "text": "      Settings              Menu        ", "expect": {}, "reviewed": false}
+{"name": "TODO_45", "text": "  Spa Chlorinator                       ", "expect": {}, "reviewed": false}
+{"name": "TODO_46", "text": "  Spa Chlorinator            1%         ", "expect": {"spa_chlorinator_percent": 1}, "reviewed": false}
+{"name": "TODO_47", "text": "   Spa Heater1                          ", "expect": {}, "reviewed": false}
+{"name": "TODO_48", "text": "   Spa Heater1           Manual Off     ", "expect": {"spa_heater_enabled": false}, "reviewed": false}
+{"name": "TODO_49", "text": "     Spa Speed                          ", "expect": {}, "reviewed": false}
+{"name": "TODO_50", "text": "     Spa Speed              80%         ", "expect": {"spa_speed": 80}, "reviewed": false}
+{"name": "TODO_51", "text": "      Spa-all            --- Off        ", "expect": {}, "reviewed": false}
+{"name": "TODO_52", "text": "      Spa-all            --- Off ---    ", "expect": {}, "reviewed": false}
+{"name": "TODO_53", "text": "      Spa-all                Off ---    ", "expect": {}, "reviewed": false}
+{"name": "TODO_54", "text": "  Super Chlorinate                      ", "expect": {}, "reviewed": false}
+{"name": "TODO_55", "text": "  Super Chlorinate        24 hours      ", "expect": {}, "reviewed": false}
+{"name": "TODO_56", "text": "  Super Chlorinate          Off         ", "expect": {}, "reviewed": false}
+{"name": "TODO_57", "text": "  Super Chlorinate           On         ", "expect": {}, "reviewed": false}
+{"name": "TODO_58", "text": "  Super Chlorinate           hours      ", "expect": {}, "reviewed": false}
+{"name": "TODO_59", "text": "  Teach Wireless:                       ", "expect": {}, "reviewed": false}
+{"name": "TODO_60", "text": "  Teach Wireless:        + to start     ", "expect": {}, "reviewed": false}
+{"name": "TODO_61", "text": "       Timers               Menu        ", "expect": {}, "reviewed": false}
+{"name": "TODO_62", "text": "    VSP Software                        ", "expect": {}, "reviewed": false}
+{"name": "TODO_63", "text": "    VSP Software         + to view      ", "expect": {}, "reviewed": false}
+{"name": "TODO_64", "text": " VSP Speed Settings                     ", "expect": {}, "reviewed": false}
+{"name": "TODO_65", "text": " VSP Speed Settings      + to enter     ", "expect": {}, "reviewed": false}
+{"name": "TODO_66", "text": "  VSP Speed/Power                       ", "expect": {}, "reviewed": false}
+{"name": "TODO_67", "text": "  VSP Speed/Power        + to view      ", "expect": {}, "reviewed": false}
+{"name": "TODO_68", "text": "    Valve3-all           --- Off        ", "expect": {}, "reviewed": false}
+{"name": "TODO_69", "text": "    Valve3-all           --- Off ---    ", "expect": {}, "reviewed": false}
+{"name": "TODO_70", "text": "    Valve3-all               Off ---    ", "expect": {}, "reviewed": false}
+{"name": "TODO_71", "text": "    Water Sensor            80_F        ", "expect": {}, "reviewed": false}
+{"name": "TODO_72", "text": "      Wireless           Channel:       ", "expect": {}, "reviewed": false}
+{"name": "TODO_73", "text": "      Wireless           Channel: 3     ", "expect": {}, "reviewed": false}
+{"name": "TODO_74", "text": "tv|hhhhKEQF><G", "expect": {}, "reviewed": false}
