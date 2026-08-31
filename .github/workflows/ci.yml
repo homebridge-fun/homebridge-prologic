@@ -13,6 +13,10 @@ on:
     # all, silently and with no error. Defining `branches` (and no `tags`)
     # gives what we want: every branch, no tags.
     branches: ['**']
+    # Release tags too, for the `release` job below. Listing both keys is fine
+    # -- the "only one type defined" trap described above applies to defining
+    # *only* tags/tags-ignore.
+    tags: ['v*']
   pull_request:
   # Allow running by hand from the Actions tab (handy after changing the
   # workflow itself, or to re-check a branch without pushing an empty commit).
@@ -92,3 +96,38 @@ jobs:
 
       - name: Tests
         run: python -m pytest sidecar/tests -q
+
+  release:
+    name: Release tag matches the tree
+    # Only on a v* tag push. This is the one check that can catch a tag cut
+    # against the wrong commit, because it is the only thing that compares
+    # something OUTSIDE the tree (the tag name) with something inside it.
+    #
+    # It exists because that is exactly what happened with v0.10.0: the merge
+    # into main was run against a stale local copy of the release branch
+    # (`git pull origin main` updates main, not the branch being merged), so
+    # the release commit was left behind. The resulting tree was internally
+    # consistent at 0.9.2 -- package.json, the lockfile and the CHANGELOG all
+    # agreed -- and every other job passed. Only the tag knew better.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag, package.json and CHANGELOG must agree
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag was cut against a tree whose package.json"\
+                 "says $pkg. The release commit is almost certainly missing --"\
+                 "check that the merge took the branch tip that was actually"\
+                 "pushed (git fetch origin, then merge origin/<branch>)."
+            exit 1
+          fi
+          if ! grep -qE "^##[[:space:]]+$tag( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## $tag' heading"
+            exit 1
+          fi
+          echo "v$tag matches package.json and CHANGELOG.md"

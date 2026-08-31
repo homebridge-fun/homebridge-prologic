@@ -148,6 +148,41 @@ def check_no_real_ips_in_docs() -> None:
                      f'use a placeholder (see the table in README.md) instead')
 
 
+def check_version_has_a_changelog_entry() -> None:
+    """package.json's version must have a matching CHANGELOG heading.
+
+    Catches bumping the version without writing the entry, and a lockfile left
+    behind at the old version.
+
+    It does NOT catch the failure that prompted it -- a v0.10.0 tag cut against
+    a tree still at 0.9.2, because the merge took a stale copy of the release
+    branch. That tree was internally *consistent*: package.json, the lockfile
+    and the CHANGELOG all agreed on 0.9.2. Nothing inside the tree could tell
+    it was wrong. Only the tag disagreed, so only a check that reads the tag
+    can see it -- that is the `release` job in .github/workflows/ci.yml.
+    """
+    pkg = ROOT / 'package.json'
+    changelog = ROOT / 'CHANGELOG.md'
+    if not pkg.exists() or not changelog.exists():
+        return
+    version = json.loads(pkg.read_text()).get('version', '')
+    if not version:
+        fail('package.json has no "version"')
+        return
+    headings = re.findall(r'^##\s+(\S+)', changelog.read_text(), re.M)
+    if version not in headings:
+        fail(f'package.json is version {version} but CHANGELOG.md has no '
+             f'"## {version}" heading (headings: {", ".join(headings[:5])}). '
+             f'A merge that took a stale branch will look exactly like this.')
+
+    lock = ROOT / 'package-lock.json'
+    if lock.exists():
+        lock_version = json.loads(lock.read_text()).get('version', '')
+        if lock_version and lock_version != version:
+            fail(f'package.json is {version} but package-lock.json is '
+                 f'{lock_version} -- run npm install to resync')
+
+
 def main() -> int:
     for svg in SVGS:
         if not svg.exists():
@@ -159,6 +194,7 @@ def main() -> int:
         check_files_named_in_diagram()
     check_markdown_links()
     check_no_real_ips_in_docs()
+    check_version_has_a_changelog_entry()
 
     if failures:
         print('Documentation checks FAILED:\n', file=sys.stderr)
