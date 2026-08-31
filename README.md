@@ -146,7 +146,8 @@ Not yet on npm — install from source for now.
 > | Placeholder | What it stands for |
 > |---|---|
 > | `<aquaconnect-ip>` | Your AquaConnect box on the LAN — a private `192.168.x.y` address. Find it in your router's client list |
-> | `<pad-tailnet-ip>` | The pad Pi's Tailscale address (`tailscale ip -4` on the pad), or its MagicDNS name, e.g. `pool` |
+> | `<pad-host>` | The pad Pi, preferably its MagicDNS name (`pool`) — that survives a tailnet-IP change. Falls back to its Tailscale address (`tailscale ip -4` on the pad) if you'd rather not depend on tailnet DNS |
+> | `<pad-tailnet-ip>` | Specifically the pad's Tailscale *address*, for the few places that need a literal one (`tailscale ip -4` on the pad). Prefer `<pad-host>` wherever a name will do |
 > | `127.0.0.1` | Not a placeholder — the sidecar binds localhost deliberately and is reached there from the Homebridge host |
 
 ### 1. Get the code
@@ -168,8 +169,8 @@ npm run build
 sudo bash sidecar/install.sh --backend aquaconnect --aquaconnect-host <aquaconnect-ip>
 
 # OR the RS-485 pad bridge — set up the pad first (deploy/README-PAD.md), then
-# point at its tailnet IP (token via --rs485bridge-token if the bridge requires one):
-sudo bash sidecar/install.sh --backend rs485bridge --rs485bridge-host <pad-tailnet-ip>
+# point at it by MagicDNS name (token via --rs485bridge-token if the bridge requires one):
+sudo bash sidecar/install.sh --backend rs485bridge --rs485bridge-host pool
 ```
 
 Add `--dry-run` to preview the systemd unit without changing anything.

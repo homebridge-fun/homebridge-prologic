@@ -27,7 +27,8 @@ Usage:
     python3 rs485_bridge.py --port /dev/ttyUSB0 --listen 0.0.0.0:8899
 
 Run it under systemd on the pad (see deploy/ for the unit). Point the sidecar's
-rs485bridge backend at http://<pad-tailscale-ip>:8899.
+rs485bridge backend at http://pool:8899 (the pad's MagicDNS name; a raw
+<pad-tailnet-ip> also works but does not survive a renumber).
 """
 import argparse
 import hmac

@@ -119,7 +119,7 @@ def check_no_real_ips_in_docs() -> None:
     """5. No real host addresses committed in the Markdown docs.
 
     Documentation should use the placeholders defined in the README
-    (<aquaconnect-ip>, <pad-tailnet-ip>) rather than a literal address from
+    (<aquaconnect-ip>, <pad-host>, <pad-tailnet-ip>) rather than a literal address from
     someone's actual network -- both because it leaks a real topology and
     because a valid-looking address can be pasted verbatim and silently talk
     to the wrong device.
