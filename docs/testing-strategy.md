@@ -150,6 +150,17 @@ convincingly invent one — the exact text is what the parser matches on, and
 guessing it produces a test that passes against fiction. A complete corpus
 **accrues over seasons**, which is the actual argument for starting now.
 
+> **As-is caveat — the current tooling does not actually deliver this.**
+> `/display/history` returns `lcd.snapshot()`, a `deque(maxlen=60)`: the last
+> 60 frames, on the order of a few minutes. Harvesting is a manual one-shot
+> pull with nothing capturing in the background, so catching a rare frame
+> requires running the harvest within minutes of it appearing. The common
+> idle-scroll frames are unaffected — they recur constantly — but the rare
+> ones this section argues are most valuable are precisely the ones that will
+> be missed. "Accrues over months" describes the intent, not today's
+> behaviour. Backlog 1.7 closes the gap by capturing novel shapes in the
+> sidecar as frames arrive.
+
 This has already bitten us. The Super Chlorinate OFF bug (0.8.6) was
 precisely a frame that only appears while the countdown is running: the
 `HH:MM remaining` text wasn't recognised as "on", so OFF silently sent no

@@ -27,6 +27,22 @@ Usage (on the HOP, where the sidecar runs):
     # what conditions are still missing (no sidecar needed)
     python3 scripts/harvest_frames.py --coverage
 
+LIMITATION -- this only sees the last 60 frames. /display/history returns
+`lcd.snapshot()`, a deque(maxlen=60), so a run samples roughly the last few
+minutes of panel output depending on how active it is. Harvesting is a manual
+one-shot pull; nothing captures in the background.
+
+That is fine for the common idle-scroll frames, which recur constantly and
+turn up on any run. It is NOT sufficient for the rare ones this corpus most
+needs -- a real fault, freeze protection, the 5-10s VSP window -- because
+catching those requires running the harvest within minutes of them appearing.
+A fault at 3am will have aged out of the ring long before anyone looks.
+
+Fixing that means capturing novel shapes in the sidecar as frames arrive
+rather than sampling a short ring afterwards; see backlog 1.7. Until then,
+treat rare-condition coverage as opportunistic: run a harvest soon after you
+notice something unusual on the panel, and provoke what you can on demand.
+
 The suggested `expect` for a new frame is a SNAPSHOT of what the parser
 currently produces -- not an oracle. Review it: if the parser is wrong for
 that frame, correct the `expect` and the test will fail until the parser is

@@ -46,7 +46,16 @@ cd /home/greg/development/homebridge-prologic
 
 Frames are deduped by *shape* — digits tokenised, so `Pool Temp 78` and
 `Pool Temp 79` are the same shape and only one is worth keeping. Only shapes
-the corpus has never seen are reported.
+the corpus has never seen are reported. The known-conditions list used by
+`--coverage` is a scorecard only; it never filters what gets captured, so a
+frame nobody anticipated is still caught.
+
+> **Today this only sees the last 60 frames** (`deque(maxlen=60)` behind
+> `/display/history`) and only when you run it by hand. Common frames recur
+> constantly and turn up on any run; rare ones — a fault, freeze protection,
+> the brief VSP window — will usually be gone before you look. Run a harvest
+> soon after noticing anything unusual on the panel. Backlog 1.7 fixes this
+> properly by capturing in the sidecar as frames arrive.
 
 **`--append` writes `"reviewed": false` on purpose.** The suggested `expect`
 is a snapshot of what the parser does today, so an unreviewed entry proves
