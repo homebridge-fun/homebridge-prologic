@@ -69,7 +69,8 @@ curl -s http://$(tailscale ip -4 | head -1):8899/health
 
 A systemd timer samples the Pi every 5 min into `/var/log/pad-health.csv`
 (rotated daily, 30 kept). Columns: memory/swap MB, load, `throttled` bitmask,
-under-voltage flags, SoC temp, and the bridge daemon's RSS.
+under-voltage flags, SoC temp, the bridge daemon's RSS, Wi-Fi dBm, and whether
+the systemd journal is actually persisting (see below).
 
 ```bash
 # last ~2 hours at a glance
@@ -87,6 +88,39 @@ awk -F, 'NR>1{print $1, $11" MB"}' /var/log/pad-health.csv | tail -20
 
 `throttled=0x0` and `uv_*` staying `0` means clean power. A non-zero
 under-voltage flag points at the USB supply / pad circuit, not software.
+
+A clean series that simply *stops*, with no degradation before it, is an
+external power cut (a tripped breaker or GFCI) rather than a fault on the Pi.
+
+### Persistent journal — verify it, don't assume it
+
+The last column reports `persistent` or `VOLATILE`. It exists because this has
+silently failed twice.
+
+Raspberry Pi OS ships
+`/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf`, which sets
+`Storage=volatile` to spare the SD card. **Drop-ins override
+`/etc/systemd/journald.conf`**, so editing that file has no effect — an earlier
+version of `install-pad.sh` did exactly that and appeared to work while
+journald kept writing to tmpfs. Every reboot wiped the evidence, and it was
+only discovered when a crash trail was actually needed and `-b -1` came back
+empty.
+
+`install-pad.sh` now writes `/etc/systemd/journald.conf.d/50-pad-persistent.conf`
+(sorts after `40-*`, lives in `/etc` so package updates don't touch it) and
+verifies the result rather than assuming it. To check by hand:
+
+```bash
+# Storage must resolve to persistent LAST -- later drop-ins win
+systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage='
+# and the journal must be on disk, not in /run
+journalctl --header | grep -i 'file path' | head -3
+journalctl --list-boots
+```
+
+If any row of the health CSV says `VOLATILE`, crash forensics are not being
+kept and `journalctl -b -1` will be empty after the next reboot. Re-run
+`install-pad.sh` to repair it.
 
 ## Security posture
 
