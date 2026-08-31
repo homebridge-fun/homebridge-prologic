@@ -1998,7 +1998,15 @@ _AC_HEATER_STATE_RE = re.compile(
 # the heater is enabled, so seeing it also confirms Auto. Slot label is
 # 'Filter Speed1 90%' (digit adjacent, so it never collides with the scroll's
 # 'Filter Speed 50%' pump-speed reading).
-_AC_HEATER_SETPOINT_RE = re.compile(r'(Pool|Spa) Heater1[^0-9]*(\d{2,3})\s*\xb0?\s*F', re.I)
+# The panel's degree glyph reaches us two ways: '°' on some frames and '_' on
+# others. frame_shape has folded both since the shape ledger was built (see
+# _SHAPE_DEGREE), but _norm does not — so the PARSERS see the raw glyph, and a
+# pattern that only accepts '°' silently reads no value from the '_' form.
+# Both encodings are pinned in the frame corpus on the same hardware, one menu
+# apart (cell_temp_sensor_degree_symbol vs air_sensor_diagnostic).
+_DEG_F = r'\s*[_\xb0]?\s*F'
+
+_AC_HEATER_SETPOINT_RE = re.compile(r'(Pool|Spa) Heater1[^0-9]*(\d{2,3})' + _DEG_F, re.I)
 _AC_VSP_SLOT_RE = re.compile(r'Filter Speed([1-4])[^0-9]+(\d{1,3})\s*%', re.I)
 
 # Post-power-up pump prime: the panel runs the filter at 100% for a "start
@@ -2964,11 +2972,13 @@ class MenuNavigator:
         """Extract a heater setpoint °F, or None if Manual Off / unreadable.
 
         Matches the digits immediately before the degree/F marker so it never
-        picks up the '1' in 'Heater1'.
+        picks up the '1' in 'Heater1'. Accepts both encodings of the degree
+        glyph (_DEG_F) — reading back '85_F' as unreadable would make a
+        setpoint write look like it never landed.
         """
         if 'Manual Off' in text:
             return None
-        m = re.search(r'(\d+)\s*(?:°|\xb0)?\s*F', text)
+        m = re.search(r'(\d+)' + _DEG_F, text)
         return int(m.group(1)) if m else None
 
     # ── Heater setpoints ─────────────────────────────────────────────────────

@@ -449,8 +449,16 @@ def main() -> int:
         return 0
 
     print(f'{len(new)} new frame shape(s):\n')
+    # Number placeholders past whatever TODO_ names are already unreviewed in
+    # the corpus. Restarting at 1 every run collided with a previous harvest's
+    # names, which fails test_corpus_names_are_unique rather than appending.
+    taken = {e.get('name', '') for e in corpus}
     entries = []
-    for i, (s, text) in enumerate(sorted(new.items()), 1):
+    for n, (s, text) in enumerate(sorted(new.items()), 1):
+        i = n
+        while f'TODO_{i}' in taken:
+            i += 1
+        taken.add(f'TODO_{i}')
         parsed = try_parse(text)
         entry = {
             'name': f'TODO_{i}',

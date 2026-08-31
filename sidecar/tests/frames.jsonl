@@ -1,74 +1,74 @@
-{"name": "TODO_1", "text": "       Monday               3 33P       ", "expect": {}, "reviewed": false}
-{"name": "TODO_2", "text": "  - 0.00V   -0.00A     76_F   0000 PPM  ", "expect": {}, "reviewed": false}
-{"name": "TODO_3", "text": "     Air Sensor             74_F        ", "expect": {}, "reviewed": false}
-{"name": "TODO_4", "text": "  Air Temp   74_F                       ", "expect": {"air_temp": 74}, "reviewed": false}
-{"name": "TODO_5", "text": "       Beeper             Enabled       ", "expect": {}, "reviewed": false}
-{"name": "TODO_6", "text": "  Cell Temp Sensor          76\u00b0F        ", "expect": {}, "reviewed": false}
-{"name": "TODO_7", "text": "  Chlorinator Off      Percentage met   ", "expect": {}, "reviewed": false}
-{"name": "TODO_8", "text": "   Configuration       Menu-Locked      ", "expect": {}, "reviewed": false}
-{"name": "TODO_9", "text": "      Default               Menu        ", "expect": {}, "reviewed": false}
-{"name": "TODO_10", "text": "     Diagnostic             Menu        ", "expect": {}, "reviewed": false}
-{"name": "TODO_11", "text": "   Display Light                        ", "expect": {}, "reviewed": false}
-{"name": "TODO_12", "text": "  Display Software     Revision         ", "expect": {}, "reviewed": false}
-{"name": "TODO_13", "text": "    Filter Speed       50% Speed2       ", "expect": {"pump_speed": 50, "vsp_active_slot": 2, "pump_startup": false}, "reviewed": false}
-{"name": "TODO_14", "text": "    Filter Speed1                       ", "expect": {}, "reviewed": false}
-{"name": "TODO_15", "text": "    Filter Speed1           90%         ", "expect": {"vsp_slot_pct": {"1": 90}}, "reviewed": false}
-{"name": "TODO_16", "text": "   Filter T1-Spd1           90%         ", "expect": {}, "reviewed": false}
-{"name": "TODO_17", "text": "   Filter T4-all         --- Off        ", "expect": {}, "reviewed": false}
-{"name": "TODO_18", "text": "   Filter T4-all         --- Off ---    ", "expect": {}, "reviewed": false}
-{"name": "TODO_19", "text": "   Filter T1-all      07:00A to         ", "expect": {}, "reviewed": false}
-{"name": "TODO_20", "text": "   Filter T1-all      07:00A to 08:00A  ", "expect": {}, "reviewed": false}
-{"name": "TODO_21", "text": "   Filter T2-all       8:00A to 09:30P  ", "expect": {}, "reviewed": false}
-{"name": "TODO_22", "text": "   Filter T3-all      09:30P to         ", "expect": {}, "reviewed": false}
-{"name": "TODO_23", "text": "   Filter T3-all       9:30P to 10:30P  ", "expect": {}, "reviewed": false}
-{"name": "TODO_24", "text": "   Filter T4-all             Off ---    ", "expect": {}, "reviewed": false}
-{"name": "TODO_25", "text": "   Filter T1-all             to 08:00A  ", "expect": {}, "reviewed": false}
-{"name": "TODO_26", "text": "   Filter T2-all             to 09:30P  ", "expect": {}, "reviewed": false}
-{"name": "TODO_27", "text": "    Flow Switch             Flow        ", "expect": {}, "reviewed": false}
-{"name": "TODO_28", "text": "      Heater1            Manual Off     ", "expect": {"pool_heater_enabled": false}, "reviewed": false}
-{"name": "TODO_29", "text": "    Instant Salt      0000 PPM          ", "expect": {}, "reviewed": false}
-{"name": "TODO_30", "text": "    Instant Salt      0000 PPM(+=save)  ", "expect": {}, "reviewed": false}
-{"name": "TODO_31", "text": "   Main Software       Revision  4.46   ", "expect": {}, "reviewed": false}
-{"name": "TODO_32", "text": "N\tatqv|hhhhKEQF><G", "expect": {}, "reviewed": false}
-{"name": "TODO_33", "text": "  Pool Chlorinator                      ", "expect": {}, "reviewed": false}
-{"name": "TODO_34", "text": "  Pool Chlorinator          60%         ", "expect": {"chlorinator_percent": 60}, "reviewed": false}
-{"name": "TODO_35", "text": "  Pool Heater1                          ", "expect": {}, "reviewed": false}
-{"name": "TODO_36", "text": "  Pool Heater1           Manual Off     ", "expect": {"pool_heater_enabled": false}, "reviewed": false}
-{"name": "TODO_37", "text": "  Pool Temp  80\u00b0F                       ", "expect": {"pool_temp": 80}, "reviewed": false}
-{"name": "TODO_38", "text": "  RF Base Software     r3.00  ID:203A   ", "expect": {}, "reviewed": false}
-{"name": "TODO_39", "text": "     Salt Level           3000 PPM      ", "expect": {"salt_level": 3000}, "reviewed": false}
-{"name": "TODO_40", "text": "  Set Day and Time    Monday      :34   ", "expect": {}, "reviewed": false}
-{"name": "TODO_41", "text": "  Set Day and Time    Monday     3:  P  ", "expect": {}, "reviewed": false}
-{"name": "TODO_42", "text": "  Set Day and Time    Monday     3:34P  ", "expect": {}, "reviewed": false}
-{"name": "TODO_43", "text": "  Set Day and Time               3:34P  ", "expect": {}, "reviewed": false}
-{"name": "TODO_44", "text": "      Settings              Menu        ", "expect": {}, "reviewed": false}
-{"name": "TODO_45", "text": "  Spa Chlorinator                       ", "expect": {}, "reviewed": false}
-{"name": "TODO_46", "text": "  Spa Chlorinator            1%         ", "expect": {"spa_chlorinator_percent": 1}, "reviewed": false}
-{"name": "TODO_47", "text": "   Spa Heater1                          ", "expect": {}, "reviewed": false}
-{"name": "TODO_48", "text": "   Spa Heater1           Manual Off     ", "expect": {"spa_heater_enabled": false}, "reviewed": false}
-{"name": "TODO_49", "text": "     Spa Speed                          ", "expect": {}, "reviewed": false}
-{"name": "TODO_50", "text": "     Spa Speed              80%         ", "expect": {"spa_speed": 80}, "reviewed": false}
-{"name": "TODO_51", "text": "      Spa-all            --- Off        ", "expect": {}, "reviewed": false}
-{"name": "TODO_52", "text": "      Spa-all            --- Off ---    ", "expect": {}, "reviewed": false}
-{"name": "TODO_53", "text": "      Spa-all                Off ---    ", "expect": {}, "reviewed": false}
-{"name": "TODO_54", "text": "  Super Chlorinate                      ", "expect": {}, "reviewed": false}
-{"name": "TODO_55", "text": "  Super Chlorinate        24 hours      ", "expect": {}, "reviewed": false}
-{"name": "TODO_56", "text": "  Super Chlorinate          Off         ", "expect": {}, "reviewed": false}
-{"name": "TODO_57", "text": "  Super Chlorinate           On         ", "expect": {}, "reviewed": false}
-{"name": "TODO_58", "text": "  Super Chlorinate           hours      ", "expect": {}, "reviewed": false}
-{"name": "TODO_59", "text": "  Teach Wireless:                       ", "expect": {}, "reviewed": false}
-{"name": "TODO_60", "text": "  Teach Wireless:        + to start     ", "expect": {}, "reviewed": false}
-{"name": "TODO_61", "text": "       Timers               Menu        ", "expect": {}, "reviewed": false}
-{"name": "TODO_62", "text": "    VSP Software                        ", "expect": {}, "reviewed": false}
-{"name": "TODO_63", "text": "    VSP Software         + to view      ", "expect": {}, "reviewed": false}
-{"name": "TODO_64", "text": " VSP Speed Settings                     ", "expect": {}, "reviewed": false}
-{"name": "TODO_65", "text": " VSP Speed Settings      + to enter     ", "expect": {}, "reviewed": false}
-{"name": "TODO_66", "text": "  VSP Speed/Power                       ", "expect": {}, "reviewed": false}
-{"name": "TODO_67", "text": "  VSP Speed/Power        + to view      ", "expect": {}, "reviewed": false}
-{"name": "TODO_68", "text": "    Valve3-all           --- Off        ", "expect": {}, "reviewed": false}
-{"name": "TODO_69", "text": "    Valve3-all           --- Off ---    ", "expect": {}, "reviewed": false}
-{"name": "TODO_70", "text": "    Valve3-all               Off ---    ", "expect": {}, "reviewed": false}
-{"name": "TODO_71", "text": "    Water Sensor            80_F        ", "expect": {}, "reviewed": false}
-{"name": "TODO_72", "text": "      Wireless           Channel:       ", "expect": {}, "reviewed": false}
-{"name": "TODO_73", "text": "      Wireless           Channel: 3     ", "expect": {}, "reviewed": false}
-{"name": "TODO_74", "text": "tv|hhhhKEQF><G", "expect": {}, "reviewed": false}
+{"name": "clock_colon_blinked_off", "text": "       Monday               3 33P       ", "expect": {}, "why": "Idle clock with the colon blinked off. The clock is deliberately not exposed, so {} is correct; frame_shape folds the blink so this is one screen, not two.", "reviewed": true}
+{"name": "salt_cell_diagnostic_idle", "text": "  - 0.00V   -0.00A     76_F   0000 PPM  ", "expect": {}, "why": "Diagnostic screen: cell volts, amps, cell temp, instant salt. All zero because the cell was not energised -- instant salt only reads while generating. Unparsed today; backlog 1.8 wants the V/A trend from here.", "reviewed": true}
+{"name": "air_sensor_diagnostic", "text": "     Air Sensor             74_F        ", "expect": {}, "why": "Diagnostic menu's raw air sensor, degree glyph as '_'. Deliberately NOT parsed: the idle scroll's 'Air Temp' is the published value, and parsing both would let a menu walk overwrite the scroll with a differently-sampled reading.", "reviewed": true}
+{"name": "scroll_air_temp_underscore_degree", "text": "  Air Temp   74_F                       ", "expect": {"air_temp": 74}, "why": "Idle-scroll air temp, degree glyph as '_'. Parses because the temp patterns anchor on the label and stop at the digits, never reaching the degree marker.", "reviewed": true}
+{"name": "beeper_enabled", "text": "       Beeper             Enabled       ", "expect": {}, "why": "Settings item; no modelled state. {} correct.", "reviewed": true}
+{"name": "cell_temp_sensor_degree_symbol", "text": "  Cell Temp Sensor          76\u00b0F        ", "expect": {}, "why": "Same diagnostic family as air_sensor_diagnostic but with the degree glyph as '\u00b0'. The pair proves BOTH encodings occur on this hardware -- the fact behind the setpoint-regex gap this review found.", "reviewed": true}
+{"name": "chlorinator_off_percentage_met", "text": "  Chlorinator Off      Percentage met   ", "expect": {}, "why": "Status text: chlorinator idle having met its duty percentage. Carries no number, so {} is right -- notably it must not be read as 0%.", "reviewed": true}
+{"name": "configuration_menu_locked", "text": "   Configuration       Menu-Locked      ", "expect": {}, "why": "Menu header. {} correct.", "reviewed": true}
+{"name": "default_menu", "text": "      Default               Menu        ", "expect": {}, "why": "Menu header. {} correct.", "reviewed": true}
+{"name": "diagnostic_menu", "text": "     Diagnostic             Menu        ", "expect": {}, "why": "Menu header. {} correct.", "reviewed": true}
+{"name": "display_light_partial", "text": "   Display Light                        ", "expect": {}, "why": "Mid-render: label drawn, value not yet. {} correct.", "reviewed": true}
+{"name": "display_software_menu", "text": "  Display Software     Revision         ", "expect": {}, "why": "Menu header. {} correct.", "reviewed": true}
+{"name": "scroll_filter_speed_with_slot", "text": "    Filter Speed       50% Speed2       ", "expect": {"pump_speed": 50, "vsp_active_slot": 2, "pump_startup": false}, "why": "The steady idle-scroll pump line. Yields speed, active slot, and pump_startup=False (no 'St dly'), which is what tells the cockpit this is a scheduled speed, not a prime.", "reviewed": true}
+{"name": "filter_speed1_blanked", "text": "    Filter Speed1                       ", "expect": {}, "why": "Slot config with the value blinked/not yet drawn. Must yield {} -- writing 0% here would report the pump as stopped.", "reviewed": true}
+{"name": "filter_speed1_percent", "text": "    Filter Speed1           90%         ", "expect": {"vsp_slot_pct": {"1": 90}}, "why": "Slot 1 configured percentage. Merges as {1: 90}, never replacing other slots.", "reviewed": true}
+{"name": "filter_timer_t1_speed_link", "text": "   Filter T1-Spd1           90%         ", "expect": {}, "why": "Schedule row binding timer T1 to slot 1 -- NOT a live speed. The near-miss the 'Filter Speed([1-4])' anchor exists to reject; {} is the correct and load-bearing answer.", "reviewed": true}
+{"name": "filter_t4_off_partial", "text": "   Filter T4-all         --- Off        ", "expect": {}, "why": "Timer T4 disabled, tail not yet drawn. {} correct (backlog 1.9 would read these).", "reviewed": true}
+{"name": "filter_t4_off", "text": "   Filter T4-all         --- Off ---    ", "expect": {}, "why": "Timer T4 disabled. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "filter_t1_window_partial", "text": "   Filter T1-all      07:00A to         ", "expect": {}, "why": "Timer T1 window mid-render. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "filter_t1_window", "text": "   Filter T1-all      07:00A to 08:00A  ", "expect": {}, "why": "Timer T1 07:00A-08:00A. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "filter_t2_window", "text": "   Filter T2-all       8:00A to 09:30P  ", "expect": {}, "why": "Timer T2 8:00A-09:30P, single-digit hour form. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "filter_t3_window_partial", "text": "   Filter T3-all      09:30P to         ", "expect": {}, "why": "Timer T3 mid-render. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "filter_t3_window", "text": "   Filter T3-all       9:30P to 10:30P  ", "expect": {}, "why": "Timer T3 9:30P-10:30P. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "filter_t4_off_head_blanked", "text": "   Filter T4-all             Off ---    ", "expect": {}, "why": "Timer T4 with the leading dashes blanked. {} correct.", "reviewed": true}
+{"name": "filter_t1_window_head_blanked", "text": "   Filter T1-all             to 08:00A  ", "expect": {}, "why": "Timer T1 with the start time blanked. {} correct.", "reviewed": true}
+{"name": "filter_t2_window_head_blanked", "text": "   Filter T2-all             to 09:30P  ", "expect": {}, "why": "Timer T2 with the start time blanked. {} correct.", "reviewed": true}
+{"name": "flow_switch_flow", "text": "    Flow Switch             Flow        ", "expect": {}, "why": "Diagnostic: flow present. Unparsed today; backlog 1.8b.", "reviewed": true}
+{"name": "scroll_heater1_manual_off_unprefixed", "text": "      Heater1            Manual Off     ", "expect": {"pool_heater_enabled": false}, "why": "The idle scroll's unprefixed heater line. Routes to pool here only because no valve_mode was passed -- with valve_mode='spa' the same text sets the spa flag. That routing rule is why parse_ac_scroll takes valve_mode at all.", "reviewed": true}
+{"name": "instant_salt", "text": "    Instant Salt      0000 PPM          ", "expect": {}, "why": "Point-in-time salt, 0 because the cell was idle. Deliberately not parsed: the scroll's time-averaged 'Salt Level' is the value worth publishing (backlog 1.8b).", "reviewed": true}
+{"name": "instant_salt_save_prompt", "text": "    Instant Salt      0000 PPM(+=save)  ", "expect": {}, "why": "Same screen with the '(+=save)' prompt. {} correct.", "reviewed": true}
+{"name": "main_software_revision", "text": "   Main Software       Revision  4.46   ", "expect": {}, "why": "Main board firmware 4.46. Unparsed; useful in bug reports (backlog 1.8b).", "reviewed": true}
+{"name": "serial_noise_long", "text": "N\tatqv|hhhhKEQF><G", "expect": {}, "why": "Not LCD content -- a mis-decoded non-display frame reaching text_updated. Pinned here so a future decode fix has a before/after; backlog 1.10.", "reviewed": true}
+{"name": "pool_chlorinator_blanked", "text": "  Pool Chlorinator                      ", "expect": {}, "why": "Value blinked off. Must yield {} -- this is the exact shape that would report the chlorinator at 0% if the percent pattern were loosened.", "reviewed": true}
+{"name": "pool_chlorinator_percent", "text": "  Pool Chlorinator          60%         ", "expect": {"chlorinator_percent": 60}, "why": "Pool chlorinator duty. Parses.", "reviewed": true}
+{"name": "pool_heater1_blanked", "text": "  Pool Heater1                          ", "expect": {}, "why": "Value not drawn. {} correct -- no heater state may be inferred.", "reviewed": true}
+{"name": "pool_heater1_manual_off", "text": "  Pool Heater1           Manual Off     ", "expect": {"pool_heater_enabled": false}, "why": "Prefixed heater state; prefix wins over valve_mode.", "reviewed": true}
+{"name": "scroll_pool_temp_degree_symbol", "text": "  Pool Temp  80\u00b0F                       ", "expect": {"pool_temp": 80}, "why": "Idle-scroll pool temp with the '\u00b0' encoding. Parses.", "reviewed": true}
+{"name": "rf_base_software_revision", "text": "  RF Base Software     r3.00  ID:203A   ", "expect": {}, "why": "Wireless base firmware + ID. Unparsed (backlog 1.8b).", "reviewed": true}
+{"name": "scroll_salt_level", "text": "     Salt Level           3000 PPM      ", "expect": {"salt_level": 3000}, "why": "The published, time-averaged salt reading. Parses.", "reviewed": true}
+{"name": "set_day_and_time_hour_blanked", "text": "  Set Day and Time    Monday      :34   ", "expect": {}, "why": "Clock-set screen mid-blink. {} correct.", "reviewed": true}
+{"name": "set_day_and_time_minute_blanked", "text": "  Set Day and Time    Monday     3:  P  ", "expect": {}, "why": "Clock-set screen mid-blink. {} correct.", "reviewed": true}
+{"name": "set_day_and_time", "text": "  Set Day and Time    Monday     3:34P  ", "expect": {}, "why": "Clock-set screen. {} correct -- the panel clock is not modelled.", "reviewed": true}
+{"name": "set_day_and_time_day_blanked", "text": "  Set Day and Time               3:34P  ", "expect": {}, "why": "Clock-set screen mid-blink. {} correct.", "reviewed": true}
+{"name": "settings_menu", "text": "      Settings              Menu        ", "expect": {}, "why": "Menu header. {} correct.", "reviewed": true}
+{"name": "spa_chlorinator_blanked", "text": "  Spa Chlorinator                       ", "expect": {}, "why": "Value blinked off; must not read as 0%.", "reviewed": true}
+{"name": "spa_chlorinator_percent", "text": "  Spa Chlorinator            1%         ", "expect": {"spa_chlorinator_percent": 1}, "why": "Spa chlorinator duty. Parses at 1%, confirming single-digit values survive.", "reviewed": true}
+{"name": "spa_heater1_blanked", "text": "   Spa Heater1                          ", "expect": {}, "why": "Value not drawn. {} correct.", "reviewed": true}
+{"name": "spa_heater1_manual_off", "text": "   Spa Heater1           Manual Off     ", "expect": {"spa_heater_enabled": false}, "why": "Prefixed spa heater state. Parses to the spa flag, not the pool one.", "reviewed": true}
+{"name": "spa_speed_blanked", "text": "     Spa Speed                          ", "expect": {}, "why": "Value blinked off; must not read as 0%.", "reviewed": true}
+{"name": "spa_speed_percent", "text": "     Spa Speed              80%         ", "expect": {"spa_speed": 80}, "why": "Spa pump speed. Parses.", "reviewed": true}
+{"name": "spa_timer_off_partial", "text": "      Spa-all            --- Off        ", "expect": {}, "why": "Spa schedule row disabled, mid-render. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "spa_timer_off", "text": "      Spa-all            --- Off ---    ", "expect": {}, "why": "Spa schedule row disabled. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "spa_timer_off_head_blanked", "text": "      Spa-all                Off ---    ", "expect": {}, "why": "Same row with leading dashes blanked. {} correct.", "reviewed": true}
+{"name": "super_chlorinate_blanked", "text": "  Super Chlorinate                      ", "expect": {}, "why": "Value not drawn. {} correct.", "reviewed": true}
+{"name": "super_chlorinate_hours", "text": "  Super Chlorinate        24 hours      ", "expect": {}, "why": "Settings duration. {} correct -- the countdown, not this, is the status frame.", "reviewed": true}
+{"name": "super_chlorinate_off", "text": "  Super Chlorinate          Off         ", "expect": {}, "why": "Settings state Off. Kept distinct from On on purpose: collapsing the two is how the 0.8.6 Super Chlorinate bug stayed invisible.", "reviewed": true}
+{"name": "super_chlorinate_on", "text": "  Super Chlorinate           On         ", "expect": {}, "why": "Settings state On. See super_chlorinate_off.", "reviewed": true}
+{"name": "super_chlorinate_hours_blanked", "text": "  Super Chlorinate           hours      ", "expect": {}, "why": "Duration digits blinked off. {} correct.", "reviewed": true}
+{"name": "teach_wireless_partial", "text": "  Teach Wireless:                       ", "expect": {}, "why": "Menu action, mid-render. {} correct.", "reviewed": true}
+{"name": "teach_wireless_prompt", "text": "  Teach Wireless:        + to start     ", "expect": {}, "why": "Menu action prompt. {} correct.", "reviewed": true}
+{"name": "timers_menu", "text": "       Timers               Menu        ", "expect": {}, "why": "Menu header. {} correct.", "reviewed": true}
+{"name": "vsp_software_partial", "text": "    VSP Software                        ", "expect": {}, "why": "Menu action, mid-render. {} correct.", "reviewed": true}
+{"name": "vsp_software_prompt", "text": "    VSP Software         + to view      ", "expect": {}, "why": "Menu action prompt. {} correct.", "reviewed": true}
+{"name": "vsp_speed_settings_partial", "text": " VSP Speed Settings                     ", "expect": {}, "why": "Menu header, mid-render. {} correct.", "reviewed": true}
+{"name": "vsp_speed_settings_prompt", "text": " VSP Speed Settings      + to enter     ", "expect": {}, "why": "Menu header with prompt. {} correct.", "reviewed": true}
+{"name": "vsp_speed_power_partial", "text": "  VSP Speed/Power                       ", "expect": {}, "why": "Menu action, mid-render. {} correct.", "reviewed": true}
+{"name": "vsp_speed_power_prompt", "text": "  VSP Speed/Power        + to view      ", "expect": {}, "why": "Menu action prompt. {} correct.", "reviewed": true}
+{"name": "valve3_timer_off_partial", "text": "    Valve3-all           --- Off        ", "expect": {}, "why": "Valve3 schedule row disabled, mid-render. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "valve3_timer_off", "text": "    Valve3-all           --- Off ---    ", "expect": {}, "why": "Valve3 schedule row disabled. {} correct (backlog 1.9).", "reviewed": true}
+{"name": "valve3_timer_off_head_blanked", "text": "    Valve3-all               Off ---    ", "expect": {}, "why": "Same row with leading dashes blanked. {} correct.", "reviewed": true}
+{"name": "water_sensor_diagnostic", "text": "    Water Sensor            80_F        ", "expect": {}, "why": "Diagnostic raw water sensor, '_' degree glyph. Not parsed for the same reason as air_sensor_diagnostic: the scroll's 'Pool Temp' is the published value.", "reviewed": true}
+{"name": "wireless_channel_blanked", "text": "      Wireless           Channel:       ", "expect": {}, "why": "Channel digit blinked off. {} correct.", "reviewed": true}
+{"name": "wireless_channel", "text": "      Wireless           Channel: 3     ", "expect": {}, "why": "RF channel. Unparsed (backlog 1.8b).", "reviewed": true}
+{"name": "serial_noise_short", "text": "tv|hhhhKEQF><G", "expect": {}, "why": "Truncated variant of serial_noise_long, same constant tail. Backlog 1.10.", "reviewed": true}

@@ -3,6 +3,37 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## Unreleased
+
+### Fixed
+
+- **A heater setpoint written with the panel's other degree glyph was read as
+  no value at all.** The LCD's degree symbol reaches the sidecar as `°` on some
+  frames and `_` on others — both encodings are in the captured corpus, one
+  menu apart, on the same hardware. The shape ledger has folded the two since
+  it was built, but `_norm` does not, so the *parsers* see the raw glyph, and
+  both setpoint patterns accepted only `°`. An `85_F` frame therefore dropped a
+  real setpoint on passive capture, and made a setpoint write's read-back look
+  as though it had never landed. Both now accept either encoding via a shared
+  `_DEG_F`.
+- `harvest_frames.py --append` numbered placeholder names from 1 on every run,
+  so a second harvest before the first was reviewed produced duplicate names
+  and failed the corpus's uniqueness test instead of appending. Numbering now
+  continues past what is already there.
+
+### Changed
+
+- **The captured frame corpus is reviewed.** All 74 frames now carry a real
+  name and a recorded reason for their expectation, and are marked
+  `reviewed: true` — closing the known limitation noted in 0.10.0. The
+  expectations were a snapshot of parser output, which proves nothing on its
+  own; the review is what turns them into assertions that the parser is
+  *right*, including the majority whose correct answer is "this frame says
+  nothing". That distinction is load-bearing: the blanked-value frames
+  (`pool_chlorinator_blanked`, `spa_speed_blanked`) must stay empty rather than
+  read as 0%, and `filter_timer_t1_speed_link` must not be mistaken for a live
+  pump speed. A test now requires any entry marked reviewed to say why.
+
 ## 0.10.0 — Configurable lights, first test suite, frame-capture tooling
 
 ### Added

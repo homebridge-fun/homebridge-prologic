@@ -84,6 +84,27 @@ def test_setpoint_overrides_an_earlier_manual_off():
     assert got['spa_heater_enabled'] is True
 
 
+def test_setpoint_accepts_both_degree_encodings():
+    """The panel's degree glyph arrives as '°' on some frames and '_' on others
+    -- both are in the captured corpus, one menu apart. Only '°' was accepted,
+    so an '85_F' setpoint frame read as no value at all: the passive capture
+    dropped a real setpoint, and a write's read-back looked like it had not
+    landed. Constructed frames (the '_' form of a heater screen was not itself
+    captured), but the encoding they exercise is real.
+    """
+    for frame in ('Pool Heater1  85\xb0F', 'Pool Heater1  85_F', 'Pool Heater1  85 F'):
+        assert ps.parse_ac_scroll(frame)['pool_setpoint_f'] == 85, frame
+    assert ps.parse_ac_scroll('Spa Heater1  102_F')['spa_setpoint_f'] == 102
+
+
+def test_menu_setpoint_readback_accepts_both_degree_encodings():
+    """Same gap on the read-back path used to confirm a setpoint write."""
+    deg = ps.MenuNavigator._degf
+    assert deg('Pool Heater1 85\xb0F') == 85
+    assert deg('Pool Heater1 85_F') == 85
+    assert deg('Pool Heater1 Manual Off') is None
+
+
 def test_implausible_setpoints_are_rejected():
     """Sanity bounds (40-110 °F) stop a stray number being taken as a
     setpoint."""
