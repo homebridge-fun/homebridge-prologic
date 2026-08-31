@@ -5880,9 +5880,19 @@ def _nudge_scroll_to_superchlor() -> None:
     couple of seconds; on this panel it is only a few steps from the default
     screen.
 
+    Safe to run straight after the write: set_super_chlorinate ends with
+    `finally: fast_exit()`, so the panel is already back on the default menu,
+    and advancing the idle scroll with RIGHT never leaves it -- there is no
+    menu to re-enter or exit from. sweep_scroll's drift guard is a belt-and-
+    braces net here rather than an expected path.
+
     Backgrounded so the toggle's own confirmation is not delayed, and bounded
     so a scroll that does not contain the frame gives up quickly. Purely a
     freshness optimisation: failing here costs a slower countdown, nothing more.
+
+    The countdown genuinely does require the scroll: the Settings screen shows
+    the *setting* ('Super Chlorinate 24 hours'), while the live 'HH:MM
+    remaining' only ever appears on the idle cycle.
     """
     try:
         nav = _get_navigator()
