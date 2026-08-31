@@ -49,7 +49,7 @@ job passed, correctly. The discrepancy is only visible by comparing the merge
 against the **remote** refs — which is what `check_merge_freshness.py` does —
 or, at release time, against the tag, which is the `release` CI job.
 
-## Two things learned building this
+## Three things learned building this
 
 **`pre-merge-commit` was the obvious hook and does not work.** On a clean
 `git merge --no-ff`, git creates the merge commit directly and never writes
@@ -57,11 +57,21 @@ or, at release time, against the tag, which is the `release` CI job.
 silently. Hence `pre-push`, which inspects the finished merge commit and gets
 both parents from it.
 
-**The check must name the branch from the merge message, not infer it.** The
-first version asked "which remote branches contain this merge's side parent?"
-That fired on the real case — and on two innocent branches that had simply been
-forked *from* that commit, since they are descended from it too. A check that
-cries wolf on ordinary branching gets switched off within a week.
+**Getting the branch identification right took two wrong turns.** The first
+version asked "which remote branches contain this merge's side parent?" — which
+fired on the real case, and on two innocent branches that had merely been forked
+*from* that commit, since they are descended from it too. The fix for that was
+to read the branch name out of the merge message, which git writes as
+`Merge branch 'X'` — except this project writes its own merge subjects
+(`Merge: 0.8.6 — ...`, `Release 0.9.0 — ...`), so that version would have
+inspected 4 of the 26 merges on `main` and silently skipped 22 while still
+printing `ok`. A check that quietly examines nothing is worse than no check,
+because it gets believed.
+
+What works is purely graph-based: a branch whose tip already *contains* the
+merge cannot be one the merge failed to include, so forked-from-here branches
+drop out on their own. Run over every merge in the project's history, it flags
+exactly one — the bad one.
 
 ## Known gap
 

@@ -20,7 +20,11 @@ by comparing the merge against the REMOTE refs, which is what this does.
 The check: for each merge commit, take its side parent(s) -- what was merged in
 -- and ask whether any remote branch containing that parent has since-pushed
 commits the merge left out. That is precisely "you merged branch X, but
-origin/X had more".
+origin/X had more". See stale_merges() for why it reads the commit graph rather
+than the merge message.
+
+Run against all 26 merges in this project's history it flags exactly one: the
+bad one.
 
 Usage:
     check_merge_freshness.py                 # merge commits on HEAD not on origin/main
@@ -31,7 +35,6 @@ Exit 0 clean, 1 if a stale merge is found, 2 on a usage/git error.
 """
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 
@@ -61,44 +64,46 @@ def remote_branches(remote: str = 'origin') -> dict[str, str]:
     return out
 
 
-# Which branch a merge claims to have merged. git writes this itself for both
-# `git merge <branch>` and `git merge origin/<branch>`.
-#
-# The branch has to come from the MESSAGE, not from "which branches contain the
-# side parent". The first version of this asked the latter and produced two
-# false positives on the real case: branches forked FROM the bad merge point are
-# also descended from it, so they looked like stale merges of themselves. A
-# check that cries wolf on ordinary branching would be switched off inside a
-# week, and then it guards nothing.
-_MERGE_SUBJECT = re.compile(
-    r"^Merge (?:remote-tracking )?branch '(?:origin/)?([^']+)'", re.I)
-
-
 def stale_merges(rev_range: str) -> list[str]:
+    """Which merges in `rev_range` left pushed work behind.
+
+    Deliberately does NOT read the merge message to find the branch. An earlier
+    version did, matching git's default "Merge branch 'X'" subject -- and this
+    project writes its own subjects ("Merge: 0.8.6 — ...", "Release 0.9.0 —
+    ..."). It would have silently inspected 4 of the 26 merges on main and
+    skipped the other 22, while still printing "ok". A check that quietly
+    examines nothing is worse than no check, because it is believed.
+
+    So it works from the commit graph, where three conditions together identify
+    a stale merge with no false positives on this repo's whole history:
+
+      - the side parent is an ancestor of some origin/<branch>, and
+      - that branch's tip is NOT already in the merge  (else nothing is
+        missing), and
+      - the merge is NOT an ancestor of that branch's tip.
+
+    The last one is what makes it quiet. Branches forked FROM a merge are
+    descended from its side parent too, so without it they read as stale merges
+    of themselves -- the first version flagged two innocent branches that way.
+    But a branch that contains the merge cannot be one the merge failed to
+    include, so it drops out cleanly.
+    """
     problems: list[str] = []
     branches = remote_branches()
 
     merges = git('rev-list', '--merges', rev_range).split()
     for merge in merges:
-        subject = git('log', '--format=%s', '-1', merge)
-        m = _MERGE_SUBJECT.match(subject)
-        if not m:
-            # A hand-written merge message: nothing names the branch, so there
-            # is nothing to compare against. deploy/merge-to-main.sh covers
-            # this path by fetching before it merges.
-            continue
-        named = m.group(1)
         parents = git('rev-list', '--parents', '-n', '1', merge).split()[1:]
         for side in parents[1:]:          # parent 1 is the branch merged INTO
             for branch, tip in branches.items():
-                if branch != named:
-                    continue
-                if tip == side:
+                if branch == 'main' or tip == side:
                     continue              # merged exactly what was pushed
                 if not is_ancestor(side, tip):
-                    continue              # the branch has moved elsewhere
+                    continue              # unrelated branch
                 if is_ancestor(tip, merge):
                     continue              # the merge already contains the tip
+                if is_ancestor(merge, tip):
+                    continue              # branch forked from/after this merge
                 missing = git('log', '--format=  %h %s', f'{side}..{tip}')
                 problems.append(
                     f'{git("log", "--format=%h %s", "-1", merge)}\n'
