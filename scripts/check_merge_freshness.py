@@ -138,7 +138,7 @@ def main(argv: list[str]) -> int:
     print('This is how v0.10.0 was tagged against a 0.9.2 tree. Redo the merge\n'
           'against the ref that was actually pushed:\n\n'
           '    git fetch origin\n'
-          '    git merge --no-ff --no-edit origin/<branch>\n', file=sys.stderr)
+          '    git merge --no-ff -m "Merge: <what changed>" origin/<branch>\n', file=sys.stderr)
     return 1
 
 
