@@ -611,6 +611,18 @@ _SHAPE_DEGREE = re.compile(r'[_\u00b0]\s*F\b')
 # The clock's colon blinks, so the idle screen alternates between '12:49P' and
 # '12 49P' -- the same screen, and the highest-traffic one on the panel.
 _SHAPE_CLOCK = re.compile(r'\b(\d{1,2})[: ](\d{2})\s*([AP])\b')
+# The day name is instance data the sidecar never reads -- the clock screen is
+# deliberately not exposed -- so left alone it would accumulate seven copies of
+# the panel's highest-traffic screen over a week.
+#
+# The rule this follows: tokenise values the parser does not discriminate on,
+# and keep distinct anything it must tell apart. Enabled/Disabled, Flow/No
+# Flow, Auto Control/Manual Off and AM/PM all stay separate shapes on purpose
+# -- reading those words IS the parser's job, and collapsing them would hide
+# whether we handle both states. Merging one of those is exactly how the 0.8.6
+# Super Chlorinate bug stayed invisible.
+_SHAPE_DAY = re.compile(
+    r'\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b')
 _SHAPE_DIGITS = re.compile(r'\d+')
 _SHAPE_WS = re.compile(r'\s+')
 
@@ -634,6 +646,7 @@ def frame_shape(text: str) -> str:
     # the sensor and cell-diagnostic screens.
     t = _SHAPE_DEGREE.sub('\u00b0F', t)
     t = _SHAPE_CLOCK.sub(r'\1:\2\3', t)
+    t = _SHAPE_DAY.sub('<DAY>', t)
     return _SHAPE_DIGITS.sub('<N>', t)
 
 

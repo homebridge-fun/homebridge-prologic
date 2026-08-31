@@ -207,3 +207,28 @@ def test_clock_normalisation_leaves_timer_ranges_alone():
     t3 = ps.frame_shape('   Filter T3-all       9:30P to 10:30P  ')
     assert t1 != t3
     assert 'to' in t1
+
+
+# ── what counts as variable, and what deliberately does not ─────────────────
+
+def test_day_names_collapse_because_we_never_read_them():
+    """Otherwise the panel's busiest screen accumulates seven copies a week."""
+    shapes = {ps.frame_shape(f'       {d}              12:49P       ')
+              for d in ('Monday', 'Tuesday', 'Wednesday', 'Thursday',
+                        'Friday', 'Saturday', 'Sunday')}
+    assert shapes == {'<DAY> <N>:<N>P'}
+
+
+def test_states_the_parser_must_discriminate_stay_distinct():
+    """The rule: tokenise values the parser ignores, keep apart what it reads.
+
+    Collapsing these would hide whether both states are handled -- which is
+    precisely how the 0.8.6 Super Chlorinate bug stayed invisible, where one
+    state parsed and the other silently did not.
+    """
+    for a, b in (('Beeper Enabled', 'Beeper Disabled'),
+                 ('Flow Switch Flow', 'Flow Switch No Flow'),
+                 ('Pool Heater1 Auto Control', 'Pool Heater1 Manual Off'),
+                 ('Filter T1-all 07:00A to 08:00A',
+                  'Filter T1-all 07:00P to 08:00P')):
+        assert ps.frame_shape(a) != ps.frame_shape(b), f'{a} vs {b}'
