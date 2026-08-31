@@ -57,6 +57,19 @@ def test_corpus_names_are_unique():
     assert len(names) == len(set(names)), 'duplicate frame names in the corpus'
 
 
+def test_reviewed_entries_record_why():
+    """An `expect` starts life as a snapshot of current parser output, which
+    proves nothing. Marking an entry reviewed is the claim that someone decided
+    the expectation is *correct* -- including the many frames whose correct
+    answer is {} -- so the reasoning has to be written down or the claim is not
+    checkable later. Unreviewed entries are exempt: that is what they are.
+    """
+    for n, e in ENTRIES:
+        if e.get('reviewed'):
+            assert e.get('why', '').strip(), (
+                f'line {n} ({e["name"]}) is marked reviewed but says nothing about why')
+
+
 @pytest.mark.skipif(not ENTRIES, reason='frame corpus is empty; nothing captured yet')
 @pytest.mark.parametrize('entry', [e for _, e in ENTRIES],
                          ids=[e.get('name', '?') for _, e in ENTRIES])
