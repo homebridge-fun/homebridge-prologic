@@ -50,12 +50,12 @@ the corpus has never seen are reported. The known-conditions list used by
 `--coverage` is a scorecard only; it never filters what gets captured, so a
 frame nobody anticipated is still caught.
 
-> **Today this only sees the last 60 frames** (`deque(maxlen=60)` behind
-> `/display/history`) and only when you run it by hand. Common frames recur
-> constantly and turn up on any run; rare ones — a fault, freeze protection,
-> the brief VSP window — will usually be gone before you look. Run a harvest
-> soon after noticing anything unusual on the panel. Backlog 1.7 fixes this
-> properly by capturing in the sidecar as frames arrive.
+> **You don't have to be there when a rare frame appears.** The sidecar
+> records every distinct shape as frames arrive and serves the ledger at
+> `/display/shapes`, which survives both the 60-frame LCD ring and a restart.
+> A fault that scrolled past at 3 a.m. is still listed in the morning. The
+> harvester falls back to `/display/history` (last 60 frames only) if the
+> sidecar predates the ledger.
 
 **`--append` writes `"reviewed": false` on purpose.** The suggested `expect`
 is a snapshot of what the parser does today, so an unreviewed entry proves

@@ -8,4 +8,5 @@ sidecar/backend.json
 sidecar/state_cache.json
 sidecar/temp_history.json
 sidecar/fault_candidates.json
+sidecar/frame_shapes.json
 .claude/

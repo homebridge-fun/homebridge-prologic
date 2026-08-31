@@ -571,6 +571,129 @@ _super_chlor_last_seen: Optional[float] = None
 _super_chlor_lock = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# Novel LCD frame-shape ledger
+#
+# The frame corpus (docs/testing-strategy.md, Tier B) needs frames actually
+# seen on hardware. Sampling /display/history cannot deliver that: it is a
+# deque(maxlen=60), so a rare frame -- a real fault, freeze protection, the
+# 5-10s VSP window -- has aged out long before anyone runs a harvest. Those
+# are exactly the frames worth having.
+#
+# So record novelty as it happens instead. Every frame is reduced to a SHAPE
+# (digits tokenised) and checked against a set; a shape never seen before is
+# remembered with one example of its text. After warmup this is a set lookup
+# per frame and no writes at all -- the panel only has a few dozen shapes.
+#
+# This runs on the frame path, so it is written to be unable to disrupt it:
+# every entry point is exception-guarded, the set is capped, and persistence
+# is throttled and best-effort.
+# ---------------------------------------------------------------------------
+_FRAME_SHAPES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'frame_shapes.json')
+# The panel produces on the order of dozens of shapes. The cap only exists so
+# that a frame format we fail to normalise can't grow this without bound.
+_FRAME_SHAPES_MAX = 500
+_FRAME_SHAPES_FLUSH_S = 60.0
+
+_frame_shapes: dict = {}          # shape -> {first_seen, last_seen, count, text}
+_frame_shapes_lock = threading.Lock()
+_frame_shapes_dirty = False
+_frame_shapes_last_flush = 0.0
+
+_SHAPE_TAGS = re.compile(r'<[^>]+>')
+_SHAPE_DIGITS = re.compile(r'\d+')
+_SHAPE_WS = re.compile(r'\s+')
+
+
+def frame_shape(text: str) -> str:
+    """Reduce a frame to its dedupe key: markup stripped, digits tokenised.
+
+    'Pool Temp 78' and 'Pool Temp 79' are the same shape, so only the first is
+    novel. Mirrors shape() in scripts/harvest_frames.py.
+    """
+    t = _SHAPE_TAGS.sub('', text or '')
+    t = _SHAPE_DIGITS.sub('<N>', t)
+    return _SHAPE_WS.sub(' ', t).strip()
+
+
+def _save_frame_shapes() -> None:
+    """Best-effort atomic write. Never raises -- a full disk must not stop the
+    sidecar reading its panel."""
+    global _frame_shapes_dirty, _frame_shapes_last_flush
+    try:
+        with _frame_shapes_lock:
+            if not _frame_shapes_dirty:
+                return
+            snap = {k: dict(v) for k, v in _frame_shapes.items()}
+            _frame_shapes_dirty = False
+            _frame_shapes_last_flush = time.time()
+        tmp = _FRAME_SHAPES_PATH + '.tmp'
+        with open(tmp, 'w') as fh:
+            json.dump(snap, fh, indent=1, sort_keys=True)
+        os.replace(tmp, _FRAME_SHAPES_PATH)     # atomic
+    except Exception as e:                       # noqa: BLE001
+        log.debug('frame-shape ledger save failed (continuing): %s', e)
+
+
+def _load_frame_shapes() -> None:
+    """Restore across restarts, so a shape seen last week isn't 'novel' again."""
+    try:
+        with open(_FRAME_SHAPES_PATH) as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            with _frame_shapes_lock:
+                _frame_shapes.update(data)
+            log.info('Restored %d known LCD frame shapes from %s',
+                     len(data), _FRAME_SHAPES_PATH)
+    except FileNotFoundError:
+        pass
+    except Exception as e:                       # noqa: BLE001
+        log.warning('Could not read frame-shape ledger (starting fresh): %s', e)
+
+
+def _note_frame_shape(text: str) -> None:
+    """Record this frame's shape, remembering the first example of a new one.
+
+    Called on EVERY frame. Deliberately cheap and total: two regex subs, a dict
+    lookup, and -- only when the shape is genuinely new -- a throttled write.
+    """
+    global _frame_shapes_dirty
+    try:
+        if not text:
+            return
+        shape = frame_shape(text)
+        if not shape:
+            return
+        now = time.time()
+        novel = False
+        with _frame_shapes_lock:
+            entry = _frame_shapes.get(shape)
+            if entry is None:
+                if len(_frame_shapes) >= _FRAME_SHAPES_MAX:
+                    return          # capped; see _FRAME_SHAPES_MAX
+                _frame_shapes[shape] = {'first_seen': now, 'last_seen': now,
+                                        'count': 1, 'text': text}
+                _frame_shapes_dirty = True
+                novel = True
+            else:
+                entry['last_seen'] = now
+                entry['count'] = entry.get('count', 0) + 1
+                # Seen-again bookkeeping is in-memory only between flushes;
+                # persisting every frame would be pointless SD churn.
+                if now - _frame_shapes_last_flush >= _FRAME_SHAPES_FLUSH_S:
+                    _frame_shapes_dirty = True
+                    novel = True
+        if novel:
+            if len(_frame_shapes) <= _FRAME_SHAPES_MAX:
+                log.debug('new LCD frame shape: %s', shape)
+            _save_frame_shapes()
+    except Exception as e:                       # noqa: BLE001
+        # This must never disrupt frame processing. It is only test-corpus
+        # bookkeeping -- losing a shape is immaterial, losing frames is not.
+        log.debug('frame-shape ledger error (ignored): %s', e)
+
+
 def _note_super_chlor_frame(text: str) -> None:
     """Called on every captured LCD frame (any backend). If it's the Super
     Chlorinate countdown, mark it running now and record the HH:MM shown."""
@@ -944,6 +1067,9 @@ class LcdCapture:
         # (see _note_super_chlor_frame's docstring for why this is the only
         # place Super Chlorinate can be passively detected).
         _note_super_chlor_frame(text)
+        # Record novel frame shapes for the test corpus (see the ledger above).
+        # Exception-guarded internally, so it cannot disturb frame processing.
+        _note_frame_shape(text)
         self._event.set()
 
     # aqualogic may call other no-op methods on its _web object; absorb them.
@@ -3462,6 +3588,21 @@ def get_display_history() -> Response:
     return jsonify({'history': entries})
 
 
+@app.route('/display/shapes')
+def get_display_shapes() -> Response:
+    """Every distinct LCD frame shape this sidecar has ever seen.
+
+    Unlike /display/history (a 60-frame ring), this survives both the ring and
+    a restart, so a frame the panel showed at 3am is still here in the morning.
+    scripts/harvest_frames.py reads this to build the test corpus.
+    """
+    with _frame_shapes_lock:
+        shapes = [dict(v, shape=k) for k, v in _frame_shapes.items()]
+    shapes.sort(key=lambda e: e.get('first_seen', 0))
+    return jsonify({'shapes': shapes, 'count': len(shapes),
+                    'capped_at': _FRAME_SHAPES_MAX})
+
+
 @app.route('/backend')
 def get_backend() -> Response:
     """Report the active navigation backend and its persisted config."""
@@ -5970,6 +6111,8 @@ def main() -> None:
 
     # Fault-discovery candidates persist across restarts so the backlog accrues.
     _load_fault_candidates()
+    # Known LCD frame shapes, so a shape seen last week isn't 'novel' again.
+    _load_frame_shapes()
 
     # --simulate wins over any backend (the default backend is a real one now).
     if args.simulate:

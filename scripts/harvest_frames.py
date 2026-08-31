@@ -27,21 +27,11 @@ Usage (on the HOP, where the sidecar runs):
     # what conditions are still missing (no sidecar needed)
     python3 scripts/harvest_frames.py --coverage
 
-LIMITATION -- this only sees the last 60 frames. /display/history returns
-`lcd.snapshot()`, a deque(maxlen=60), so a run samples roughly the last few
-minutes of panel output depending on how active it is. Harvesting is a manual
-one-shot pull; nothing captures in the background.
-
-That is fine for the common idle-scroll frames, which recur constantly and
-turn up on any run. It is NOT sufficient for the rare ones this corpus most
-needs -- a real fault, freeze protection, the 5-10s VSP window -- because
-catching those requires running the harvest within minutes of them appearing.
-A fault at 3am will have aged out of the ring long before anyone looks.
-
-Fixing that means capturing novel shapes in the sidecar as frames arrive
-rather than sampling a short ring afterwards; see backlog 1.7. Until then,
-treat rare-condition coverage as opportunistic: run a harvest soon after you
-notice something unusual on the panel, and provoke what you can on demand.
+Nothing has to be captured live by hand: the sidecar keeps a ledger of every
+distinct shape it has ever seen (`/display/shapes`), which survives both the
+60-frame LCD ring and a restart. A frame the panel showed at 3am is still
+there in the morning. This falls back to `/display/history` -- the last 60
+frames only -- when talking to a sidecar too old to have the ledger.
 
 The suggested `expect` for a new frame is a SNAPSHOT of what the parser
 currently produces -- not an oracle. Review it: if the parser is wrong for
@@ -127,16 +117,41 @@ def load_corpus() -> list[dict]:
     return out
 
 
+def _get(url: str):
+    with urllib.request.urlopen(url, timeout=10) as r:
+        return json.load(r)
+
+
 def fetch(base: str) -> list[str]:
-    url = base.rstrip('/') + '/display/history'
+    """Frames to consider, newest source first.
+
+    /display/shapes is the ledger the sidecar builds as frames arrive: every
+    distinct shape it has ever seen, surviving both the 60-frame ring and a
+    restart. /display/history is the fallback for a sidecar too old to have
+    the ledger -- it only holds the last 60 frames, so rare frames will have
+    aged out of it.
+    """
+    base = base.rstrip('/')
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
-            body = json.load(r)
+        body = _get(base + '/display/shapes')
+        shapes = body.get('shapes', [])
+        if shapes:
+            print(f'source: /display/shapes ({len(shapes)} shapes ever seen)\n')
+            return [e.get('text', '') for e in shapes if e.get('text')]
+        print('source: /display/shapes (ledger empty — sidecar restarted?)\n')
+        return []
+    except Exception:                                         # noqa: BLE001
+        pass                                                  # fall back below
+
+    try:
+        body = _get(base + '/display/history')
     except Exception as e:                                    # noqa: BLE001
-        print(f'could not reach {url}: {e}\n\n'
+        print(f'could not reach {base}: {e}\n\n'
               f'Run this on the host where the sidecar is running, or pass\n'
               f'--url http://<sidecar-host>:5757', file=sys.stderr)
         raise SystemExit(2)
+    print('source: /display/history — only the last 60 frames. Update the '
+          'sidecar for\nthe full shape ledger.\n', file=sys.stderr)
     return [e.get('text', '') for e in body.get('history', []) if e.get('text')]
 
 
