@@ -97,6 +97,26 @@ jobs:
       - name: Tests
         run: python -m pytest sidecar/tests -q
 
+  merge-freshness:
+    name: Merges on main include what was pushed
+    # Only on main, and only for a real push (not the initial one). Runs the
+    # SAME script as the pre-push hook -- hooks are per-clone and skippable, so
+    # they cannot be the only line of defence.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and all branches: the check compares the merge against
+          # the other branches' remote tips, which a shallow clone does not have.
+          fetch-depth: 0
+
+      - name: Check for a merge that dropped already-pushed work
+        run: |
+          git fetch --quiet origin '+refs/heads/*:refs/remotes/origin/*'
+          python3 scripts/check_merge_freshness.py \
+            '${{ github.event.before }}..${{ github.sha }}'
+
   release:
     name: Release tag matches the tree
     # Only on a v* tag push. This is the one check that can catch a tag cut

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Refuse to push a merge that left out work already on the remote.
+#
+# This replaced a pre-merge-commit hook, which was the more obvious place to
+# put it and does not work: on a clean `git merge --no-ff`, git creates the
+# merge commit directly and MERGE_HEAD is not written, so a hook that reads
+# MERGE_HEAD sees nothing and passes. pre-push runs unconditionally and can
+# inspect the finished merge commit, which carries both parents.
+#
+# Pushing is also the right moment: it is the last point at which a bad merge
+# is still private and `git reset --hard` fixes it completely.
+#
+# The check itself is scripts/check_merge_freshness.py, so that CI can run the
+# identical logic -- hooks are per-clone and skippable, and this must not
+# depend on every machine having run install-hooks.sh.
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+check="$root/scripts/check_merge_freshness.py"
+[ -x "$check" ] || exit 0
+
+status=0
+zero='0000000000000000000000000000000000000000'
+while read -r _local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue          # branch deletion
+    case "$remote_ref" in refs/heads/main) ;; *) continue ;; esac
+    if [ "$remote_sha" = "$zero" ]; then
+        range="$local_sha"                          # new branch: check it all
+    else
+        range="$remote_sha..$local_sha"
+    fi
+    python3 "$check" "$range" >/dev/null || status=1
+done
+
+if [ "$status" -ne 0 ]; then
+    echo "pre-push: refusing to push main. --no-verify overrides." >&2
+fi
+exit "$status"
