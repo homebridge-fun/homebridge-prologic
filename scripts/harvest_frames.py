@@ -101,15 +101,21 @@ def plain(text: str) -> str:
 
 
 def shape(text: str) -> str:
-    """Reduce a frame to its shape: markup stripped, numbers tokenised.
+    """Reduce a frame to its shape: normalised, then numbers tokenised.
 
-    This is the dedupe key. Two frames that differ only in their readings are
-    the same shape and only the first is worth capturing.
+    Delegates to the sidecar's frame_shape so the two can never disagree -- if
+    they did, the harvester would re-report shapes the corpus already holds.
+    The local fallback only matters when pool_service can't be imported.
     """
-    t = _CTRL.sub('', text or '')
-    t = _WBON.sub('', t)
-    t = _DIGITS.sub('<N>', t)
-    return _WS.sub(' ', t).strip()
+    try:
+        sys.path.insert(0, str(ROOT / 'sidecar'))
+        import pool_service as ps                             # noqa: PLC0415
+        return ps.frame_shape(text)
+    except Exception:                                         # noqa: BLE001
+        t = _CTRL.sub('', text or '')
+        t = _WBON.sub('', t)
+        t = _DIGITS.sub('<N>', t)
+        return _WS.sub(' ', t).strip()
 
 
 def load_corpus() -> list[dict]:
@@ -146,6 +152,26 @@ def fetch_entries(base: str) -> list[dict]:
         raise SystemExit(2)
 
 
+# Mis-decoded serial data arrives looking like 'sw|hhhhKEQF><G' -- a single
+# run of characters with no spaces, often sharing a constant tail. Real LCD
+# content is a 16x2 screen of words, so it always normalises to several
+# space-separated tokens. Judged at report time, never at capture: dropping
+# frames on a heuristic risks discarding a genuine screen we've never seen,
+# and the ledger is cheap.
+_NOISE_CHARS = re.compile(r'[|<>^\\]')
+
+
+def looks_like_noise(text: str) -> str:
+    norm = plain(text)
+    if not norm:
+        return 'empty'
+    if ' ' not in norm:
+        return 'single unbroken token — no LCD screen looks like this'
+    if _NOISE_CHARS.search(norm):
+        return 'contains characters the LCD cannot display'
+    return ''
+
+
 def handled_elsewhere(text: str) -> str:
     """Is this frame consumed by something other than parse_ac_scroll?
 
@@ -172,7 +198,7 @@ def handled_elsewhere(text: str) -> str:
     return ''
 
 
-def cmd_anomalies(base: str, corpus: list[dict]) -> int:
+def cmd_anomalies(base: str, corpus: list[dict], show_noise: bool = False) -> int:
     """Which frames does the parser not understand?
 
     The ledger records every shape, but a shape the parser reads correctly is
@@ -195,16 +221,19 @@ def cmd_anomalies(base: str, corpus: list[dict]) -> int:
     known = [(cid, re.compile(pat, re.I)) for cid, pat, _ in KNOWN_CONDITIONS]
     in_corpus = {shape(e.get('text', '')) for e in corpus}
 
-    needs_parser, unknown, understood, elsewhere = [], [], [], []
+    needs_parser, unknown, understood, elsewhere, noise = [], [], [], [], []
     for e in entries:
         text = e.get('text', '')
         parsed = try_parse(text)
         hits = [cid for cid, rx in known if rx.search(plain(text))]
+        junk = looks_like_noise(text)
         other = handled_elsewhere(text)
         if parsed:
             understood.append((e, hits))
         elif other:
             elsewhere.append((e, [other]))
+        elif junk and not hits:
+            noise.append((e, [junk]))
         elif hits:
             needs_parser.append((e, hits))
         else:
@@ -231,6 +260,15 @@ def cmd_anomalies(base: str, corpus: list[dict]) -> int:
     show(needs_parser, 'NEEDS PARSER — recognised condition, but nothing parsed')
     show(unknown, 'UNKNOWN — nothing parsed, no known condition')
     show(elsewhere, 'HANDLED ELSEWHERE — read by another path, not parse_ac_scroll')
+    if noise:
+        print(f'LIKELY NOISE — mis-decoded serial, not LCD content ({len(noise)})')
+        print(f"  e.g. {noise[0][0].get('text','')!r}  ({noise[0][1][0]})")
+        if show_noise:
+            print()
+            show(noise, '  all noise frames')
+        else:
+            print('  Not worth capturing. Re-run with --show-noise to list '
+                  'them all.\n')
     if not needs_parser and not unknown:
         print('every shape the panel has shown is understood by the parser.')
     else:
@@ -324,6 +362,8 @@ def main() -> int:
                     help='sidecar base URL (default: %(default)s)')
     ap.add_argument('--append', action='store_true',
                     help='append new frames to the corpus, marked reviewed:false')
+    ap.add_argument('--show-noise', action='store_true',
+                    help='list the frames classified as mis-decoded noise')
     ap.add_argument('--anomalies', action='store_true',
                     help='shapes the parser does not understand — the ones '
                          'that may need attention')
@@ -335,7 +375,7 @@ def main() -> int:
     if args.coverage:
         return cmd_coverage(corpus)
     if args.anomalies:
-        return cmd_anomalies(args.url, corpus)
+        return cmd_anomalies(args.url, corpus, args.show_noise)
 
     seen = {shape(e.get('text', '')) for e in corpus}
     new: dict[str, str] = {}

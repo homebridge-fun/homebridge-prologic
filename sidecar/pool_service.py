@@ -607,20 +607,30 @@ _frame_shapes_last_flush = 0.0
 # are excluded -- the LCD is two lines and \n separates them.
 _SHAPE_CTRL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _SHAPE_TAGS = re.compile(r'<[^>]+>')
+_SHAPE_DEGREE = re.compile(r'[_\u00b0]\s*F\b')
 _SHAPE_DIGITS = re.compile(r'\d+')
 _SHAPE_WS = re.compile(r'\s+')
 
 
 def frame_shape(text: str) -> str:
-    """Reduce a frame to its dedupe key: markup stripped, digits tokenised.
+    """Reduce a frame to its dedupe key: normalised, then digits tokenised.
 
     'Pool Temp 78' and 'Pool Temp 79' are the same shape, so only the first is
     novel. Mirrors shape() in scripts/harvest_frames.py.
+
+    Normalisation is delegated to _norm rather than reimplemented -- it already
+    handles the trailing NUL, the LCD cursor-position control bytes, and the
+    masked highlight bytes that decorate the front of a fresh frame. An earlier
+    version duplicated a weaker version of this and split every frame in two
+    over a trailing NUL.
     """
-    t = _SHAPE_CTRL.sub('', text or '')
-    t = _SHAPE_TAGS.sub('', t)
-    t = _SHAPE_DIGITS.sub('<N>', t)
-    return _SHAPE_WS.sub(' ', t).strip()
+    t = _SHAPE_TAGS.sub('', text or '')
+    t = _norm(t)
+    # The degree symbol decodes as '_' on some frames and '°' on others, which
+    # otherwise splits one screen into two shapes -- observed on hardware for
+    # the sensor and cell-diagnostic screens.
+    t = _SHAPE_DEGREE.sub('\u00b0F', t)
+    return _SHAPE_DIGITS.sub('<N>', t)
 
 
 def _save_frame_shapes() -> None:
@@ -699,7 +709,16 @@ def _note_frame_shape(text: str) -> None:
             entry = _frame_shapes.get(shape)
             if entry is None:
                 if len(_frame_shapes) >= _FRAME_SHAPES_MAX:
-                    return          # capped; see _FRAME_SHAPES_MAX
+                    # Evict the least-seen shape rather than refuse the new one.
+                    # Mis-decoded serial noise arrives as an endless stream of
+                    # single-sighting shapes; refusing new entries would let it
+                    # fill the ledger and lock out real frames permanently,
+                    # which is the worse failure.
+                    victim = min(_frame_shapes,
+                                 key=lambda k: _frame_shapes[k].get('count', 0))
+                    if _frame_shapes[victim].get('count', 0) > 1:
+                        return      # everything retained is corroborated; keep it
+                    del _frame_shapes[victim]
                 _frame_shapes[shape] = {'first_seen': now, 'last_seen': now,
                                         'count': 1,
                                         # Strip transport artifacts so corpus

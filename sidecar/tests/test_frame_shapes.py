@@ -146,3 +146,49 @@ def test_a_ledger_written_before_the_fix_is_merged_on_load(tmp_path):
     assert entry['count'] == 53 + 1734        # counts combined, not lost
     assert entry['first_seen'] == 90.0        # earliest sighting wins
     assert entry['last_seen'] == 300.0        # latest sighting wins
+
+
+def test_degree_symbol_variants_are_one_shape():
+    """Hardware decodes the degree symbol as '_' on some frames and the real
+    symbol on others, splitting the sensor and cell-diagnostic screens in two."""
+    assert (ps.frame_shape('  Cell Temp Sensor          76_F        ')
+            == ps.frame_shape('  Cell Temp Sensor          76\xb0F        '))
+    assert (ps.frame_shape('  -25.31V  -5.81A   76_F   2900 PPM  ')
+            == ps.frame_shape('  -25.31V  -5.81A   76\xb0F   2900 PPM  '))
+
+
+def test_shape_inherits_norm_handling_of_cursor_bytes():
+    """_norm strips the masked highlight bytes that decorate a fresh frame.
+    frame_shape delegates to it rather than reimplementing, which is how the
+    trailing-NUL split happened in the first place."""
+    assert (ps.frame_shape('\x03\x03  Super Chlorinate   Off  ')
+            == ps.frame_shape('  Super Chlorinate   Off  '))
+    assert (ps.frame_shape(') Pool Chlorinator 50%')
+            == ps.frame_shape('Pool Chlorinator 50%'))
+
+
+def test_full_ledger_evicts_a_one_off_rather_than_refusing_new_frames():
+    """Mis-decoded serial noise arrives as an endless stream of single-sighting
+    shapes. Refusing new entries once full would let it lock out real frames."""
+    _reset()
+    with ps._frame_shapes_lock:
+        for i in range(ps._FRAME_SHAPES_MAX):
+            ps._frame_shapes[f'noise <N> {i}'] = {
+                'first_seen': 0, 'last_seen': 0, 'count': 1, 'text': f'n{i}'}
+    ps._note_frame_shape('Filter T1-all 07:00A to 08:00A')
+    with ps._frame_shapes_lock:
+        assert 'Filter T<N>-all <N>:<N>A to <N>:<N>A' in ps._frame_shapes
+        assert len(ps._frame_shapes) <= ps._FRAME_SHAPES_MAX
+
+
+def test_corroborated_shapes_are_not_evicted():
+    """If everything retained has been seen more than once, keep it -- a
+    repeatedly-observed frame outranks an unseen new one."""
+    _reset()
+    with ps._frame_shapes_lock:
+        for i in range(ps._FRAME_SHAPES_MAX):
+            ps._frame_shapes[f'real <N> {i}'] = {
+                'first_seen': 0, 'last_seen': 0, 'count': 9, 'text': f'r{i}'}
+    ps._note_frame_shape('Something Brand New 12')
+    with ps._frame_shapes_lock:
+        assert len(ps._frame_shapes) == ps._FRAME_SHAPES_MAX
