@@ -232,3 +232,36 @@ def test_states_the_parser_must_discriminate_stay_distinct():
                  ('Filter T1-all 07:00A to 08:00A',
                   'Filter T1-all 07:00P to 08:00P')):
         assert ps.frame_shape(a) != ps.frame_shape(b), f'{a} vs {b}'
+
+
+def test_every_numeric_reading_collapses_regardless_of_value():
+    """The digit rule is universal, not time-specific: a screen is identified
+    by its wording, never by the reading it happens to be showing."""
+    for a, b in (('Salt Level 3000 PPM', 'Salt Level 3100 PPM'),
+                 ('Filter Speed 50% Speed2', 'Filter Speed 75% Speed3'),
+                 ('Pool Chlorinator 30%', 'Pool Chlorinator 65%'),
+                 ('Filter T1-Spd1 90%', 'Filter T1-Spd1 45%'),
+                 ('Pool Heater1 85\xb0F', 'Pool Heater1 92\xb0F'),
+                 ('Pool Temp 78', 'Pool Temp 81'),
+                 ('Main Software Revision 4.46', 'Main Software Revision 5.10'),
+                 ('Super Chlorinate 24 hours', 'Super Chlorinate 8 hours')):
+        assert ps.frame_shape(a) == ps.frame_shape(b), f'{a} vs {b}'
+
+
+def test_sign_is_part_of_the_reading_not_the_screen():
+    """The salt cell reverses polarity to self-clean, so its diagnostic screen
+    alternates sign -- one screen that was producing two shapes. Same for a
+    sub-zero air temperature."""
+    assert (ps.frame_shape('  -25.31V   -5.81A   76\xb0F   2900 PPM  ')
+            == ps.frame_shape('   25.31V    5.81A   76\xb0F   2900 PPM  '))
+    assert ps.frame_shape('Air Temp  -4') == ps.frame_shape('Air Temp  78')
+
+
+def test_hyphens_that_are_not_signs_survive():
+    """Only a '-' at a token boundary followed by a digit is a sign. Menu
+    labels and the '--- Off ---' placeholders must be left alone, or genuinely
+    different screens would start colliding."""
+    assert ps.frame_shape('Filter T1-all 07:00A to 08:00A') \
+        == 'Filter T<N>-all <N>:<N>A to <N>:<N>A'
+    assert ps.frame_shape('Spa-all --- Off ---') == 'Spa-all --- Off ---'
+    assert ps.frame_shape('Filter T1-Spd1 90%') == 'Filter T<N>-Spd<N> <N>%'

@@ -623,6 +623,13 @@ _SHAPE_CLOCK = re.compile(r'\b(\d{1,2})[: ](\d{2})\s*([AP])\b')
 # Super Chlorinate bug stayed invisible.
 _SHAPE_DAY = re.compile(
     r'\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b')
+# A leading minus is part of the reading, not part of the screen. The salt cell
+# reverses polarity to self-clean, so its diagnostic screen alternates between
+# '-25.31V -5.81A' and the positive form -- one screen, two shapes. Same for a
+# sub-zero air temperature in winter. Only a '-' at a token boundary that is
+# followed by a digit counts, so 'T1-all', '--- Off ---' and any numeric range
+# are untouched.
+_SHAPE_SIGN = re.compile(r'(^|\s)-(?=\d)')
 _SHAPE_DIGITS = re.compile(r'\d+')
 _SHAPE_WS = re.compile(r'\s+')
 
@@ -647,6 +654,7 @@ def frame_shape(text: str) -> str:
     t = _SHAPE_DEGREE.sub('\u00b0F', t)
     t = _SHAPE_CLOCK.sub(r'\1:\2\3', t)
     t = _SHAPE_DAY.sub('<DAY>', t)
+    t = _SHAPE_SIGN.sub(r'\1', t)
     return _SHAPE_DIGITS.sub('<N>', t)
 
 
