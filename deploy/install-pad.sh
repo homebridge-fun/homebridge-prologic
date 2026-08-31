@@ -218,5 +218,5 @@ else
   echo " Auth: Tailscale ACL (no shared secret). Restrict src -> pool:8899"
   echo "       in the Tailscale admin console — see deploy/README-PAD.md."
 fi
-echo " Health: curl -s http://${TAILNET_IP:-<tailnet-ip>}:8899/health"
+echo " Health: curl -s http://${TAILNET_IP:-<pad-tailnet-ip>}:8899/health"
 echo "==================================================================="
