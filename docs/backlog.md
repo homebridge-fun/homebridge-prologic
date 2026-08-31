@@ -55,6 +55,7 @@ Carried over from `plugin-spec.md` §10.2; unchanged in substance.
 |---|---|---|
 | 4.1 | **Heater setpoint dial: no instant revert on a failed write** | Open — deliberately deferred. Every *other* write confirms and reverts on failure; the setpoint dial is debounced and returns `202` before the physical write starts, so there's no response left to carry a failure. The sidecar still records what actually landed, so it self-corrects on the next poll rather than staying wrong. Fixing it means restructuring the debounce architecture. Revisit only if it's observed to feel wrong. |
 | 4.2 | **Hoist magic numbers to named constants** (600 ms debounce, 35 % floor, timers) | Cosmetic, low |
+| 4.8 | **OmniDirect / OmniLogic lighting** | Not supported and not planned. Networked ColorLogic on Hayward's OmniLogic platform selects colours directly (plus dimming and show-speed) instead of power cycling — a different platform and wire protocol, not a gap configuration can close. This plugin targets ProLogic/AquaLogic. |
 | 4.3 | **Spillover mode** | Untested — not present on this installation, and can't be without hardware that has it |
 | 4.4 | **Valve-mode detection lag (~10–30 s)** | Scroll-dependent; no event-driven update |
 | 4.5 | **Fault-phrase discovery** | Ongoing, manual. Unrecognised alert-looking frames are logged `FAULT-CANDIDATE` and persisted; periodically pull `GET /faults/candidates` and promote real wording into `_FAULT_PHRASES`. |

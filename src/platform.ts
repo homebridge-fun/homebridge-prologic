@@ -60,6 +60,11 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
       enableSaltSensor: config['enableSaltSensor'] ?? true,
       enableSpaLightScenes: config['enableSpaLightScenes'] ?? false,
       enablePoolLightScenes: config['enablePoolLightScenes'] ?? false,
+      // Which light standard is on which relay varies per installation.
+      poolLightType: config['poolLightType'] ?? 'colorlogic',
+      poolLightCircuit: config['poolLightCircuit'] ?? 'LIGHTS',
+      spaLightType: config['spaLightType'] ?? 'intellibrite',
+      spaLightCircuit: config['spaLightCircuit'] ?? 'AUX_1',
       spaLightSceneList: config['spaLightSceneList'] ?? [],
       poolLightSceneList: config['poolLightSceneList'] ?? [],
       circuitLabels: config['circuitLabels'] ?? {},
@@ -272,7 +277,10 @@ export class ProLogicPlatform implements DynamicPlatformPlugin {
    */
   private async pushUiConfig(): Promise<void> {
     try {
-      await this.sidecar.setUiConfig(this.cfg.circuits, this.cfg.circuitLabels);
+      await this.sidecar.setUiConfig(this.cfg.circuits, this.cfg.circuitLabels, {
+        pool: { type: this.cfg.poolLightType, circuit: this.cfg.poolLightCircuit },
+        spa: { type: this.cfg.spaLightType, circuit: this.cfg.spaLightCircuit },
+      });
       this.log.debug('Pushed UI config (circuits + labels) to sidecar.');
     } catch (err) {
       this.log.debug('Push UI config failed (sidecar may be unreachable):',

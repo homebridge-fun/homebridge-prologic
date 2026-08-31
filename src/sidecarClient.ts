@@ -23,11 +23,16 @@ export class SidecarClient {
   }
 
   /**
-   * Mirror the plugin's UI config (enabled circuits + label overrides) to the
-   * sidecar so the web cockpit renders the same switches/labels as HomeKit.
+   * Mirror the plugin's UI config to the sidecar: enabled circuits, label
+   * overrides, and which light standard sits on which relay (that mapping
+   * varies per installation and drives how scenes are selected).
    */
-  async setUiConfig(circuits: string[], labels: Record<string, string>): Promise<void> {
-    await this.http.post('/config/ui', { circuits, labels });
+  async setUiConfig(
+    circuits: string[],
+    labels: Record<string, string>,
+    lights?: Record<string, { type: string; circuit: string }>,
+  ): Promise<void> {
+    await this.http.post('/config/ui', { circuits, labels, lights });
   }
 
   // ── Bridge health ─────────────────────────────────────────────────────────

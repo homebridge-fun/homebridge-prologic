@@ -10,8 +10,8 @@ drives the panel's actual settings menus, so you get real control from
 HomeKit and a browser, not just toggles:
 
 - **Heat** — set the target temperature per body, not just on/off
-- **Lights** — pick a named color/scene (Hayward ColorLogic pool light,
-  Pentair IntelliBrite spa light)
+- **Lights** — pick a named color/scene (Hayward ColorLogic or Pentair
+  IntelliBrite; which standard is on which relay is configurable)
 - **Chlorinator** — set the salt-cell output %, per body
 - **Pump** — variable-speed presets (VSP slots)
 - **Circuits** — filter, spa/pool mode, aux, spillover, super-chlorinate,
@@ -19,6 +19,11 @@ HomeKit and a browser, not just toggles:
 
 > **Status:** pre-1.0, not yet published to npm. See [Installation](#installation)
 > for installing from source.
+>
+> **All of the code in this project was written by
+> [Claude Code](https://claude.com/claude-code)** in an agent-first development
+> model, directed and hardware-verified by the maintainer. See
+> [How this was built](#how-this-was-built).
 
 ## What you'll need
 
@@ -31,6 +36,7 @@ second Raspberry Pi. Worth knowing before you invest any time:
 | **Homebridge** | 2.0 or newer, running on **Node 22 or 24** |
 | **Host** | A Linux host that can run a `systemd` service alongside Homebridge — normally the same Pi |
 | **Link to the panel** | **One of:** an existing **AquaConnect (ACHN) box** on your LAN, **or** a spare **Pi Zero + USB-RS485 adapter** wired to the panel's bus |
+| **Tailscale** | **Only for the RS-485 path** — a (free) Tailscale account, with `tailscaled` running on **both** the Homebridge host and the pad Pi. See below |
 | **Comfort level** | Terminal access — cloning a repo, running an installer, editing config by hand. There is no install-from-the-Homebridge-UI path today |
 
 The sidecar is what makes the deeper features possible. Setpoints, light
@@ -85,12 +91,44 @@ No extra hardware — point the sidecar at your AquaConnect box's IP (see
 ### RS-485 backend — the pad bridge
 
 Runs on a small **Pi Zero** wired to the panel's RS-485 bus via a USB-RS485
-adapter, as a systemd service (`pool-bridge`) reachable over Tailscale. Full
-build and re-image runbook: [`deploy/README-PAD.md`](deploy/README-PAD.md);
-provisioning script: [`deploy/install-pad.sh`](deploy/install-pad.sh).
+adapter, as a systemd service (`pool-bridge`). Full build and re-image
+runbook: [`deploy/README-PAD.md`](deploy/README-PAD.md); provisioning script:
+[`deploy/install-pad.sh`](deploy/install-pad.sh).
 
 RS-485 wiring to the AquaPlus PCB (adapter to **J2**/**J4** on the main
 board): A+ → Pin 2 (DATA+), B− → Pin 3 (DATA−), GND → Pin 4 (GND).
+
+#### Tailscale is part of this backend, not an optional extra
+
+The sidecar reaches the pad daemon **over a Tailscale tailnet**, so both ends
+need it:
+
+- A **Tailscale account** (the free tier is sufficient).
+- `tailscaled` installed and logged in on the **pad Pi** *and* on the
+  **Homebridge host** — both must be on the same tailnet, or the sidecar
+  simply cannot reach the bridge.
+- `install-pad.sh` binds the daemon to the pad's **tailnet IP only**, so
+  nothing on the local Wi-Fi can open the socket. That address is also stable
+  across network changes, which is why moving the Pi between networks needs
+  no reconfiguration.
+
+Two things that trip people up:
+
+- **Put the pad on your main LAN, not a guest network.** Guest-network client
+  isolation stops the two machines hole-punching, so Tailscale falls back to
+  relaying every packet through a public DERP server — which still works and
+  is still encrypted, but adds latency and intermittent timeouts. Verify with
+  `tailscale ping pool` from the Homebridge host: it should say `direct`, not
+  `via DERP`.
+- **To use the MagicDNS name** (`pool`) rather than a raw tailnet IP, the
+  Homebridge host has to accept tailnet DNS: `tailscale set --accept-dns=true`,
+  then check `getent hosts pool` resolves.
+
+If you skip Tailscale entirely, `install-pad.sh` falls back to binding
+`0.0.0.0` and you would be exposing the bridge to your whole LAN with no
+authentication unless you set a bearer token. That path isn't tested or
+supported — the security model documented in
+[`deploy/README-PAD.md`](deploy/README-PAD.md) assumes the tailnet.
 
 > Earlier prototypes used a WiFi/ethernet serial bridge (transparent
 > TCP↔serial) instead of a Pi. That **did not work** — the panel only accepts
@@ -220,6 +258,35 @@ sidecar API, useful for the things HomeKit doesn't model well:
 - Everything stages behind a single **Apply** button — nothing fires until
   you confirm, since the panel can only process one command at a time
 
+## Lights
+
+Scene selection works by **power-cycling the light's relay** — the only
+mechanism a ProLogic/AquaLogic panel offers. Two standards are supported, and
+they count differently, so telling the plugin which one you have matters:
+
+| Standard | How a scene is selected |
+|---|---|
+| **Hayward ColorLogic / UCL** | *Relative* — each off/on pulse advances one program from wherever the light currently is, with no absolute addressing, so the plugin tracks position |
+| **Pentair IntelliBrite 5G** | *Absolute* — from a full reset, N pulses selects program N directly |
+
+Set which standard is on which relay in the plugin settings:
+`poolLightType` / `poolLightCircuit` and `spaLightType` / `spaLightCircuit`.
+Defaults describe the reference installation (pool = ColorLogic on `LIGHTS`,
+spa = IntelliBrite on `AUX_1`), but nothing requires one of each — two lights
+of the same standard is a perfectly normal setup.
+
+> **Not supported: Hayward OmniDirect.** Newer networked ColorLogic lighting
+> paired with **OmniLogic** automation offers instant colour selection,
+> dimming and show-speed control *without* power cycling. That is a different
+> automation platform with a different wire protocol — it is out of scope
+> here, not a gap that configuration can close. This plugin targets
+> ProLogic/AquaLogic panels, where power cycling is how these lights are
+> driven.
+
+Because selection is open-loop — the panel cannot report which colour a light
+is currently showing — the plugin tracks the position it believes the light is
+in. The cockpit has a **Resync colors** button for when that drifts.
+
 ## Capabilities & limitations
 
 The sidecar drives the panel's Settings-menu navigation, not just the
@@ -278,10 +345,15 @@ conversation.
 
 ## How this was built
 
-This project was written with **[Claude Code](https://claude.com/claude-code)**,
-working agent-first: the maintainer set direction, made the judgement calls, and
-verified everything against real hardware, while the agent did the bulk of the
-implementation, protocol reverse-engineering, and documentation.
+**Every line of code in this repository was written by
+[Claude Code](https://claude.com/claude-code)**, in an agent-first development
+model. The maintainer set direction, made the design and judgement calls, and
+verified all of it against real hardware; the agent did the implementation,
+the protocol reverse-engineering, and the documentation — including this
+sentence.
+
+This is stated plainly because you should know it before you run software that
+controls pool equipment, and before you contribute to it.
 
 That shows up in the repo in a few ways worth knowing about:
 

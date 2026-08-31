@@ -716,6 +716,33 @@ LIGHT_PROGRAMS_SPA = [
 ]
 
 LIGHT_PROGRAMS_BY_BODY = {'pool': LIGHT_PROGRAMS_POOL, 'spa': LIGHT_PROGRAMS_SPA}
+
+# Supported light standards. Both are driven purely by POWER-CYCLING the
+# relay, which is the only mechanism a ProLogic/AquaLogic panel offers.
+#
+# NOT supported: Hayward's OmniDirect mode (networked ColorLogic lighting with
+# instant colour selection, dimming and show-speed control). That is an
+# OmniLogic-platform feature with a different wire protocol -- it isn't a
+# limitation we can configure around on this hardware.
+#
+#   relative -> each off/on pulse advances +1 from wherever the light is now,
+#               with no absolute addressing, so position must be tracked.
+#   absolute -> from a full reset, N pulses selects program N directly.
+LIGHT_TYPES = {
+    'colorlogic': {
+        'label': 'Hayward ColorLogic / UCL',
+        'mechanic': 'relative',
+        'offset': 0,
+        'programs': LIGHT_PROGRAMS_POOL,
+    },
+    'intellibrite': {
+        'label': 'Pentair IntelliBrite 5G',
+        'mechanic': 'absolute',
+        # Calibrated on hardware: program N needs count N+1.
+        'offset': 1,
+        'programs': LIGHT_PROGRAMS_SPA,
+    },
+}
 # Back-compat default (pool) for any caller that doesn't specify a body.
 LIGHT_PROGRAMS = LIGHT_PROGRAMS_POOL
 
@@ -727,6 +754,8 @@ def _light_programs(body: str):
 # Which circuit each body's programmable light is on (pool light = LIGHTS,
 # spa light = AUX_1). Power-cycle timing + count offset are calibratable and
 # persisted in backend.json (key 'light_config').
+# Derived from LIGHT_CFG_BY_BODY by _apply_light_types(); kept as plain dicts
+# because they are read directly in a dozen places.
 LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
 # The two lights select programs DIFFERENTLY (see docs/colorlogic-research.md):
 #   spa  = Pentair IntelliBrite -> ABSOLUTE (off/on N times = program N).
@@ -734,6 +763,27 @@ LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
 #          with NO absolute color reset — so we track position and step
 #          (target - current) mod count.
 LIGHT_MECHANIC = {'pool': 'relative', 'spa': 'absolute'}
+
+
+def _apply_light_types() -> None:
+    """Recompute the per-body lookups from LIGHT_CFG_BY_BODY.
+
+    Call after anything changes a body's light `type` or `circuit` -- startup
+    restore from backend.json, or a config push from the plugin. Unknown types
+    fall back to the previous value rather than crashing the sidecar, since a
+    bad config value must not take the whole plugin offline.
+    """
+    for body, cfg in LIGHT_CFG_BY_BODY.items():
+        spec = LIGHT_TYPES.get(cfg.get('type'))
+        if spec is None:
+            log.warning('unknown light type %r for %s; keeping %s',
+                        cfg.get('type'), body, LIGHT_MECHANIC.get(body))
+            continue
+        LIGHT_MECHANIC[body] = spec['mechanic']
+        LIGHT_PROGRAMS_BY_BODY[body] = spec['programs']
+        circuit = cfg.get('circuit')
+        if circuit:
+            LIGHT_CIRCUITS[body] = circuit
 
 
 def _light_mechanic(body: str) -> str:
@@ -747,17 +797,22 @@ POOL_RESYNC_OFF_S = 12.0
 # IntelliBrite) lights use different reset/pulse timing, so calibrating one must
 # not disturb the other. Defaults; overridden by backend.json 'light_config'.
 _LIGHT_CFG_DEFAULTS = {
+    'type': 'colorlogic',   # key into LIGHT_TYPES; sets mechanic/offset/programs
+    'circuit': 'LIGHTS',    # which relay this light is wired to
     'offset': 0,        # daemon restore-count = program_number + offset
     'reset_ms': 2000,   # full-off hold that resets the light to baseline (~2s)
     'off_ms': 120,      # rapid off pulse between restores
     'on_ms': 120,       # rapid on dwell between restores
     'local': True,      # LOCAL_WIRED frames (replicate the physical keypad)
 }
+# Defaults describe the maintainer's installation. They are only DEFAULTS now
+# -- both the standard and the relay are configurable per body from the
+# Homebridge UI, because which light is on which relay varies per install.
 LIGHT_CFG_BY_BODY = {
-    'pool': dict(_LIGHT_CFG_DEFAULTS),
-    # Spa (Pentair absolute) is calibrated: program N needs count N+1, so the
-    # offset is a fixed +1. Baked in here (no longer a UI knob).
-    'spa':  dict(_LIGHT_CFG_DEFAULTS, offset=1),
+    'pool': dict(_LIGHT_CFG_DEFAULTS, type='colorlogic',
+                 circuit='LIGHTS', offset=0),
+    'spa':  dict(_LIGHT_CFG_DEFAULTS, type='intellibrite',
+                 circuit='AUX_1', offset=1),
 }
 # Back-compat alias (pool) for any caller not yet body-aware.
 LIGHT_CFG = LIGHT_CFG_BY_BODY['pool']
@@ -4141,7 +4196,16 @@ def set_ui_config() -> Response:
     """
     Mirror the Homebridge plugin's UI config so the web cockpit shows the same
     switches and labels as HomeKit.  Body:
-        {"circuits": ["LIGHTS", "AUX_1", ...], "labels": {"AUX_1": "Waterfall"}}
+        {"circuits": ["LIGHTS", "AUX_1", ...],
+         "labels": {"AUX_1": "Waterfall"},
+         "lights": {"pool": {"type": "colorlogic", "circuit": "LIGHTS"},
+                    "spa":  {"type": "intellibrite", "circuit": "AUX_1"}}}
+
+    `lights` says which light STANDARD is on which RELAY, which varies per
+    installation -- it used to be hardcoded to the maintainer's wiring.
+    Unknown type names are rejected rather than silently ignored, so a typo in
+    the Homebridge UI surfaces instead of quietly leaving the old behaviour.
+
     Best-effort: stored in-memory and surfaced via /status.
     """
     global _ui_circuits, _ui_circuit_labels
@@ -4152,6 +4216,34 @@ def set_ui_config() -> Response:
         _ui_circuits = [str(c).upper() for c in circuits]
     if isinstance(labels, dict):
         _ui_circuit_labels = {str(k).upper(): str(v) for k, v in labels.items()}
+
+    lights = body.get('lights')
+    light_changed = False
+    if isinstance(lights, dict):
+        for b in ('pool', 'spa'):
+            spec = lights.get(b)
+            if not isinstance(spec, dict):
+                continue
+            ltype = spec.get('type')
+            if ltype is not None:
+                if ltype not in LIGHT_TYPES:
+                    return jsonify({'error': f'unknown light type {ltype!r}',
+                                    'supported': sorted(LIGHT_TYPES)}), 400
+                LIGHT_CFG_BY_BODY[b]['type'] = ltype
+                # The count offset is a property of the standard, not a
+                # per-install knob, so it follows the type.
+                LIGHT_CFG_BY_BODY[b]['offset'] = LIGHT_TYPES[ltype]['offset']
+                light_changed = True
+            circuit = spec.get('circuit')
+            if circuit:
+                LIGHT_CFG_BY_BODY[b]['circuit'] = str(circuit).upper()
+                light_changed = True
+    if light_changed:
+        _apply_light_types()
+        log.info('Light config updated: %s',
+                 {b: {'type': c.get('type'), 'circuit': c.get('circuit')}
+                  for b, c in LIGHT_CFG_BY_BODY.items()})
+
     # Persist so the config survives a sidecar restart (the plugin only re-pushes
     # on a Homebridge restart). Otherwise the cockpit falls back to panel-reported
     # circuits, which include the AUX2 canary.
@@ -4159,10 +4251,16 @@ def set_ui_config() -> Response:
         cfg = _load_backend_config()
         cfg['ui_circuits'] = _ui_circuits
         cfg['ui_circuit_labels'] = _ui_circuit_labels
+        if light_changed:
+            cfg['light_config'] = {b: dict(c) for b, c in LIGHT_CFG_BY_BODY.items()}
         _save_backend_config(cfg)
     except Exception as e:
         log.warning('Could not persist UI config: %s', e)
-    return jsonify({'ok': True, 'circuits': _ui_circuits, 'labels': _ui_circuit_labels})
+    return jsonify({'ok': True, 'circuits': _ui_circuits,
+                    'labels': _ui_circuit_labels,
+                    'lights': {b: {'type': c.get('type'), 'circuit': c.get('circuit'),
+                                   'mechanic': LIGHT_MECHANIC.get(b)}
+                               for b, c in LIGHT_CFG_BY_BODY.items()}})
 
 
 @app.route('/mode', methods=['POST'])
@@ -5798,18 +5896,22 @@ def main() -> None:
     # the old flat form {offset,reset_ms,...} is migrated onto BOTH bodies.
     lc = cfg.get('light_config')
     if isinstance(lc, dict):
-        keys = ('offset', 'reset_ms', 'off_ms', 'on_ms', 'local')
+        keys = ('type', 'circuit', 'offset', 'reset_ms', 'off_ms', 'on_ms', 'local')
         if 'pool' in lc or 'spa' in lc:                 # new per-body form
             for b in ('pool', 'spa'):
                 if isinstance(lc.get(b), dict):
                     for k in keys:
                         if k in lc[b]:
                             LIGHT_CFG_BY_BODY[b][k] = lc[b][k]
-        else:                                            # old flat form -> both
+        else:
+            # Old flat form applied one calibration to BOTH bodies. Timing keys
+            # only -- 'type'/'circuit' are per-light by definition, and copying
+            # one body's light standard onto the other would be wrong.
             for b in ('pool', 'spa'):
                 for k in keys:
-                    if k in lc:
+                    if k in lc and k not in ('type', 'circuit'):
                         LIGHT_CFG_BY_BODY[b][k] = lc[k]
+        _apply_light_types()
         log.info('Loaded persisted light calibration: %s', LIGHT_CFG_BY_BODY)
 
     # Persisted light program position (per body) — restores the tracked scene
