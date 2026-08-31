@@ -3515,12 +3515,18 @@ class MenuNavigator:
             self.fast_exit()
         return out
 
-    def sweep_scroll(self, max_presses: int = 24) -> dict:
+    def sweep_scroll(self, max_presses: int = 24, until=None) -> dict:
         """Actively advance the idle status scroll with RIGHT to capture every
         reading at normal key timing, instead of waiting ~6s per item for the
         natural cycle. Each frame is applied to state via the scroll parser.
         Stops on a full cycle (a frame repeats) or the press budget. Stays in
         the status display; if a press drifts into a menu, exits cleanly.
+
+        `until` is an optional predicate on the frame text: sweeping stops as
+        soon as it matches. Use it to reach ONE reading quickly rather than
+        paying for a whole cycle -- e.g. the Super Chlorinate countdown, which
+        only exists on the idle scroll and is a few steps from the default
+        screen.
 
         Returns the frames seen + total elapsed, so a caller/tester can tell
         whether RIGHT is actually advancing the scroll (fast) vs the press doing
@@ -3539,6 +3545,8 @@ class MenuNavigator:
                     _apply_ac_scroll_to_state(txt)
                     frames.append({'frame': txt, 'status': self._is_status(txt)})
                     seen.add(txt)
+                    if until is not None and until(txt):
+                        break          # found what the caller came for
                 txt = self._send('RIGHT')
             drifted = bool(txt) and not self._is_status(txt)
         if drifted:
@@ -5862,6 +5870,32 @@ def inspect_super_chlorinate() -> Response:
             pass
 
 
+def _nudge_scroll_to_superchlor() -> None:
+    """Walk the idle scroll to the Super Chlorinate frame after turning it on.
+
+    The countdown is never returned by the write -- it is read passively off
+    the idle scroll, which advances roughly every 6s per item. So a successful
+    toggle could sit in the cockpit without a countdown for the better part of
+    a minute, looking like it had not worked. Pressing RIGHT reaches it in a
+    couple of seconds; on this panel it is only a few steps from the default
+    screen.
+
+    Backgrounded so the toggle's own confirmation is not delayed, and bounded
+    so a scroll that does not contain the frame gives up quickly. Purely a
+    freshness optimisation: failing here costs a slower countdown, nothing more.
+    """
+    try:
+        nav = _get_navigator()
+        if nav is None:
+            return
+        r = nav.sweep_scroll(max_presses=8,
+                             until=lambda t: bool(_SUPERCHLOR_RE.search(t or '')))
+        log.debug('post-toggle scroll nudge: %d frames in %ss',
+                  r.get('count', 0), r.get('elapsed_s'))
+    except Exception as e:                                    # noqa: BLE001
+        log.debug('post-toggle scroll nudge failed (harmless): %s', e)
+
+
 @app.route('/superchlorinate', methods=['POST'])
 def set_super_chlorinate() -> Response:
     body = request.get_json(force=True)
@@ -5886,6 +5920,12 @@ def set_super_chlorinate() -> Response:
                                 'bridge_wedged': state.bridge_wedged}), 502
             _record_command_success()
             log.info(f'Super-chlorinate -> {"ON" if on else "OFF"} (menu nav)')
+            if on:
+                # Only ON needs this: the countdown lives on the idle scroll.
+                # OFF has nothing to fetch -- the countdown simply stops
+                # appearing, and _super_chlor_expire_if_stale clears it.
+                threading.Thread(target=_nudge_scroll_to_superchlor,
+                                 daemon=True, name='sc-scroll-nudge').start()
             return jsonify(result)
         except Exception as e:
             log.error(f'set_super_chlorinate (nav): {e}')
