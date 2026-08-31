@@ -23,7 +23,7 @@ PS-series** pool controller via a Python sidecar that supports two interchangeab
   port (using the `aqualogic` Python library) and exposes a small HTTP API the sidecar
   consumes over Tailscale. Fast (~2.5× AquaConnect) and 100% reliable keypresses. See §4.4.
 - **AquaConnect** (`aquaconnect`, fallback): Hayward's own local web interface on an ACHN
-  box at `192.168.50.100`. The embedded GoAhead "Webs" HTTP server handles polling reads and
+  box at a private LAN address (`192.168.x.y`). The embedded GoAhead "Webs" HTTP server handles polling reads and
   keypress commands over TCP/IP. No cloud dependency; all traffic is LAN-only.
 
 The active backend is selected in plugin config and persisted by the sidecar. Both backends
@@ -38,7 +38,7 @@ automatically via systemd.
                 ┌─ AquaConnect backend ──────────────────────────────────┐
                 │  POST /WNewSt.htm (Update Local Server&)  ←read poll   │
 [Hayward ACHN]  │  POST /WNewSt.htm (KeyId=NN&)            ←keypress     │
-[192.168.50.100]└────────────────────────────────────────────────────────┘
+[aquaconnect-ip ]└────────────────────────────────────────────────────────┘
        OR                           ↕ TCP/HTTP (picky GoAhead server)
                 ┌─ rs485bridge backend (CURRENT direction) ──────────────┐
                 │  GET  /state  ← decoded snapshot (poll)                │
@@ -551,7 +551,7 @@ timing on the Pi, so there is nothing to tune from the hop.)
   "sidecarPort": 5757,
   "pollInterval": 5000,
   "backend": "aquaconnect",
-  "aquaconnectHost": "192.168.50.100",
+  "aquaconnectHost": "<aquaconnect-ip>",
   "rs485bridgeHost": "pool",
   "rs485bridgePort": 8899,
   "circuits": ["SPA", "FILTER", "LIGHTS", "HEATER_1", "AUX_1", "AUX_2", "SUPER_CHLORINATE"],
@@ -933,6 +933,10 @@ engaged on the "2 unconfirmed writes" path — see backlog.)
 | `/debug/nav-sweep` harness | Done | Server-side timing sweep over `min_gaps` (and optionally `nav_gaps`/`post_menu_settles`), aborts early + returns partial results on a wedge, ranks clean runs fastest-first |
 
 ### 10.2 Backlog (open)
+
+> **Open work now lives in [`docs/backlog.md`](backlog.md)**, which is the
+> single prioritized list. The table below is kept as the historical record
+> of what was done and when; still-open rows are mirrored into the backlog.
 
 | Item | Priority | Notes |
 |---|---|---|

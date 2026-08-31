@@ -59,6 +59,10 @@
      pill bulging past the rest. */
   .card .condlist .pill.on, .card .swlist .pill.on, .card .lblock .pill.on { min-width: 128px; }
   .card .condlist .pill.off, .card .swlist .pill.off, .card .lblock .pill.off { min-width: 64px; }
+  /* Super Chlorinate sits below the pool/spa steppers in the Chlorinator
+     card. It carries .swlist so its pill matches every other switch row;
+     the top border echoes the .row + .row separators used elsewhere. */
+  #superchlor_row { margin-top: 6px; border-top: 1px solid rgba(159,182,207,.18); }
   /* Tighter rows in the pill lists (At a glance / Lights). */
   .condlist .row, .swlist .row { min-height: 0; padding: 6px 0; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
@@ -86,7 +90,11 @@
   .slot-editor .step { display: flex; }
   .lcd { font-family: "SF Mono", ui-monospace, Menlo, monospace; background: #02101d;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
-    color: #7dd3fc; letter-spacing: .04em; min-height: 22px; white-space: pre-wrap; word-break: break-word; }
+    color: #7dd3fc; letter-spacing: .04em; min-height: 22px;
+    /* The panel is 20x2. Preserve every column: a blinking field blanks in
+       place at the panel, and reflowing the rest of the row is disorienting
+       exactly when you are navigating menus. */
+    white-space: pre; overflow-x: auto; line-height: 1.35; }
   .lcd .t { font-size: 12px; color: var(--dim); margin-top: 6px; letter-spacing: 0; }
   /* Dual-body (pool/spa) panel with the active one flagged */
   .duo { display: flex; gap: 10px; }
@@ -295,6 +303,9 @@
       <div class="bd ctl" id="chlor_spa" data-field="chlor_spa"><div class="bd-k">Spa</div>
         <div class="setrow"><button class="step ctl" id="cs_dn">−</button><div class="bd-v" id="chlor_spa_v">—</div><button class="step ctl" id="cs_up">+</button></div></div>
     </div>
+    <!-- Super Chlorinate belongs with the chlorinator output it overrides, not
+         among the generic aux switches. Hidden unless the circuit is enabled. -->
+    <div class="swlist" id="superchlor_row"></div>
   </div>
 
   <div class="card">
@@ -529,7 +540,10 @@
   // the generic "Other" card only carries the remaining aux circuits.
   // SUPER_CHLORINATE has no keypad key (menu-only) — applyStaged special-cases
   // it to POST /superchlorinate instead of the generic /circuit/<name>.
-  const SWITCHES = [['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover'], ['SUPER_CHLORINATE', 'Super Chlorinate']];
+  const SWITCHES = [['AUX_2', 'Aux 2'], ['SPILLOVER', 'Spillover']];
+  // Rendered into the Chlorinator card rather than the generic "Other" card --
+  // it is a chlorinator mode, and sat oddly next to Aux 2 and Spillover.
+  const CHLOR_SWITCHES = [['SUPER_CHLORINATE', 'Super Chlorinate']];
   function stageCircuit(name) {
     if (busy) return;
     const real = !!(last.circuits && last.circuits[name]);
@@ -601,7 +615,8 @@
     if ('spaLight' in staged) items.push(['Spa light → ' + staged.spaLight.name, '/lights/spa/program', { program: staged.spaLight.n }]);
     if ('poolLight' in staged) items.push(['Pool light → ' + staged.poolLight.name, '/lights/pool/program', { program: staged.poolLight.n }]);
     // Any staged circuit toggle (light power pills stage ckt:LIGHTS / ckt:AUX_1;
-    // the Other card stages ckt:AUX_2 / ckt:SPILLOVER / ckt:SUPER_CHLORINATE) —
+    // the Other card stages ckt:AUX_2 / ckt:SPILLOVER, and the Chlorinator
+    // card stages ckt:SUPER_CHLORINATE) —
     // handle them generically so none are dropped now that the light circuits
     // aren't in SWITCHES. SUPER_CHLORINATE has no keypad key, so the sidecar
     // only supports it via the dedicated /superchlorinate menu-nav endpoint —
@@ -671,7 +686,7 @@
       const r = await fetch('/key/' + key, { method: 'POST' });
       let j = {}; try { j = await r.json(); } catch (e) {}
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      if (j.lcd) { lastFrameTs = Date.now(); $('lcd').firstChild.nodeValue = j.lcd; }
+      if (j.lcd) { lastFrameTs = Date.now(); renderLcd(j.lcd); }
       await fetchStatus();
     } catch (e) {
       toast('⚠ key ' + key + ' failed' + (e.message ? ': ' + e.message : ''));
@@ -935,10 +950,12 @@
     // circuits if the plugin hasn't pushed its config yet.
     const cfgC = s.ui_circuits;
     const labels = s.circuit_labels || {};
-    const sw = $('switches'); sw.innerHTML = '';
-    SWITCHES.forEach(([name, dflt]) => {
+    // One builder for both the generic switches and the Super Chlorinate row
+    // in the Chlorinator card, so staging, the staged-dash styling and the
+    // countdown behave identically wherever the row is rendered.
+    const buildSwitchRow = (name, dflt) => {
       const enabled = (cfgC && cfgC.length) ? cfgC.includes(name) : (s.circuits && name in s.circuits);
-      if (!enabled) return;
+      if (!enabled) return null;
       const key = 'ckt:' + name;
       const real = !!(s.circuits && s.circuits[name]);
       const eff = (key in staged) ? staged[key] : real;
@@ -954,9 +971,21 @@
       }
       row.innerHTML = `<span class="label">${esc(labels[name] || dflt)}</span><span class="${cls}">${pillText}</span>`;
       row.querySelector('.pill').onclick = () => { setEditing(null); stageCircuit(name); };
-      sw.appendChild(row);
+      return row;
+    };
+
+    const sw = $('switches'); sw.innerHTML = '';
+    SWITCHES.forEach(([name, dflt]) => {
+      const row = buildSwitchRow(name, dflt);
+      if (row) sw.appendChild(row);
     });
     $('switches_card').style.display = sw.children.length ? '' : 'none';
+
+    const scRow = $('superchlor_row'); scRow.innerHTML = '';
+    CHLOR_SWITCHES.forEach(([name, dflt]) => {
+      const row = buildSwitchRow(name, dflt);
+      if (row) scRow.appendChild(row);
+    });
 
     // Light card power pills (LIGHTS=pool, AUX_1=spa) — same staged circuit
     // toggle as the generic switches, but rendered into the dedicated cards.
@@ -1022,6 +1051,20 @@
     try { await fetchStatus(); } catch (e) {}
   }
 
+  // Render a frame as the panel lays it out: 20x2, columns preserved.
+  // Hardware packs both lines into one 40-char string with no separator, so
+  // the split is positional. Never trim -- the padding IS the layout, and a
+  // blanked (blinking) field must leave its gap rather than pull the rest of
+  // the row leftwards.
+  const LCD_COLS = 20;
+  function renderLcd(raw) {
+    if (!raw) return;
+    const clean = String(raw).replace(/[\x00-\x1f]/g, ' ');
+    const l1 = clean.slice(0, LCD_COLS).padEnd(LCD_COLS);
+    const l2 = clean.slice(LCD_COLS).padEnd(LCD_COLS);
+    $('lcd').firstChild.nodeValue = l1 + '\n' + l2;
+  }
+
   // LCD fallback poll (SSE preferred)
   let lastFrameTs = 0;
   async function pollDisplay() {
@@ -1030,8 +1073,9 @@
       const r = await fetch('/display', { cache: 'no-store' });
       if (!r.ok) return;
       const d = await r.json();
-      const t = [d.line1, d.line2].filter(Boolean).join('  ').trim();
-      if (t) $('lcd').firstChild.nodeValue = t;
+      // Prefer raw; line1/line2 already preserve columns, so fall back to
+      // concatenating them rather than joining with a separator.
+      renderLcd(d.raw || ((d.line1 || '') + (d.line2 || '')));
     } catch (e) {}
   }
   function connectStream() {
@@ -1040,9 +1084,11 @@
       es.onmessage = ev => {
         try {
           const f = JSON.parse(ev.data);
-          if (f && f.text) {
+          if (f && (f.raw || f.text)) {
             lastFrameTs = Date.now();
-            $('lcd').firstChild.nodeValue = f.text;
+            // f.text is whitespace-collapsed for MATCHING; f.raw is the frame
+            // as displayed. Showing f.text is what made blinking fields reflow.
+            renderLcd(f.raw || f.text);
             txt('lcd_t', new Date((f.ts || 0) * 1000).toLocaleTimeString());
           }
         } catch (e) {}

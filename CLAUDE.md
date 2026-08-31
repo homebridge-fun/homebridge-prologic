@@ -53,7 +53,7 @@
 Use the venv python, an isolated config, and a spare API port; point it at the
 pad bridge by MagicDNS name `pool` (works now that the hop accepts tailnet DNS —
 `getent hosts pool` resolves; MagicDNS name survives a tailnet-IP change) or by
-tailnet IP (`100.113.118.4`):
+tailnet IP (`<pad-tailnet-ip>`):
 ```bash
 SIDECAR_CONFIG=/tmp/bridge-test.json /opt/pool-sidecar/venv/bin/python \
   sidecar/pool_service.py --backend rs485bridge \

@@ -3,7 +3,7 @@
 ## TL;DR — what I need from you
 
 The Hayward **AquaConnect** web box (GoAhead "Webs" embedded HTTP server at
-`192.168.50.100`) shows a **live, constantly-updating LCD "screen"** in its web
+`<aquaconnect-ip>`) shows a **live, constantly-updating LCD "screen"** in its web
 UI. I need to know **exactly how that screen gets refreshed** so I can copy the
 mechanism. Specifically:
 
@@ -34,7 +34,7 @@ The way it polls today is:
 
 ```
 POST /WNewSt.htm HTTP/1.1
-Host: 192.168.50.100
+Host: <aquaconnect-ip>
 User-Agent: curl/7.88.1
 Accept: */*
 Content-Type: application/x-www-form-urlencoded

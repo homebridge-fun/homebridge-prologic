@@ -77,3 +77,18 @@ jobs:
       # — see docs/testing-strategy.md for what a real one would cover.
       - name: Syntax check
         run: python -m compileall -q sidecar
+
+      # Keeps the README's architecture diagram honest: verifies the committed
+      # SVGs still match their generator, that every configurable backend
+      # appears in the picture, and that no Markdown link points at a file
+      # that isn't there. See scripts/check_docs.py.
+      - name: Documentation checks
+        run: python scripts/check_docs.py
+
+      # Unit tests for the pure LCD-frame parsers -- the layer where almost
+      # every bug this project has shipped has lived. No hardware needed.
+      - name: Install test dependencies
+        run: pip install -r sidecar/requirements-dev.txt
+
+      - name: Tests
+        run: python -m pytest sidecar/tests -q

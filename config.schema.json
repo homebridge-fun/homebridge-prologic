@@ -2,7 +2,7 @@
   "pluginAlias": "ProLogic",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaLogic/AquaPlus pool controllers. Talks to the panel through the Python sidecar service — either the AquaConnect HTTP box or a Raspberry Pi RS-485 pad bridge. See the README for setup.",
+  "headerDisplay": "Homebridge plugin for Hayward ProLogic/AquaLogic/AquaPlus pool controllers. Talks to the panel through the Python sidecar service \u2014 either the AquaConnect HTTP box or a Raspberry Pi RS-485 pad bridge. See the README for setup.",
   "footerDisplay": "See the [README](https://github.com/homebridge-fun/homebridge-prologic) for wiring and setup instructions.",
   "schema": {
     "type": "object",
@@ -37,16 +37,26 @@
         "type": "string",
         "default": "aquaconnect",
         "oneOf": [
-          { "title": "RS-485 Smart Bridge (pad Pi, direct serial)", "enum": ["rs485bridge"] },
-          { "title": "AquaConnect (HTTP web box)", "enum": ["aquaconnect"] }
+          {
+            "title": "RS-485 Smart Bridge (pad Pi, direct serial)",
+            "enum": [
+              "rs485bridge"
+            ]
+          },
+          {
+            "title": "AquaConnect (HTTP web box)",
+            "enum": [
+              "aquaconnect"
+            ]
+          }
         ],
         "description": "Which navigation backend the sidecar should use. Changing this restarts the sidecar to apply. 'RS-485 Smart Bridge' is the recommended direct-serial path: a small daemon on a pad-mounted Pi owns the serial link (100% reliable keypresses), reached over Tailscale. 'AquaConnect' drives the HTTP web box (fallback)."
       },
       "aquaconnectHost": {
         "title": "AquaConnect Host",
         "type": "string",
-        "default": "192.168.50.100",
-        "description": "IP of the AquaConnect web box (used when backend = aquaconnect)."
+        "placeholder": "192.168.x.y",
+        "description": "IP of the AquaConnect web box on your LAN (used when backend = aquaconnect). Required for that backend \u2014 there is deliberately no default, since guessing an address would point at whatever device happens to occupy it. Find it in your router's client list."
       },
       "rs485bridgeHost": {
         "title": "RS-485 Smart Bridge Host",
@@ -65,9 +75,25 @@
         "items": {
           "title": "Circuit",
           "type": "string",
-          "enum": ["POOL", "SPA", "FILTER", "LIGHTS", "SPILLOVER", "AUX_1", "AUX_2", "HEATER_1", "SUPER_CHLORINATE"]
+          "enum": [
+            "POOL",
+            "SPA",
+            "FILTER",
+            "LIGHTS",
+            "SPILLOVER",
+            "AUX_1",
+            "AUX_2",
+            "HEATER_1",
+            "SUPER_CHLORINATE"
+          ]
         },
-        "default": ["POOL", "SPA", "FILTER", "LIGHTS", "HEATER_1"],
+        "default": [
+          "POOL",
+          "SPA",
+          "FILTER",
+          "LIGHTS",
+          "HEATER_1"
+        ],
         "description": "Which circuits to expose as HomeKit switches. AUX_2 and VALVE_3 are hidden by default (unused on this system)."
       },
       "activeBodies": {
@@ -76,53 +102,186 @@
         "items": {
           "title": "Body",
           "type": "string",
-          "enum": ["pool", "spa", "spillover"]
+          "enum": [
+            "pool",
+            "spa",
+            "spillover"
+          ]
         },
-        "default": ["pool", "spa"],
+        "default": [
+          "pool",
+          "spa"
+        ],
         "description": "Which bodies your panel is configured for. Controls the POOL/SPA mode-selection cycle and which heater setpoints are active. This system: pool + spa only (no spillover)."
       },
       "enableActiveHeaterThermostat": {
         "title": "Heat Thermostat (mode-following, recommended)",
         "type": "boolean",
         "default": true,
-        "description": "Expose the single mode-following thermostat that mirrors whichever heater setpoint is active for the current valve mode (name shows 'Heat — Pool' or 'Heat — Spa'). One physical heater = one tile."
+        "description": "Expose the single mode-following thermostat that mirrors whichever heater setpoint is active for the current valve mode (name shows 'Heat \u2014 Pool' or 'Heat \u2014 Spa'). One physical heater = one tile."
       },
       "enableSpaLightScenes": {
         "title": "Spa Light Scenes (HomeKit tile)",
         "type": "boolean",
         "default": false,
-        "description": "Expose the spa light (AUX_1, Pentair IntelliBrite) as a Television-style tile whose input picker selects a color scene. Added as a separate accessory you pair in the Home app. Requires the RS-485 Smart Bridge backend."
+        "description": "Expose the spa light as a Television-style tile whose input picker selects a color scene. Added as a separate accessory you pair in the Home app. Requires the RS-485 Smart Bridge backend. Set the standard and relay with spaLightType / spaLightCircuit."
+      },
+      "spaLightType": {
+        "title": "Spa Light Standard",
+        "type": "string",
+        "default": "intellibrite",
+        "oneOf": [
+          {
+            "title": "Hayward ColorLogic / UCL (relative stepping)",
+            "enum": [
+              "colorlogic"
+            ]
+          },
+          {
+            "title": "Pentair IntelliBrite 5G (absolute count)",
+            "enum": [
+              "intellibrite"
+            ]
+          }
+        ],
+        "description": "Which light standard is wired to this body. The two select colours differently, so getting this wrong means scenes land on the wrong colour. Only power-cycle-controlled lights are supported \u2014 Hayward OmniDirect (networked ColorLogic on OmniLogic) is a different platform and is not supported."
+      },
+      "spaLightCircuit": {
+        "title": "Spa Light Relay",
+        "type": "string",
+        "default": "AUX_1",
+        "oneOf": [
+          {
+            "title": "LIGHTS",
+            "enum": [
+              "LIGHTS"
+            ]
+          },
+          {
+            "title": "AUX_1",
+            "enum": [
+              "AUX_1"
+            ]
+          },
+          {
+            "title": "AUX_2",
+            "enum": [
+              "AUX_2"
+            ]
+          },
+          {
+            "title": "SPILLOVER",
+            "enum": [
+              "SPILLOVER"
+            ]
+          }
+        ],
+        "description": "Which relay the spa light is wired to on your panel."
       },
       "enablePoolLightScenes": {
         "title": "Pool Light Scenes (HomeKit tile)",
         "type": "boolean",
         "default": false,
-        "description": "Expose the pool light (LIGHTS, Hayward ColorLogic) as a Television-style tile whose input picker selects a color scene. Added as a separate accessory you pair in the Home app. Requires the RS-485 Smart Bridge backend."
+        "description": "Expose the pool light as a Television-style tile whose input picker selects a color scene. Added as a separate accessory you pair in the Home app. Requires the RS-485 Smart Bridge backend. Set the standard and relay with poolLightType / poolLightCircuit."
+      },
+      "poolLightType": {
+        "title": "Pool Light Standard",
+        "type": "string",
+        "default": "colorlogic",
+        "oneOf": [
+          {
+            "title": "Hayward ColorLogic / UCL (relative stepping)",
+            "enum": [
+              "colorlogic"
+            ]
+          },
+          {
+            "title": "Pentair IntelliBrite 5G (absolute count)",
+            "enum": [
+              "intellibrite"
+            ]
+          }
+        ],
+        "description": "Which light standard is wired to this body. The two select colours differently, so getting this wrong means scenes land on the wrong colour. Only power-cycle-controlled lights are supported \u2014 Hayward OmniDirect (networked ColorLogic on OmniLogic) is a different platform and is not supported."
+      },
+      "poolLightCircuit": {
+        "title": "Pool Light Relay",
+        "type": "string",
+        "default": "LIGHTS",
+        "oneOf": [
+          {
+            "title": "LIGHTS",
+            "enum": [
+              "LIGHTS"
+            ]
+          },
+          {
+            "title": "AUX_1",
+            "enum": [
+              "AUX_1"
+            ]
+          },
+          {
+            "title": "AUX_2",
+            "enum": [
+              "AUX_2"
+            ]
+          },
+          {
+            "title": "SPILLOVER",
+            "enum": [
+              "SPILLOVER"
+            ]
+          }
+        ],
+        "description": "Which relay the pool light is wired to on your panel."
       },
       "spaLightSceneList": {
-        "title": "Spa Light Scenes — order & names",
+        "title": "Spa Light Scenes \u2014 order & names",
         "type": "array",
         "description": "Optional: choose which spa scenes appear in HomeKit, in what order (drag to reorder), with custom names. Leave empty to show all 12 in default order. Spa program numbers: 1 SAm, 2 Party, 3 Romance, 4 Caribbean, 5 American, 6 California Sunset, 7 Royal, 8 Blue, 9 Green, 10 Red, 11 White, 12 Magenta.",
         "items": {
           "type": "object",
           "properties": {
-            "program": { "title": "Scene #", "type": "integer", "minimum": 1, "maximum": 12 },
-            "name": { "title": "Name in HomeKit", "type": "string", "placeholder": "(default name)" }
+            "program": {
+              "title": "Scene #",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            },
+            "name": {
+              "title": "Name in HomeKit",
+              "type": "string",
+              "placeholder": "(default name)"
+            }
           },
-          "required": ["program"]
+          "required": [
+            "program"
+          ]
         }
       },
       "poolLightSceneList": {
-        "title": "Pool Light Scenes — order & names",
+        "title": "Pool Light Scenes \u2014 order & names",
         "type": "array",
         "description": "Optional: choose which pool scenes appear in HomeKit, in what order (drag to reorder), with custom names. Leave empty to show all in default order. Pool program numbers: 1 Voodoo Lounge, 2 Deep Blue Sea, 3 Royal Blue, 4 Afternoon Skies, 5 Aqua Green, 6 Emerald, 7 Cloud White, 8 Warm Red, 9 Flamingo, 10 Vivid Violet, 11 Sangria, 12 Twilight, 13 Tranquility, 14 Gemstone, 15 USA, 16 Mardi Gras, 17 Cool Cabaret.",
         "items": {
           "type": "object",
           "properties": {
-            "program": { "title": "Scene #", "type": "integer", "minimum": 1, "maximum": 17 },
-            "name": { "title": "Name in HomeKit", "type": "string", "placeholder": "(default name)" }
+            "program": {
+              "title": "Scene #",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 17
+            },
+            "name": {
+              "title": "Name in HomeKit",
+              "type": "string",
+              "placeholder": "(default name)"
+            }
           },
-          "required": ["program"]
+          "required": [
+            "program"
+          ]
         }
       },
       "enableTemperatureSensors": {
@@ -148,18 +307,56 @@
         "type": "object",
         "description": "Custom display names for circuit switches in HomeKit. Leave a field blank to use the default name.",
         "properties": {
-          "POOL":              { "title": "Pool label",              "type": "string", "placeholder": "Pool" },
-          "SPA":               { "title": "Spa label",               "type": "string", "placeholder": "Spa" },
-          "FILTER":            { "title": "Filter label",            "type": "string", "placeholder": "Filter" },
-          "LIGHTS":            { "title": "Lights label",            "type": "string", "placeholder": "Lights" },
-          "SPILLOVER":         { "title": "Spillover label",         "type": "string", "placeholder": "Spillover" },
-          "AUX_1":             { "title": "Aux 1 label",             "type": "string", "placeholder": "Aux 1" },
-          "AUX_2":             { "title": "Aux 2 label",             "type": "string", "placeholder": "Aux 2" },
-          "HEATER_1":          { "title": "Heater label",            "type": "string", "placeholder": "Heater" },
-          "SUPER_CHLORINATE":  { "title": "Super Chlorinate label",  "type": "string", "placeholder": "Super Chlorinate" }
+          "POOL": {
+            "title": "Pool label",
+            "type": "string",
+            "placeholder": "Pool"
+          },
+          "SPA": {
+            "title": "Spa label",
+            "type": "string",
+            "placeholder": "Spa"
+          },
+          "FILTER": {
+            "title": "Filter label",
+            "type": "string",
+            "placeholder": "Filter"
+          },
+          "LIGHTS": {
+            "title": "Lights label",
+            "type": "string",
+            "placeholder": "Lights"
+          },
+          "SPILLOVER": {
+            "title": "Spillover label",
+            "type": "string",
+            "placeholder": "Spillover"
+          },
+          "AUX_1": {
+            "title": "Aux 1 label",
+            "type": "string",
+            "placeholder": "Aux 1"
+          },
+          "AUX_2": {
+            "title": "Aux 2 label",
+            "type": "string",
+            "placeholder": "Aux 2"
+          },
+          "HEATER_1": {
+            "title": "Heater label",
+            "type": "string",
+            "placeholder": "Heater"
+          },
+          "SUPER_CHLORINATE": {
+            "title": "Super Chlorinate label",
+            "type": "string",
+            "placeholder": "Super Chlorinate"
+          }
         }
       }
     },
-    "required": ["name"]
+    "required": [
+      "name"
+    ]
   }
 }

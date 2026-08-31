@@ -13,7 +13,7 @@ AquaConnect web box, exposed to HomeKit as heater + VSP control.
 > this file; plugin-spec.md doesn't use them.
 
 **Provenance tags used throughout:**
-- `[VERIFIED]` — observed live by walking the AquaConnect web UI at `http://192.168.50.100`.
+- `[VERIFIED]` — observed live by walking the AquaConnect web UI at `http://<aquaconnect-ip>`.
 - `[MANUAL]` — from the Hayward AquaLogic PS4/PS8/PS16 Operation Manual; not independently re-verified on this unit.
 - `[OWNER]` — operational knowledge provided by the system owner; treat as authoritative requirements.
 - `[PENDING]` — must be confirmed live (read-only) before implementation relies on it.
@@ -54,7 +54,7 @@ REMOTE_WIRED key frames (resolved and documented in §16).
 | Item | Value | Source |
 |---|---|---|
 | Controller family | Hayward AquaLogic / ProLogic PS | [VERIFIED] |
-| Web front-end | AquaConnect ("Aqua Connect Local", page title `WebsR2-1.01`) at `http://192.168.50.100` | [VERIFIED] |
+| Web front-end | AquaConnect ("Aqua Connect Local", page title `WebsR2-1.01`) at `http://<aquaconnect-ip>` | [VERIFIED] |
 | Pool/Spa config | Pool **and** Spa (standard), **no spillover** | [VERIFIED]/[OWNER] |
 | Solar | **None** | [OWNER] |
 | Heaters | Single heater, generic name `Heater1`; no Heater2 | [VERIFIED] |
@@ -481,11 +481,11 @@ The user can choose which equipment toggles are exposed (as HomeKit accessories 
 ### 14.3 Bridge address (connection)
 The AquaConnect bridge's network address must be a **user setting**, not hardcoded.
 
-- **Config item:** bridge host/IP (and port if non-default). **This system: `192.168.50.100`** — use as the default but keep it user-editable.
+- **Config item:** bridge host/IP (and port if non-default). **This system:** a static private address on the LAN — must be user-supplied, never shipped as a default.
 - Used as the base for the AquaConnect web/local interface (`http://<host>/`) and for reaching the controller over the bus via that box.
 - The plugin should fail gracefully / surface a clear connection error if the bridge is unreachable, rather than silently stalling on the slow bus.
 
-> Default the config to this system's values (pool+spa active; AUX2 + VALVE3 hidden; bridge `192.168.50.100`) but keep every item user-overridable so the plugin ports to other AquaLogic/ProLogic setups.
+> Default the config to this system's values (pool+spa active; AUX2 + VALVE3 hidden; bridge address supplied by the user) but keep every item user-overridable so the plugin ports to other AquaLogic/ProLogic setups.
 
 ---
 
@@ -512,7 +512,7 @@ reference implementation; confirm once against the live box with `GET
 /debug/aquaconnect?raw=1` before relying on byte offsets.
 
 ### 15.1 Wire protocol
-- **Endpoint:** `POST http://<host>/WNewSt.htm` (default host `192.168.50.100`).
+- **Endpoint:** `POST http://<host>/WNewSt.htm` (host comes from config; there is no shipped default).
 - **Key press:** form body `KeyId=NN`, `Content-Type: application/x-www-form-urlencoded`,
   where `NN` is the §2 web key code (`MENU=02`, `RIGHT=01`, `LEFT=03`, `PLUS=06`,
   `MINUS=05`, `POOL/SPA/SPILLOVER=07`, `FILTER=08`, `LIGHTS=09`, `AUX1=0A`,

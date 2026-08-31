@@ -1,9 +1,8 @@
 # Testing strategy — design sketch
 
 > **Status:** design sketch, not built. Written to size the work and pick an
-> order. Independent of the Tier 1 proposal
-> ([`tier1-direct-mode-design.md`](tier1-direct-mode-design.md)) — this is
-> worth doing whether or not Tier 1 ever ships.
+> order. Independent of the proposed "Tier 1" direct-mode backend — this is
+> worth doing whether or not that ever ships.
 
 ## Why now
 
@@ -24,13 +23,15 @@ With external users that loop breaks in specific ways:
 The third one is the real risk, and it's the one testing addresses least
 obviously — so it's worth being precise about what a test suite can and
 cannot do for it. See "The multi-user payoff" below; it's the strongest
-argument here and it's time-sensitive.
+argument here, and it's the one that takes calendar time rather than effort.
 
 ## What exists today
 
-Honest baseline — **there is no automated test suite**:
+Honest baseline — **there is CI, but no automated test suite**:
 
-- No `.github/workflows/`, no CI of any kind.
+- `.github/workflows/ci.yml` exists as of 0.9.2: lint + build on Node 22/24,
+  a Python syntax check, and `scripts/check_docs.py`. That catches broken
+  builds and stale docs — it asserts nothing about behaviour.
 - No test runner in `package.json` (no Jest/Vitest), none in
   `sidecar/requirements.txt` (no pytest).
 - `SimPanel` (`sidecar/pool_service.py`) is a genuinely good panel simulator
@@ -107,41 +108,116 @@ this one.**
 
 ---
 
-## Tier B — a real-frame corpus (highest value, and time-sensitive)
+## Tier B — a real-frame corpus
 
-**Effort: small to capture, small to assert. Value: very high.**
+**Effort: small per frame, spread over months. Value: very high.**
 
-This project is fundamentally a parser of LCD frames, and it already has the
-capture path built: `GET /display/history` returns
-`[{ts, text}, …]` straight from `lcd.snapshot()`, and `AquaConnectBackend`
-keeps `_last_raw` for debug.
+This project is fundamentally a parser of LCD text, and the capture path
+already exists: `GET /display/history` returns `[{ts, text}, …]` straight
+from `lcd.snapshot()`, and `AquaConnectBackend` keeps `_last_raw`.
 
-So the corpus is a `curl` away from the live system:
+A corpus entry pairs a real frame with what parsing it should produce:
 
-```
-sidecar/tests/frames/
-  idle_scroll_pool_mode.txt
-  idle_scroll_spa_mode.txt
-  heater_setpoint_pool_85.txt
-  vsp_slot_selection_window.txt
-  superchlor_countdown.txt
-  fault_check_system_inspect_cell.txt
-  ...
+```jsonl
+{"name": "superchlor_countdown", "text": "Super Chlorinate  12:34 remaining",
+ "expect": {"super_chlor_remaining_s": 45240},
+ "captured": "2026-08-30", "note": "while SC actively running"}
 ```
 
-Then the tests are just: `parse_ac_scroll(frame) == expected_dict`. Fast,
-hermetic, no hardware, and they catch precisely the class of bug that
-actually occurs here.
+One appendable `frames.jsonl`, one test that iterates it asserting
+`parse_ac_scroll(text) == expect`. Fast, hermetic, no hardware.
 
-**Why this is time-sensitive:** capturing real frames requires a working
-panel. Doing it now is a `curl` and a commit. Doing it after a hardware
-change, a move, or a failed AquaConnect box is impossible — and every parser
-regression after that point becomes guesswork. This is the cheapest,
-most-perishable win available.
+### Why this can't be done in one sitting
 
-Worth capturing deliberately: each idle-scroll variant, each menu screen the
-navigator visits, both VSP formats, the startup window, a fault frame, and
-anything with WBON markup.
+The reason to start early is **not** that the hardware might disappear —
+that's possible but not imminent, and it's the wrong way to think about it.
+The real constraint is that **many frames only exist under conditions you
+have to wait for or deliberately create:**
+
+| Frame | When it appears |
+|---|---|
+| Super Chlorinate countdown | Only while SC is running |
+| `Check System` / `Inspect Cell` fault | Only during an actual fault |
+| VSP slot-selection window | Only in the ~5–10 s after FILTER off→on |
+| Startup delay (`St dly`) | Only while the pump is spinning up |
+| Spa-mode scroll variants | Only while in spa mode |
+| Heater actively firing | Only while calling for heat |
+| **Freeze protection** | **Only in cold weather** |
+| Low/high salt warnings | Only at those salt levels |
+
+You cannot capture a freeze-protection frame in August, and you cannot
+convincingly invent one — the exact text is what the parser matches on, and
+guessing it produces a test that passes against fiction. A complete corpus
+**accrues over seasons**, which is the actual argument for starting now.
+
+> **How the rare ones actually get caught.** Sampling `/display/history`
+> could never deliver this — it is a `deque(maxlen=60)`, so a fault at 3 a.m.
+> ages out long before anyone runs a harvest. Instead the sidecar keeps a
+> **shape ledger**: every frame is reduced to a shape, and one never seen
+> before is recorded with an example of its text
+> (`_note_frame_shape`, served at `/display/shapes`). It survives the ring and
+> restarts, so nobody has to be present when a rare frame appears. That is
+> what makes "accrues over months" true rather than aspirational.
+
+This has already bitten us. The Super Chlorinate OFF bug (0.8.6) was
+precisely a frame that only appears while the countdown is running: the
+`HH:MM remaining` text wasn't recognised as "on", so OFF silently sent no
+keypress. A corpus frame captured during a countdown would have caught it
+before it shipped.
+
+### What's actually needed
+
+1. **A harvest script** — `scripts/harvest_frames.py`: pull
+   `/display/history`, normalise, drop anything already in the corpus, and
+   print only genuinely new frame *shapes* for labelling. Without dedupe this
+   is drudgery and won't get done; with it, harvesting is a minute's work.
+2. **The corpus file** — `sidecar/tests/frames.jsonl`, append-only.
+3. **A coverage report** — the same script listing which known conditions are
+   still uncaptured, so "what's missing" is visible rather than remembered.
+4. **The parser test** — one loop over the corpus.
+
+The workflow that follows is: leave the sidecar running as it already does,
+harvest occasionally, and deliberately provoke the cheap conditions (toggle
+FILTER to catch the VSP window, run SC for a minute, switch to spa mode).
+The rare ones — faults, freeze protection — get picked up whenever they
+happen naturally, which is exactly why the harvest step needs to be low
+friction.
+
+### Seeding it from bugs we've already had
+
+The CHANGELOG is a list of **confirmed reachable failure states**, which is
+much stronger evidence than invented test cases. Writing one test per
+historical bug is probably the highest-yield hour available here:
+
+| Bug | Version | What would have caught it |
+|---|---|---|
+| Super Chlorinate OFF was a silent no-op — matched `>On<` markup that's stripped upstream | 0.8.3 | Parser test on a real captured frame |
+| SC OFF failed while counting down — `HH:MM remaining` not recognised as "on" | 0.8.6 | Corpus frame captured *during* a countdown |
+| Setting spa chlorinator % overwrote the **pool's** cached value | 0.8.9 | Pure unit test on the state-write |
+| Hitting a hardware floor/ceiling recorded the *requested* value, not the clamped one | 0.8.9 | `SimPanel` write test |
+| Heater setpoint write threw `KeyError: 'was_off'` on the success path | 0.8.5 | Unit test of the write's return shape |
+| Salt reading clamped at 1000 PPM by the HAP default | — | Value-mapping unit test |
+| Two different VSP slot text formats | — | Two corpus frames |
+| `/status` self-deadlocked on `state_lock`, taking every tile offline | — | Concurrency test (see below) |
+| "Active Heat" tile name stuck showing the wrong body | 0.9.0 | **Nothing** — HAP-side behaviour; correctly out of scope |
+
+The pattern is worth noting: almost every one is a parser or
+state-recording bug. That is the evidence for Tier A + Tier B being the
+priority, rather than a judgement call.
+
+### The deadlock class deserves its own tests
+
+The `/status` self-deadlock — it called `_wedge_cooling_down()` while
+already holding the non-reentrant `state_lock` — was the most severe outage
+this project has had: every accessory unresponsive, not one wrong reading.
+That class is testable without hardware:
+
+- Hit `/status` from several threads via Flask's test client and assert it
+  always returns.
+- Assert no route handler acquires `state_lock` reentrantly (a debug wrapper
+  that records the owning thread makes this a direct assertion).
+
+Cheap, and it covers the failure mode with the worst blast radius.
 
 ---
 
@@ -288,13 +364,17 @@ current LTS set).
 
 ## Suggested order
 
+> These are folded into [`backlog.md`](backlog.md) alongside the non-testing
+> work; that page is the master ordering.
+
 Ordered by value-per-effort, not by tier letter:
 
 1. **CI running `build` + `lint`.** Hours. Catches real breakage today.
 2. **The `parse_ac_scroll` extraction refactor** (Tier A). Small, unlocks
    everything else.
-3. **Capture the frame corpus** (Tier B). Do this while the hardware is
-   live — it's the perishable one.
+3. **Start harvesting the frame corpus** (Tier B). Begin early not because
+   the hardware may vanish, but because some frames only appear seasonally
+   or during rare conditions — the corpus accrues over months.
 4. **Pure-function tests** over the corpus + LED decode (Tier A/B). This is
    where most of the real bug-catching value lands.
 5. **The `/status` contract fixture** (Tier D). Small, closes a live drift.

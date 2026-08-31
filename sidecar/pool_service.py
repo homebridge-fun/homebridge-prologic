@@ -102,6 +102,19 @@ class _AlertBuffer(logging.Handler):
         except Exception:
             pass
 
+    def resolve(self, needle: str) -> int:
+        """Drop alerts whose message contains `needle`; returns how many.
+
+        Alerts otherwise only age out on a timer, so one describing a
+        condition that has SINCE RESOLVED keeps presenting as current for the
+        rest of the window. Call this the moment the underlying condition
+        clears, so the banner reflects now rather than the recent past.
+        """
+        with self._lock:
+            before = len(self._buf)
+            self._buf = [e for e in self._buf if needle not in e['msg']]
+            return before - len(self._buf)
+
     def recent(self, window_s=None, limit=None):
         with self._lock:
             items = list(self._buf)
@@ -227,6 +240,10 @@ _wedge_lock = threading.Lock()
 # packet but fast enough to reflect a real outage. Reachability-driven and
 # self-clearing; there is no power-cycle cooldown for direct serial.
 _BRIDGE_OFFLINE_MISSES = 3
+# Alert text for that offline condition. Shared by the raise site and the
+# resolve-on-reconnect call so the two can never drift apart -- a reworded
+# message that no longer matches would silently stop clearing.
+_BRIDGE_OFFLINE_ALERT = 'RS-485 bridge unreachable'
 
 
 # Key code for the canary output (AUX2 = 0B; confirmed inert on this system).
@@ -554,6 +571,205 @@ _super_chlor_last_seen: Optional[float] = None
 _super_chlor_lock = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# Novel LCD frame-shape ledger
+#
+# The frame corpus (docs/testing-strategy.md, Tier B) needs frames actually
+# seen on hardware. Sampling /display/history cannot deliver that: it is a
+# deque(maxlen=60), so a rare frame -- a real fault, freeze protection, the
+# 5-10s VSP window -- has aged out long before anyone runs a harvest. Those
+# are exactly the frames worth having.
+#
+# So record novelty as it happens instead. Every frame is reduced to a SHAPE
+# (digits tokenised) and checked against a set; a shape never seen before is
+# remembered with one example of its text. After warmup this is a set lookup
+# per frame and no writes at all -- the panel only has a few dozen shapes.
+#
+# This runs on the frame path, so it is written to be unable to disrupt it:
+# every entry point is exception-guarded, the set is capped, and persistence
+# is throttled and best-effort.
+# ---------------------------------------------------------------------------
+_FRAME_SHAPES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'frame_shapes.json')
+# The panel produces on the order of dozens of shapes. The cap only exists so
+# that a frame format we fail to normalise can't grow this without bound.
+_FRAME_SHAPES_MAX = 500
+_FRAME_SHAPES_FLUSH_S = 60.0
+
+_frame_shapes: dict = {}          # shape -> {first_seen, last_seen, count, text}
+_frame_shapes_lock = threading.Lock()
+_frame_shapes_dirty = False
+_frame_shapes_last_flush = 0.0
+
+# Control characters that are transport artifacts, not panel content: the
+# serial path appends a trailing NUL to some frames and not others, which
+# would otherwise split one logical frame into two shapes. Tab/newline/CR
+# are excluded -- the LCD is two lines and \n separates them.
+_SHAPE_CTRL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+_SHAPE_TAGS = re.compile(r'<[^>]+>')
+_SHAPE_DEGREE = re.compile(r'[_\u00b0]\s*F\b')
+# The clock's colon blinks, so the idle screen alternates between '12:49P' and
+# '12 49P' -- the same screen, and the highest-traffic one on the panel.
+_SHAPE_CLOCK = re.compile(r'\b(\d{1,2})[: ](\d{2})\s*([AP])\b')
+# The day name is instance data the sidecar never reads -- the clock screen is
+# deliberately not exposed -- so left alone it would accumulate seven copies of
+# the panel's highest-traffic screen over a week.
+#
+# The rule this follows: tokenise values the parser does not discriminate on,
+# and keep distinct anything it must tell apart. Enabled/Disabled, Flow/No
+# Flow, Auto Control/Manual Off and AM/PM all stay separate shapes on purpose
+# -- reading those words IS the parser's job, and collapsing them would hide
+# whether we handle both states. Merging one of those is exactly how the 0.8.6
+# Super Chlorinate bug stayed invisible.
+_SHAPE_DAY = re.compile(
+    r'\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b')
+# A leading minus is part of the reading, not part of the screen. The salt cell
+# reverses polarity to self-clean, so its diagnostic screen alternates between
+# '-25.31V -5.81A' and the positive form -- one screen, two shapes. Same for a
+# sub-zero air temperature in winter. Only a '-' at a token boundary that is
+# followed by a digit counts, so 'T1-all', '--- Off ---' and any numeric range
+# are untouched.
+_SHAPE_SIGN = re.compile(r'(^|\s)-(?=\d)')
+_SHAPE_DIGITS = re.compile(r'\d+')
+_SHAPE_WS = re.compile(r'\s+')
+
+
+def frame_shape(text: str) -> str:
+    """Reduce a frame to its dedupe key: normalised, then digits tokenised.
+
+    'Pool Temp 78' and 'Pool Temp 79' are the same shape, so only the first is
+    novel. Mirrors shape() in scripts/harvest_frames.py.
+
+    Normalisation is delegated to _norm rather than reimplemented -- it already
+    handles the trailing NUL, the LCD cursor-position control bytes, and the
+    masked highlight bytes that decorate the front of a fresh frame. An earlier
+    version duplicated a weaker version of this and split every frame in two
+    over a trailing NUL.
+    """
+    t = _SHAPE_TAGS.sub('', text or '')
+    t = _norm(t)
+    # The degree symbol decodes as '_' on some frames and '°' on others, which
+    # otherwise splits one screen into two shapes -- observed on hardware for
+    # the sensor and cell-diagnostic screens.
+    t = _SHAPE_DEGREE.sub('\u00b0F', t)
+    t = _SHAPE_CLOCK.sub(r'\1:\2\3', t)
+    t = _SHAPE_DAY.sub('<DAY>', t)
+    t = _SHAPE_SIGN.sub(r'\1', t)
+    return _SHAPE_DIGITS.sub('<N>', t)
+
+
+def _save_frame_shapes() -> None:
+    """Best-effort atomic write. Never raises -- a full disk must not stop the
+    sidecar reading its panel."""
+    global _frame_shapes_dirty, _frame_shapes_last_flush
+    try:
+        with _frame_shapes_lock:
+            if not _frame_shapes_dirty:
+                return
+            snap = {k: dict(v) for k, v in _frame_shapes.items()}
+            _frame_shapes_dirty = False
+            _frame_shapes_last_flush = time.time()
+        tmp = _FRAME_SHAPES_PATH + '.tmp'
+        with open(tmp, 'w') as fh:
+            json.dump(snap, fh, indent=1, sort_keys=True)
+        os.replace(tmp, _FRAME_SHAPES_PATH)     # atomic
+    except Exception as e:                       # noqa: BLE001
+        log.debug('frame-shape ledger save failed (continuing): %s', e)
+
+
+def _load_frame_shapes() -> None:
+    """Restore across restarts, so a shape seen last week isn't 'novel' again."""
+    try:
+        with open(_FRAME_SHAPES_PATH) as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            # Re-key through the current normaliser and merge. A ledger written
+            # before a normalisation fix holds shapes that no longer match what
+            # we would compute now (e.g. one split in two by a trailing NUL);
+            # without this they would linger as permanent phantom entries.
+            merged: dict = {}
+            for old_key, entry in data.items():
+                key = frame_shape(entry.get('text') or old_key)
+                if not key:
+                    continue
+                cur = merged.get(key)
+                if cur is None:
+                    merged[key] = dict(entry, text=_SHAPE_CTRL.sub(
+                        '', entry.get('text', '')))
+                else:
+                    cur['count'] = cur.get('count', 0) + entry.get('count', 0)
+                    cur['first_seen'] = min(cur.get('first_seen', 0),
+                                            entry.get('first_seen', 0))
+                    cur['last_seen'] = max(cur.get('last_seen', 0),
+                                           entry.get('last_seen', 0))
+            with _frame_shapes_lock:
+                _frame_shapes.update(merged)
+            if len(merged) != len(data):
+                log.info('Merged %d stored frame shapes into %d after '
+                         're-normalising', len(data), len(merged))
+            log.info('Restored %d known LCD frame shapes from %s',
+                     len(merged), _FRAME_SHAPES_PATH)
+    except FileNotFoundError:
+        pass
+    except Exception as e:                       # noqa: BLE001
+        log.warning('Could not read frame-shape ledger (starting fresh): %s', e)
+
+
+def _note_frame_shape(text: str) -> None:
+    """Record this frame's shape, remembering the first example of a new one.
+
+    Called on EVERY frame. Deliberately cheap and total: two regex subs, a dict
+    lookup, and -- only when the shape is genuinely new -- a throttled write.
+    """
+    global _frame_shapes_dirty
+    try:
+        if not text:
+            return
+        shape = frame_shape(text)
+        if not shape:
+            return
+        now = time.time()
+        novel = False
+        with _frame_shapes_lock:
+            entry = _frame_shapes.get(shape)
+            if entry is None:
+                if len(_frame_shapes) >= _FRAME_SHAPES_MAX:
+                    # Evict the least-seen shape rather than refuse the new one.
+                    # Mis-decoded serial noise arrives as an endless stream of
+                    # single-sighting shapes; refusing new entries would let it
+                    # fill the ledger and lock out real frames permanently,
+                    # which is the worse failure.
+                    victim = min(_frame_shapes,
+                                 key=lambda k: _frame_shapes[k].get('count', 0))
+                    if _frame_shapes[victim].get('count', 0) > 1:
+                        return      # everything retained is corroborated; keep it
+                    del _frame_shapes[victim]
+                _frame_shapes[shape] = {'first_seen': now, 'last_seen': now,
+                                        'count': 1,
+                                        # Strip transport artifacts so corpus
+                                        # fixtures are deterministic -- which raw
+                                        # variant arrived first is arbitrary.
+                                        'text': _SHAPE_CTRL.sub('', text)}
+                _frame_shapes_dirty = True
+                novel = True
+            else:
+                entry['last_seen'] = now
+                entry['count'] = entry.get('count', 0) + 1
+                # Seen-again bookkeeping is in-memory only between flushes;
+                # persisting every frame would be pointless SD churn.
+                if now - _frame_shapes_last_flush >= _FRAME_SHAPES_FLUSH_S:
+                    _frame_shapes_dirty = True
+                    novel = True
+        if novel:
+            if len(_frame_shapes) <= _FRAME_SHAPES_MAX:
+                log.debug('new LCD frame shape: %s', shape)
+            _save_frame_shapes()
+    except Exception as e:                       # noqa: BLE001
+        # This must never disrupt frame processing. It is only test-corpus
+        # bookkeeping -- losing a shape is immaterial, losing frames is not.
+        log.debug('frame-shape ledger error (ignored): %s', e)
+
+
 def _note_super_chlor_frame(text: str) -> None:
     """Called on every captured LCD frame (any backend). If it's the Super
     Chlorinate countdown, mark it running now and record the HH:MM shown."""
@@ -716,6 +932,33 @@ LIGHT_PROGRAMS_SPA = [
 ]
 
 LIGHT_PROGRAMS_BY_BODY = {'pool': LIGHT_PROGRAMS_POOL, 'spa': LIGHT_PROGRAMS_SPA}
+
+# Supported light standards. Both are driven purely by POWER-CYCLING the
+# relay, which is the only mechanism a ProLogic/AquaLogic panel offers.
+#
+# NOT supported: Hayward's OmniDirect mode (networked ColorLogic lighting with
+# instant colour selection, dimming and show-speed control). That is an
+# OmniLogic-platform feature with a different wire protocol -- it isn't a
+# limitation we can configure around on this hardware.
+#
+#   relative -> each off/on pulse advances +1 from wherever the light is now,
+#               with no absolute addressing, so position must be tracked.
+#   absolute -> from a full reset, N pulses selects program N directly.
+LIGHT_TYPES = {
+    'colorlogic': {
+        'label': 'Hayward ColorLogic / UCL',
+        'mechanic': 'relative',
+        'offset': 0,
+        'programs': LIGHT_PROGRAMS_POOL,
+    },
+    'intellibrite': {
+        'label': 'Pentair IntelliBrite 5G',
+        'mechanic': 'absolute',
+        # Calibrated on hardware: program N needs count N+1.
+        'offset': 1,
+        'programs': LIGHT_PROGRAMS_SPA,
+    },
+}
 # Back-compat default (pool) for any caller that doesn't specify a body.
 LIGHT_PROGRAMS = LIGHT_PROGRAMS_POOL
 
@@ -727,6 +970,8 @@ def _light_programs(body: str):
 # Which circuit each body's programmable light is on (pool light = LIGHTS,
 # spa light = AUX_1). Power-cycle timing + count offset are calibratable and
 # persisted in backend.json (key 'light_config').
+# Derived from LIGHT_CFG_BY_BODY by _apply_light_types(); kept as plain dicts
+# because they are read directly in a dozen places.
 LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
 # The two lights select programs DIFFERENTLY (see docs/colorlogic-research.md):
 #   spa  = Pentair IntelliBrite -> ABSOLUTE (off/on N times = program N).
@@ -734,6 +979,27 @@ LIGHT_CIRCUITS = {'pool': 'LIGHTS', 'spa': 'AUX_1'}
 #          with NO absolute color reset — so we track position and step
 #          (target - current) mod count.
 LIGHT_MECHANIC = {'pool': 'relative', 'spa': 'absolute'}
+
+
+def _apply_light_types() -> None:
+    """Recompute the per-body lookups from LIGHT_CFG_BY_BODY.
+
+    Call after anything changes a body's light `type` or `circuit` -- startup
+    restore from backend.json, or a config push from the plugin. Unknown types
+    fall back to the previous value rather than crashing the sidecar, since a
+    bad config value must not take the whole plugin offline.
+    """
+    for body, cfg in LIGHT_CFG_BY_BODY.items():
+        spec = LIGHT_TYPES.get(cfg.get('type'))
+        if spec is None:
+            log.warning('unknown light type %r for %s; keeping %s',
+                        cfg.get('type'), body, LIGHT_MECHANIC.get(body))
+            continue
+        LIGHT_MECHANIC[body] = spec['mechanic']
+        LIGHT_PROGRAMS_BY_BODY[body] = spec['programs']
+        circuit = cfg.get('circuit')
+        if circuit:
+            LIGHT_CIRCUITS[body] = circuit
 
 
 def _light_mechanic(body: str) -> str:
@@ -747,17 +1013,22 @@ POOL_RESYNC_OFF_S = 12.0
 # IntelliBrite) lights use different reset/pulse timing, so calibrating one must
 # not disturb the other. Defaults; overridden by backend.json 'light_config'.
 _LIGHT_CFG_DEFAULTS = {
+    'type': 'colorlogic',   # key into LIGHT_TYPES; sets mechanic/offset/programs
+    'circuit': 'LIGHTS',    # which relay this light is wired to
     'offset': 0,        # daemon restore-count = program_number + offset
     'reset_ms': 2000,   # full-off hold that resets the light to baseline (~2s)
     'off_ms': 120,      # rapid off pulse between restores
     'on_ms': 120,       # rapid on dwell between restores
     'local': True,      # LOCAL_WIRED frames (replicate the physical keypad)
 }
+# Defaults describe the maintainer's installation. They are only DEFAULTS now
+# -- both the standard and the relay are configurable per body from the
+# Homebridge UI, because which light is on which relay varies per install.
 LIGHT_CFG_BY_BODY = {
-    'pool': dict(_LIGHT_CFG_DEFAULTS),
-    # Spa (Pentair absolute) is calibrated: program N needs count N+1, so the
-    # offset is a fixed +1. Baked in here (no longer a UI knob).
-    'spa':  dict(_LIGHT_CFG_DEFAULTS, offset=1),
+    'pool': dict(_LIGHT_CFG_DEFAULTS, type='colorlogic',
+                 circuit='LIGHTS', offset=0),
+    'spa':  dict(_LIGHT_CFG_DEFAULTS, type='intellibrite',
+                 circuit='AUX_1', offset=1),
 }
 # Back-compat alias (pool) for any caller not yet body-aware.
 LIGHT_CFG = LIGHT_CFG_BY_BODY['pool']
@@ -849,6 +1120,11 @@ def _norm(text: str) -> str:
 # then set aq._web = lcd so every frame lands here instead.
 # ---------------------------------------------------------------------------
 
+# The panel is a 20x2 character display. Hardware sends both lines packed
+# into one 40-character string with no separator.
+_LCD_COLS = 20
+
+
 class LcdCapture:
     def __init__(self, maxhist: int = 60, hub: 'Optional[FrameHub]' = None):
         self._lock = threading.Lock()
@@ -872,6 +1148,9 @@ class LcdCapture:
         # (see _note_super_chlor_frame's docstring for why this is the only
         # place Super Chlorinate can be passively detected).
         _note_super_chlor_frame(text)
+        # Record novel frame shapes for the test corpus (see the ledger above).
+        # Exception-guarded internally, so it cannot disturb frame processing.
+        _note_frame_shape(text)
         self._event.set()
 
     # aqualogic may call other no-op methods on its _web object; absorb them.
@@ -884,17 +1163,33 @@ class LcdCapture:
         return self._event.wait(timeout)
 
     def lines(self) -> Tuple[str, str]:
-        """Return current (line1, line2) from the latest LCD frame.
+        """Return the current frame as the panel lays it out: two fixed lines.
 
-        Kept for the simulation path (which emits a real newline). On hardware
-        there is no newline so l2 is empty — navigator code must use text().
+        The physical display is 20x2 and hardware sends it as one 40-character
+        string with no newline, so splitting on '\n' (which only simulation
+        emits) put all 40 characters on line 1. Column positions are preserved
+        deliberately -- NOT stripped -- because this feeds the cockpit's panel
+        mirror, and blanking is how the panel indicates an editable field.
+
+        Strip the padding and a blinking value's disappearance reflows
+        everything to its right, which is disorienting precisely when you are
+        navigating menus and need the display to sit still. Use text() for
+        matching; this is for showing.
         """
         with self._lock:
             text = self._latest or ''
-        parts = text.split('\n', 1)
-        l1 = parts[0].strip()
-        l2 = parts[1].strip() if len(parts) > 1 else ''
-        return l1, l2
+        # Split BEFORE cleaning: the newline is itself a control byte, so
+        # blanking control bytes first would destroy the simulation separator
+        # and send both lines through the positional split.
+        if '\n' in text:                      # simulation emits real lines
+            l1, l2 = text.split('\n', 1)
+        else:
+            l1, l2 = text[:_LCD_COLS], text[_LCD_COLS:]
+        # Remaining control bytes would render as garbage, but replacing them
+        # with spaces keeps every following column where it belongs.
+        clean = lambda ln: ''.join(  # noqa: E731
+            c if ord(c) >= 0x20 else ' ' for c in ln).ljust(_LCD_COLS)
+        return clean(l1), clean(l2)
 
     def text(self) -> str:
         """Return the latest LCD frame normalized to a single matchable string."""
@@ -1138,7 +1433,7 @@ class AquaConnectBackend:
     overlaps a key-send (two concurrent POSTs confuse the box).
     """
 
-    def __init__(self, host: str = '192.168.50.100', poll_s: float = 3.0):
+    def __init__(self, host: str, poll_s: float = 3.0):
         self._host = host
         self.lcd = LcdCapture(hub=_get_hub('aquaconnect'))
         self._http_lock = threading.Lock()   # serializes all socket access
@@ -1635,6 +1930,13 @@ class RS485BridgeBackend:
                     self._apply(snap)
                     if snap.get('connected') and state.bridge_wedged:
                         _record_command_success()   # clears the offline flag
+                        # The alert says "self-clears on reconnect" -- make that
+                        # true of the alert too, not just the state flag. Without
+                        # this the banner keeps showing a resolved outage until
+                        # its 10-minute window expires.
+                        n = _alert_buffer.resolve(_BRIDGE_OFFLINE_ALERT)
+                        log.info('RS-485 bridge reachable again — cleared %d '
+                                 'offline alert(s)', n)
                     with self._frame_cond:
                         self._frame_cond.notify_all()
                 else:
@@ -1645,8 +1947,9 @@ class RS485BridgeBackend:
                         with state_lock:
                             state.bridge_wedged = True
                             state.wedge_detected_at = None   # NO power-cycle cooldown
-                        log.warning('RS-485 bridge unreachable (%d consecutive polls) — '
-                                    'marking offline; self-clears on reconnect', fails)
+                        log.warning('%s (%d consecutive polls) — marking offline; '
+                                    'self-clears on reconnect',
+                                    _BRIDGE_OFFLINE_ALERT, fails)
             except Exception as e:  # noqa: BLE001
                 # A malformed snapshot must NEVER kill this thread — a dead poll
                 # loop was what left the flag stuck with no way to self-heal.
@@ -1807,46 +2110,85 @@ def _current_faults() -> list:
         return sorted(p for p, ts in _active_faults.items() if ts >= cutoff)
 
 
+def parse_ac_scroll(lcd: str, valve_mode: Optional[str] = None) -> dict:
+    """Extract every reading an AquaConnect scroll/menu frame carries.
+
+    PURE: no globals, no locks, no side effects. This is the half of the old
+    `_apply_ac_scroll_to_state` that can be tested directly — feed it a real
+    captured frame, assert on the dict. `_apply_ac_scroll_to_state` below is
+    now just the part that folds the result into shared state.
+
+    `valve_mode` is needed because an unprefixed heater line ("Heater1 Auto")
+    refers to whichever body is currently active; pass `state.valve_mode`.
+    Falls back to 'pool' when unknown, matching the previous inline behaviour.
+
+    Returns a dict of PoolState field -> value containing ONLY the fields this
+    frame actually spoke to, so an empty dict means "this frame told us
+    nothing". `vsp_slot_pct`, when present, is a {slot: pct} mapping intended
+    to be MERGED into the existing dict rather than replace it.
+    """
+    out: dict = {}
+
+    for field, pat in _AC_SCROLL_PATTERNS:
+        m = pat.search(lcd)
+        if m:
+            out[field] = int(m.group(1))
+
+    su = _pump_startup_from_lcd(lcd)
+    if su is not None:
+        out['pump_startup'] = su
+
+    hm = _AC_HEATER_STATE_RE.search(lcd)
+    if hm:
+        prefix = (hm.group(1) or '').strip().lower()
+        which = prefix or valve_mode or 'pool'
+        enabled = 'auto' in hm.group(2).lower()
+        out['spa_heater_enabled' if which == 'spa' else 'pool_heater_enabled'] = enabled
+
+    # Menu-only values captured passively when their frame is on screen. Note
+    # this runs AFTER the heater-state branch and may overwrite its result —
+    # a visible setpoint implies the heater is enabled. Order is load-bearing.
+    sm = _AC_HEATER_SETPOINT_RE.search(lcd)
+    if sm:
+        sp = int(sm.group(2))
+        if 40 <= sp <= 110:   # sanity-bound a real setpoint
+            if sm.group(1).lower() == 'spa':
+                out['spa_setpoint_f'] = sp
+                out['spa_heater_enabled'] = True
+            else:
+                out['pool_setpoint_f'] = sp
+                out['pool_heater_enabled'] = True
+
+    vm = _AC_VSP_SLOT_RE.search(lcd)
+    if vm:
+        pct = int(vm.group(2))
+        if 0 <= pct <= 100:
+            out['vsp_slot_pct'] = {int(vm.group(1)): pct}
+
+    return out
+
+
+# Fields that do NOT bump state.last_update on their own. `pump_startup` was
+# set without touching last_update in the original inline version; that is
+# preserved here deliberately so this refactor changes no behaviour. It looks
+# like an oversight rather than intent — see docs/backlog.md before "fixing".
+_SCROLL_NO_TOUCH = frozenset({'pump_startup'})
+
+
 def _apply_ac_scroll_to_state(lcd: str) -> None:
     """Pull numeric readings + heater enable out of a scroll/menu LCD screen."""
     _check_faults(lcd)
     with state_lock:
-        for field, pat in _AC_SCROLL_PATTERNS:
-            m = pat.search(lcd)
-            if m:
-                setattr(state, field, int(m.group(1)))
-                state.last_update = time.time()
-        su = _pump_startup_from_lcd(lcd)
-        if su is not None:
-            state.pump_startup = su
-        hm = _AC_HEATER_STATE_RE.search(lcd)
-        if hm:
-            prefix = (hm.group(1) or '').strip().lower()
-            which = prefix or state.valve_mode or 'pool'
-            enabled = 'auto' in hm.group(2).lower()
-            if which == 'spa':
-                state.spa_heater_enabled = enabled
-            else:
-                state.pool_heater_enabled = enabled
+        parsed = parse_ac_scroll(lcd, state.valve_mode)
+        if not parsed:
+            return
+        slots = parsed.pop('vsp_slot_pct', None)
+        for field, value in parsed.items():
+            setattr(state, field, value)
+        if slots:
+            state.vsp_slot_pct.update(slots)
+        if (set(parsed) - _SCROLL_NO_TOUCH) or slots:
             state.last_update = time.time()
-        # Menu-only values captured passively when their frame is on screen.
-        sm = _AC_HEATER_SETPOINT_RE.search(lcd)
-        if sm:
-            sp = int(sm.group(2))
-            if 40 <= sp <= 110:   # sanity-bound a real setpoint
-                if sm.group(1).lower() == 'spa':
-                    state.spa_setpoint_f = sp
-                    state.spa_heater_enabled = True
-                else:
-                    state.pool_setpoint_f = sp
-                    state.pool_heater_enabled = True
-                state.last_update = time.time()
-        vm = _AC_VSP_SLOT_RE.search(lcd)
-        if vm:
-            pct = int(vm.group(2))
-            if 0 <= pct <= 100:
-                state.vsp_slot_pct[int(vm.group(1))] = pct
-                state.last_update = time.time()
 
 
 def _apply_ac_led_to_state(led: dict) -> None:
@@ -2578,7 +2920,18 @@ class MenuNavigator:
                         'Heater1', 'Filter Speed', 'Filter On')
 
     def _is_status(self, norm: str) -> bool:
-        return any(norm.startswith(p) for p in self._STATUS_PREFIXES)
+        """Is this frame part of the idle status cycle (as opposed to a menu)?
+
+        The Super Chlorinate COUNTDOWN is a status-cycle item, but a bare
+        'Super Chlorinate' prefix cannot go in _STATUS_PREFIXES: the Settings
+        menu has its own 'Super Chlorinate 24 hours / On / Off' screens, and
+        treating those as status would stop real drift being detected and
+        strand the panel in a menu. Only the 'HH:MM remaining' form is on the
+        idle cycle, so match that shape specifically.
+        """
+        if any(norm.startswith(p) for p in self._STATUS_PREFIXES):
+            return True
+        return bool(_SUPERCHLOR_RE.search(norm or ''))
 
     def fast_exit(self) -> None:
         """Return to the Default (status-cycle) display via MENU until 'Default Menu'.
@@ -3180,6 +3533,14 @@ class MenuNavigator:
         Stops on a full cycle (a frame repeats) or the press budget. Stays in
         the status display; if a press drifts into a menu, exits cleanly.
 
+        DO NOT call this to refresh a reading after a write. Sweeping the
+        scroll on demand is what used to lock up the AquaConnect box: the
+        extra keypresses land while the panel is still settling from the write
+        and wedge it, which costs a power-cycle to clear. It is safe where it
+        is used -- at startup and on an explicit Refresh, neither of which
+        follows a write. Waiting out the ~6s-per-item natural cycle for a
+        value to refresh is the correct trade.
+
         Returns the frames seen + total elapsed, so a caller/tester can tell
         whether RIGHT is actually advancing the scroll (fast) vs the press doing
         nothing and us just riding the ~6s natural cycle (slow).
@@ -3334,13 +3695,32 @@ def get_status() -> Response:
 @app.route('/display')
 def get_display() -> Response:
     l1, l2 = lcd.lines()
-    return jsonify({'line1': l1, 'line2': l2})
+    # `raw` is the untouched frame; line1/line2 preserve column positions so a
+    # blinking field blanks in place instead of reflowing the rest of the row.
+    with lcd._lock:                       # noqa: SLF001 - same module
+        raw = lcd._latest or ''
+    return jsonify({'line1': l1, 'line2': l2, 'raw': raw, 'cols': _LCD_COLS})
 
 
 @app.route('/display/history')
 def get_display_history() -> Response:
     entries = [{'ts': ts, 'text': t} for ts, t in lcd.snapshot()]
     return jsonify({'history': entries})
+
+
+@app.route('/display/shapes')
+def get_display_shapes() -> Response:
+    """Every distinct LCD frame shape this sidecar has ever seen.
+
+    Unlike /display/history (a 60-frame ring), this survives both the ring and
+    a restart, so a frame the panel showed at 3am is still here in the morning.
+    scripts/harvest_frames.py reads this to build the test corpus.
+    """
+    with _frame_shapes_lock:
+        shapes = [dict(v, shape=k) for k, v in _frame_shapes.items()]
+    shapes.sort(key=lambda e: e.get('first_seen', 0))
+    return jsonify({'shapes': shapes, 'count': len(shapes),
+                    'capped_at': _FRAME_SHAPES_MAX})
 
 
 @app.route('/backend')
@@ -4102,7 +4482,16 @@ def set_ui_config() -> Response:
     """
     Mirror the Homebridge plugin's UI config so the web cockpit shows the same
     switches and labels as HomeKit.  Body:
-        {"circuits": ["LIGHTS", "AUX_1", ...], "labels": {"AUX_1": "Waterfall"}}
+        {"circuits": ["LIGHTS", "AUX_1", ...],
+         "labels": {"AUX_1": "Waterfall"},
+         "lights": {"pool": {"type": "colorlogic", "circuit": "LIGHTS"},
+                    "spa":  {"type": "intellibrite", "circuit": "AUX_1"}}}
+
+    `lights` says which light STANDARD is on which RELAY, which varies per
+    installation -- it used to be hardcoded to the maintainer's wiring.
+    Unknown type names are rejected rather than silently ignored, so a typo in
+    the Homebridge UI surfaces instead of quietly leaving the old behaviour.
+
     Best-effort: stored in-memory and surfaced via /status.
     """
     global _ui_circuits, _ui_circuit_labels
@@ -4113,6 +4502,34 @@ def set_ui_config() -> Response:
         _ui_circuits = [str(c).upper() for c in circuits]
     if isinstance(labels, dict):
         _ui_circuit_labels = {str(k).upper(): str(v) for k, v in labels.items()}
+
+    lights = body.get('lights')
+    light_changed = False
+    if isinstance(lights, dict):
+        for b in ('pool', 'spa'):
+            spec = lights.get(b)
+            if not isinstance(spec, dict):
+                continue
+            ltype = spec.get('type')
+            if ltype is not None:
+                if ltype not in LIGHT_TYPES:
+                    return jsonify({'error': f'unknown light type {ltype!r}',
+                                    'supported': sorted(LIGHT_TYPES)}), 400
+                LIGHT_CFG_BY_BODY[b]['type'] = ltype
+                # The count offset is a property of the standard, not a
+                # per-install knob, so it follows the type.
+                LIGHT_CFG_BY_BODY[b]['offset'] = LIGHT_TYPES[ltype]['offset']
+                light_changed = True
+            circuit = spec.get('circuit')
+            if circuit:
+                LIGHT_CFG_BY_BODY[b]['circuit'] = str(circuit).upper()
+                light_changed = True
+    if light_changed:
+        _apply_light_types()
+        log.info('Light config updated: %s',
+                 {b: {'type': c.get('type'), 'circuit': c.get('circuit')}
+                  for b, c in LIGHT_CFG_BY_BODY.items()})
+
     # Persist so the config survives a sidecar restart (the plugin only re-pushes
     # on a Homebridge restart). Otherwise the cockpit falls back to panel-reported
     # circuits, which include the AUX2 canary.
@@ -4120,10 +4537,16 @@ def set_ui_config() -> Response:
         cfg = _load_backend_config()
         cfg['ui_circuits'] = _ui_circuits
         cfg['ui_circuit_labels'] = _ui_circuit_labels
+        if light_changed:
+            cfg['light_config'] = {b: dict(c) for b, c in LIGHT_CFG_BY_BODY.items()}
         _save_backend_config(cfg)
     except Exception as e:
         log.warning('Could not persist UI config: %s', e)
-    return jsonify({'ok': True, 'circuits': _ui_circuits, 'labels': _ui_circuit_labels})
+    return jsonify({'ok': True, 'circuits': _ui_circuits,
+                    'labels': _ui_circuit_labels,
+                    'lights': {b: {'type': c.get('type'), 'circuit': c.get('circuit'),
+                                   'mechanic': LIGHT_MECHANIC.get(b)}
+                               for b, c in LIGHT_CFG_BY_BODY.items()}})
 
 
 @app.route('/mode', methods=['POST'])
@@ -5706,8 +6129,10 @@ def main() -> None:
                         default='aquaconnect',
                         help='Navigation backend: aquaconnect (HTTP, default), '
                              'or rs485bridge (pad-Pi smart bridge over HTTP/Tailscale).')
-    parser.add_argument('--aquaconnect-host', default='192.168.50.100',
-                        help='AquaConnect box IP for --backend aquaconnect. Default 192.168.50.100.')
+    parser.add_argument('--aquaconnect-host', default=None,
+                        help='AquaConnect box IP for --backend aquaconnect. Required unless '
+                             'already persisted in backend.json. No default: guessing an '
+                             'address would silently talk to whatever device occupies it.')
     parser.add_argument('--rs485bridge-host', default=None,
                         help='Pad-Pi bridge host for --backend rs485bridge (e.g. its '
                              'tailnet IP or "pool").')
@@ -5757,18 +6182,22 @@ def main() -> None:
     # the old flat form {offset,reset_ms,...} is migrated onto BOTH bodies.
     lc = cfg.get('light_config')
     if isinstance(lc, dict):
-        keys = ('offset', 'reset_ms', 'off_ms', 'on_ms', 'local')
+        keys = ('type', 'circuit', 'offset', 'reset_ms', 'off_ms', 'on_ms', 'local')
         if 'pool' in lc or 'spa' in lc:                 # new per-body form
             for b in ('pool', 'spa'):
                 if isinstance(lc.get(b), dict):
                     for k in keys:
                         if k in lc[b]:
                             LIGHT_CFG_BY_BODY[b][k] = lc[b][k]
-        else:                                            # old flat form -> both
+        else:
+            # Old flat form applied one calibration to BOTH bodies. Timing keys
+            # only -- 'type'/'circuit' are per-light by definition, and copying
+            # one body's light standard onto the other would be wrong.
             for b in ('pool', 'spa'):
                 for k in keys:
-                    if k in lc:
+                    if k in lc and k not in ('type', 'circuit'):
                         LIGHT_CFG_BY_BODY[b][k] = lc[k]
+        _apply_light_types()
         log.info('Loaded persisted light calibration: %s', LIGHT_CFG_BY_BODY)
 
     # Persisted light program position (per body) — restores the tracked scene
@@ -5802,6 +6231,8 @@ def main() -> None:
 
     # Fault-discovery candidates persist across restarts so the backlog accrues.
     _load_fault_candidates()
+    # Known LCD frame shapes, so a shape seen last week isn't 'novel' again.
+    _load_frame_shapes()
 
     # --simulate wins over any backend (the default backend is a real one now).
     if args.simulate:
@@ -5815,6 +6246,8 @@ def main() -> None:
         return
 
     if backend == 'aquaconnect':
+        if not aquaconnect_host:
+            parser.error('--aquaconnect-host is required for --backend aquaconnect')
         _ac_backend = AquaConnectBackend(host=aquaconnect_host)
         log.info('AquaConnect backend: http://%s/WNewSt.htm', aquaconnect_host)
         threading.Thread(target=_canary_probe_loop, daemon=True,

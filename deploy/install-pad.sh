@@ -119,16 +119,40 @@ sudo systemctl --no-pager --lines=15 status pool-bridge.service || true
 echo "==> memory-pressure hardening (persistent journal + earlyoom + swappiness)"
 
 # Persistent journal (capped) so the NEXT freeze leaves a readable `-b -1` trail.
-# NOTE: Storage=persistent alone isn't enough — the dir needs correct ownership
-# (systemd-tmpfiles) and journald must FLUSH /run -> /var/log, or it silently
-# keeps logging to the volatile /run and every reboot wipes the evidence (this
-# bit us: a freeze's logs were lost even with Storage=persistent set).
+#
+# This MUST be a drop-in, not an edit to /etc/systemd/journald.conf. Raspberry
+# Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf,
+# which sets Storage=volatile to spare the SD card -- and drop-ins override the
+# main config file, so editing that file can never win. An earlier version of
+# this script did exactly that and silently had no effect for months: journald
+# kept logging to tmpfs and every reboot wiped the evidence, which is precisely
+# the failure this section exists to prevent.
+#
+# Ours sorts after 40-* and lives in /etc (higher precedence than /usr/lib, and
+# untouched by package updates). Size is capped and compressed: a few MB/day is
+# negligible SD wear, and unclean shutdowns are the real card killer anyway.
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/50-pad-persistent.conf >/dev/null <<'JCONF'
+# Managed by deploy/install-pad.sh -- overrides 40-rpi-volatile-storage.conf.
+[Journal]
+Storage=persistent
+Compress=yes
+SystemMaxUse=64M
+SystemMaxFileSize=8M
+SystemMaxFiles=8
+RuntimeMaxUse=16M
+JCONF
 sudo mkdir -p /var/log/journal
-sudo sed -i 's/^#\?Storage=.*/Storage=persistent/'     /etc/systemd/journald.conf
-sudo sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=100M/' /etc/systemd/journald.conf
 sudo systemd-tmpfiles --create --prefix /var/log/journal
 sudo systemctl restart systemd-journald
 sudo journalctl --flush
+# Verify rather than assume -- this is the step that silently failed before.
+if journalctl --header 2>/dev/null | grep -q 'File path: /var/log/journal'; then
+  echo "    persistent journal active (/var/log/journal)"
+else
+  echo "    WARNING: journal is still volatile — crash logs will NOT survive a reboot." >&2
+  echo "    Check: systemd-analyze cat-config systemd/journald.conf | grep -i '^Storage='" >&2
+fi
 
 # Wi-Fi power-save OFF. The Pi Zero 2 W's brcmfmac drops off the network (and can
 # wedge) when power-save idles the radio — a healthy, idle box just goes

@@ -47,7 +47,7 @@ export interface PlatformConfig {
   sidecarPort: number;
   pollInterval: number;
   backend: 'aquaconnect' | 'rs485bridge';
-  aquaconnectHost: string;
+  aquaconnectHost?: string;
   rs485bridgeHost?: string;
   rs485bridgePort: number;
   circuits: Circuit[];
@@ -55,6 +55,10 @@ export interface PlatformConfig {
   enableActiveHeaterThermostat: boolean;
   enableSpaLightScenes: boolean;
   enablePoolLightScenes: boolean;
+  poolLightType: LightStandard;
+  poolLightCircuit: string;
+  spaLightType: LightStandard;
+  spaLightCircuit: string;
   spaLightSceneList: LightSceneConfig[];
   poolLightSceneList: LightSceneConfig[];
   enableTemperatureSensors: boolean;
@@ -62,6 +66,12 @@ export interface PlatformConfig {
   enableSaltSensor: boolean;
   circuitLabels: Partial<Record<Circuit, string>>;
 }
+
+/** Which light standard a body's light uses. They select colours differently:
+ * colorlogic steps relatively from the current colour, intellibrite counts
+ * absolutely from a reset. Only power-cycle-controlled lights are supported —
+ * Hayward OmniDirect (OmniLogic networked lighting) is a different platform. */
+export type LightStandard = 'colorlogic' | 'intellibrite';
 
 /** One HomeKit light-scene entry (config array is ordered + renamable). */
 export interface LightSceneConfig {
