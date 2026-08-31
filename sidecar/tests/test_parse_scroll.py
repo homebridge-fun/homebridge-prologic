@@ -159,3 +159,48 @@ def test_pump_startup_alone_does_not_bump_last_update():
     if set(parsed) == {'pump_startup'}:
         ps._apply_ac_scroll_to_state('Filter Speed  40%')
         assert ps.state.last_update == 12345.0
+
+
+# ── panel mirror: columns must survive, because blanking is meaningful ──────
+
+def test_hardware_frame_splits_into_two_fixed_lines():
+    """The panel is 20x2 and hardware packs both lines into one 40-char string
+    with no separator. Splitting on '\\n' -- which only simulation emits -- put
+    all 40 characters on line 1."""
+    cap = ps.LcdCapture()
+    cap.text_updated('     Salt Level           3000 PPM      ')
+    l1, l2 = cap.lines()
+    assert l1 == '     Salt Level     '
+    assert l2 == '      3000 PPM      '
+
+
+def test_column_positions_survive_a_blanked_field():
+    """A blinking field blanks in place at the panel. If the mirror strips
+    padding, everything to its right reflows -- disorienting exactly when you
+    are navigating menus and need the display to sit still.
+    """
+    cap = ps.LcdCapture()
+    cap.text_updated('  Pool Chlorinator      30%             ')
+    shown, blanked = cap.lines()[0], None
+    cap.text_updated('  Pool Chlorinator                      ')
+    blanked = cap.lines()[0]
+    assert shown == blanked, 'the label must not move when the value blinks off'
+    assert len(cap.lines()[1]) == ps._LCD_COLS
+
+
+def test_simulation_newline_frames_still_split_correctly():
+    cap = ps.LcdCapture()
+    cap.text_updated('Pool Temp 78\nAir Temp 91')
+    l1, l2 = cap.lines()
+    assert l1.strip() == 'Pool Temp 78'
+    assert l2.strip() == 'Air Temp 91'
+
+
+def test_control_bytes_become_spaces_rather_than_shifting_columns():
+    """Dropping them would pull the rest of the line left; replacing them
+    keeps every following column where it belongs."""
+    cap = ps.LcdCapture()
+    cap.text_updated('\x03\x03   Salt Level        3000 PPM      ')
+    l1, _ = cap.lines()
+    assert len(l1) == ps._LCD_COLS
+    assert '\x03' not in l1

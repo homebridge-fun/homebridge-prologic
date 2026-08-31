@@ -1120,6 +1120,11 @@ def _norm(text: str) -> str:
 # then set aq._web = lcd so every frame lands here instead.
 # ---------------------------------------------------------------------------
 
+# The panel is a 20x2 character display. Hardware sends both lines packed
+# into one 40-character string with no separator.
+_LCD_COLS = 20
+
+
 class LcdCapture:
     def __init__(self, maxhist: int = 60, hub: 'Optional[FrameHub]' = None):
         self._lock = threading.Lock()
@@ -1158,17 +1163,29 @@ class LcdCapture:
         return self._event.wait(timeout)
 
     def lines(self) -> Tuple[str, str]:
-        """Return current (line1, line2) from the latest LCD frame.
+        """Return the current frame as the panel lays it out: two fixed lines.
 
-        Kept for the simulation path (which emits a real newline). On hardware
-        there is no newline so l2 is empty — navigator code must use text().
+        The physical display is 20x2 and hardware sends it as one 40-character
+        string with no newline, so splitting on '\n' (which only simulation
+        emits) put all 40 characters on line 1. Column positions are preserved
+        deliberately -- NOT stripped -- because this feeds the cockpit's panel
+        mirror, and blanking is how the panel indicates an editable field.
+
+        Strip the padding and a blinking value's disappearance reflows
+        everything to its right, which is disorienting precisely when you are
+        navigating menus and need the display to sit still. Use text() for
+        matching; this is for showing.
         """
         with self._lock:
             text = self._latest or ''
-        parts = text.split('\n', 1)
-        l1 = parts[0].strip()
-        l2 = parts[1].strip() if len(parts) > 1 else ''
-        return l1, l2
+        # Control bytes would render as garbage in the mirror, but replacing
+        # them with spaces keeps every following column where it belongs.
+        text = ''.join(c if ord(c) >= 0x20 else ' ' for c in text)
+        if '\n' in text:                      # simulation emits real lines
+            l1, l2 = text.split('\n', 1)
+        else:
+            l1, l2 = text[:_LCD_COLS], text[_LCD_COLS:]
+        return l1.ljust(_LCD_COLS), l2.ljust(_LCD_COLS)
 
     def text(self) -> str:
         """Return the latest LCD frame normalized to a single matchable string."""
@@ -3655,7 +3672,11 @@ def get_status() -> Response:
 @app.route('/display')
 def get_display() -> Response:
     l1, l2 = lcd.lines()
-    return jsonify({'line1': l1, 'line2': l2})
+    # `raw` is the untouched frame; line1/line2 preserve column positions so a
+    # blinking field blanks in place instead of reflowing the rest of the row.
+    with lcd._lock:                       # noqa: SLF001 - same module
+        raw = lcd._latest or ''
+    return jsonify({'line1': l1, 'line2': l2, 'raw': raw, 'cols': _LCD_COLS})
 
 
 @app.route('/display/history')

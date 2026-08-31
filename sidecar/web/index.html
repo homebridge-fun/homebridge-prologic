@@ -86,7 +86,11 @@
   .slot-editor .step { display: flex; }
   .lcd { font-family: "SF Mono", ui-monospace, Menlo, monospace; background: #02101d;
     border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
-    color: #7dd3fc; letter-spacing: .04em; min-height: 22px; white-space: pre-wrap; word-break: break-word; }
+    color: #7dd3fc; letter-spacing: .04em; min-height: 22px;
+    /* The panel is 20x2. Preserve every column: a blinking field blanks in
+       place at the panel, and reflowing the rest of the row is disorienting
+       exactly when you are navigating menus. */
+    white-space: pre; overflow-x: auto; line-height: 1.35; }
   .lcd .t { font-size: 12px; color: var(--dim); margin-top: 6px; letter-spacing: 0; }
   /* Dual-body (pool/spa) panel with the active one flagged */
   .duo { display: flex; gap: 10px; }
@@ -678,7 +682,7 @@
       const r = await fetch('/key/' + key, { method: 'POST' });
       let j = {}; try { j = await r.json(); } catch (e) {}
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
-      if (j.lcd) { lastFrameTs = Date.now(); $('lcd').firstChild.nodeValue = j.lcd; }
+      if (j.lcd) { lastFrameTs = Date.now(); renderLcd(j.lcd); }
       await fetchStatus();
     } catch (e) {
       toast('⚠ key ' + key + ' failed' + (e.message ? ': ' + e.message : ''));
@@ -1043,6 +1047,20 @@
     try { await fetchStatus(); } catch (e) {}
   }
 
+  // Render a frame as the panel lays it out: 20x2, columns preserved.
+  // Hardware packs both lines into one 40-char string with no separator, so
+  // the split is positional. Never trim -- the padding IS the layout, and a
+  // blanked (blinking) field must leave its gap rather than pull the rest of
+  // the row leftwards.
+  const LCD_COLS = 20;
+  function renderLcd(raw) {
+    if (!raw) return;
+    const clean = String(raw).replace(/[\x00-\x1f]/g, ' ');
+    const l1 = clean.slice(0, LCD_COLS).padEnd(LCD_COLS);
+    const l2 = clean.slice(LCD_COLS).padEnd(LCD_COLS);
+    $('lcd').firstChild.nodeValue = l1 + '\n' + l2;
+  }
+
   // LCD fallback poll (SSE preferred)
   let lastFrameTs = 0;
   async function pollDisplay() {
@@ -1051,8 +1069,9 @@
       const r = await fetch('/display', { cache: 'no-store' });
       if (!r.ok) return;
       const d = await r.json();
-      const t = [d.line1, d.line2].filter(Boolean).join('  ').trim();
-      if (t) $('lcd').firstChild.nodeValue = t;
+      // Prefer raw; line1/line2 already preserve columns, so fall back to
+      // concatenating them rather than joining with a separator.
+      renderLcd(d.raw || ((d.line1 || '') + (d.line2 || '')));
     } catch (e) {}
   }
   function connectStream() {
@@ -1061,9 +1080,11 @@
       es.onmessage = ev => {
         try {
           const f = JSON.parse(ev.data);
-          if (f && f.text) {
+          if (f && (f.raw || f.text)) {
             lastFrameTs = Date.now();
-            $('lcd').firstChild.nodeValue = f.text;
+            // f.text is whitespace-collapsed for MATCHING; f.raw is the frame
+            // as displayed. Showing f.text is what made blinking fields reflow.
+            renderLcd(f.raw || f.text);
             txt('lcd_t', new Date((f.ts || 0) * 1000).toLocaleTimeString());
           }
         } catch (e) {}
