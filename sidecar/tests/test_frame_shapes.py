@@ -265,3 +265,37 @@ def test_hyphens_that_are_not_signs_survive():
         == 'Filter T<N>-all <N>:<N>A to <N>:<N>A'
     assert ps.frame_shape('Spa-all --- Off ---') == 'Spa-all --- Off ---'
     assert ps.frame_shape('Filter T1-Spd1 90%') == 'Filter T<N>-Spd<N> <N>%'
+
+
+# ── partial-render detection (harvester heuristic) ──────────────────────────
+
+def _harvester():
+    import importlib.util
+    import pathlib
+    path = pathlib.Path(__file__).parents[2] / 'scripts' / 'harvest_frames.py'
+    spec = importlib.util.spec_from_file_location('harvest_frames', path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_mid_repaint_fragments_are_recognised():
+    hf = _harvester()
+    for frag, whole in (('Pool Chlorinator', 'Pool Chlorinator 30%'),
+                        ('Filter T2-all 08:00A to', 'Filter T2-all 8:00A to 09:30P'),
+                        ('Filter T2-all to 09:30P', 'Filter T2-all 8:00A to 09:30P'),
+                        ('Spa-all --- Off', 'Spa-all --- Off ---')):
+        assert hf.is_partial_of(hf.shape(frag), hf.shape(whole)), frag
+
+
+def test_a_different_screen_is_not_a_fragment_just_for_sharing_tokens():
+    """The idle clock's tokens are a subsequence of the Set Day and Time
+    screen, but they are different screens -- and the clock is the most-shown
+    one on the panel. A fragment always starts with the same label, because
+    the label is drawn first and persists through the repaint.
+    """
+    hf = _harvester()
+    idle = hf.shape('       Monday               3 33P       ')
+    menu = hf.shape('  Set Day and Time    Monday     3:34P  ')
+    assert idle != menu
+    assert not hf.is_partial_of(idle, menu)

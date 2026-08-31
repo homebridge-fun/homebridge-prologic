@@ -187,7 +187,15 @@ def is_partial_of(a: str, b: str) -> bool:
     screen, in order -- a subsequence -- so that is the test.
     """
     ta, tb = a.split(), b.split()
-    if len(ta) >= len(tb):
+    if len(ta) >= len(tb) or not ta:
+        return False
+    # The label is drawn first and persists through the repaint, so a genuine
+    # fragment always starts with the same token as the complete screen.
+    # Without this, any short screen whose tokens happen to appear inside a
+    # longer one gets absorbed -- the idle clock '<DAY> <N>:<N>P' was being
+    # hidden as a fragment of 'Set Day and Time <DAY> <N>:<N>P', which is a
+    # different screen entirely, and the most-shown one on the panel.
+    if ta[0] != tb[0]:
         return False
     it = iter(tb)
     return all(tok in it for tok in ta)
