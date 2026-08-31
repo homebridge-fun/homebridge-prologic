@@ -59,7 +59,7 @@ Carried over from `plugin-spec.md` §10.2; unchanged in substance.
 | 4.8 | **OmniDirect / OmniLogic lighting** | Not supported and not planned. Networked ColorLogic on Hayward's OmniLogic platform selects colours directly (plus dimming and show-speed) instead of power cycling — a different platform and wire protocol, not a gap configuration can close. This plugin targets ProLogic/AquaLogic. |
 | 4.3 | **Spillover mode** | Untested — not present on this installation, and can't be without hardware that has it |
 | 4.4 | **Valve-mode detection lag (~10–30 s)** | Scroll-dependent; no event-driven update |
-| 4.5 | **Fault-phrase discovery** | Ongoing, manual. Unrecognised alert-looking frames are logged `FAULT-CANDIDATE` and persisted; periodically pull `GET /faults/candidates` and promote real wording into `_FAULT_PHRASES`. |
+| 4.5 | **Fault-phrase discovery** | Ongoing, manual. `harvest_frames.py --anomalies` now surfaces these alongside other unhandled frames, so they're visible without remembering to check. Unrecognised alert-looking frames are logged `FAULT-CANDIDATE` and persisted; periodically pull `GET /faults/candidates` and promote real wording into `_FAULT_PHRASES`. |
 | 4.6 | **Plugin-side (TypeScript) tests** | Accessory gating, `SidecarClient` against a mocked HTTP layer, value mapping. Worth doing alongside 3.1 if that's built. |
 | 4.7 | **`pump_startup` doesn't bump `last_update`** | Pre-existing quirk, now pinned by a test. Looks like an oversight rather than intent; fixing it is a deliberate behaviour change, not a refactor. |
 

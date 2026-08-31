@@ -66,3 +66,34 @@ countdown gets caught rather than enshrined.
 
 `--coverage` lists which known conditions are still missing, and how to
 provoke the ones you can.
+
+## Finding frames that need attention
+
+`--anomalies` answers "did the panel show us something we don't understand?"
+The ledger records every shape, but a shape the parser reads correctly isn't
+interesting — the residue is:
+
+| Bucket | Meaning |
+|---|---|
+| **NEEDS PARSER** | Matches a condition we claim to support, yet parses to nothing. A parser bug — this is the 0.8.6 Super Chlorinate class, where the frame was on screen and we silently read nothing from it |
+| **UNKNOWN** | Parses to nothing, matches no known condition. Often benign (a menu header carries no data), sometimes a panel feature we don't support |
+| **HANDLED ELSEWHERE** | Read by a different path — the Super Chlorinate detector, the fault detector, or the fault-candidate discovery queue. Not a gap |
+
+That last bucket matters: `parse_ac_scroll` is not the only reader, and
+without it the report would cry wolf on frames that are handled perfectly
+well. A tool that cries wolf gets ignored.
+
+Rarity is shown alongside, because it's a triage signal — a shape seen once,
+days ago, is far more likely to be an unhandled condition than one seen ten
+thousand times.
+
+### The three stores, and which to look in
+
+| File | Holds |
+|---|---|
+| `frame_shapes.json` | Every distinct LCD shape ever seen, with one example. Feeds `--anomalies` and harvesting |
+| `fault_candidates.json` | Alert-looking frames that aren't yet known faults, awaiting promotion into `_FAULT_PHRASES` (`GET /faults/candidates`) |
+| `frames.jsonl` | The curated corpus — the committed subset with reviewed expectations |
+
+Both JSON files live beside `pool_service.py`, so in production
+`/opt/pool-sidecar/`. Neither is committed.

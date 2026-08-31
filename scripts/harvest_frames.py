@@ -27,6 +27,9 @@ Usage (on the HOP, where the sidecar runs):
     # what conditions are still missing (no sidecar needed)
     python3 scripts/harvest_frames.py --coverage
 
+    # which frames the parser does NOT understand -- the ones to look at
+    python3 scripts/harvest_frames.py --anomalies
+
 Nothing has to be captured live by hand: the sidecar keeps a ledger of every
 distinct shape it has ever seen (`/display/shapes`), which survives both the
 60-frame LCD ring and a restart. A frame the panel showed at 3am is still
@@ -46,6 +49,7 @@ import json
 import pathlib
 import re
 import sys
+import time
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -120,6 +124,115 @@ def load_corpus() -> list[dict]:
 def _get(url: str):
     with urllib.request.urlopen(url, timeout=10) as r:
         return json.load(r)
+
+
+def fetch_entries(base: str) -> list[dict]:
+    """Full ledger entries: text plus how often and how recently seen.
+
+    Rarity is a triage signal -- a shape seen once, days ago, is far more
+    likely to be an unhandled condition than one seen ten thousand times.
+    """
+    try:
+        return _get(base.rstrip('/') + '/display/shapes').get('shapes', [])
+    except Exception as e:                                    # noqa: BLE001
+        print(f'could not read the shape ledger from {base}: {e}\n'
+              f'(needs a sidecar with /display/shapes)', file=sys.stderr)
+        raise SystemExit(2)
+
+
+def handled_elsewhere(text: str) -> str:
+    """Is this frame consumed by something other than parse_ac_scroll?
+
+    parse_ac_scroll is not the only reader. Super Chlorinate is detected
+    passively by _note_super_chlor_frame, and faults by _check_faults. Without
+    this check those show up as unparsed and the triage cries wolf on frames
+    that are handled perfectly well -- and a tool that cries wolf gets ignored.
+    """
+    try:
+        sys.path.insert(0, str(ROOT / 'sidecar'))
+        import pool_service as ps                             # noqa: PLC0415
+        if ps._SUPERCHLOR_RE.search(text):
+            return 'super-chlorinate detector'
+        for phrase in getattr(ps, '_FAULT_PHRASES', ()):
+            if phrase.lower() in text.lower():
+                return 'fault detector (known phrase)'
+        # Alert-looking but not a known phrase: the discovery path already
+        # captures this to fault_candidates.json for promotion into
+        # _FAULT_PHRASES. Not unhandled -- it is mid-workflow. See backlog 4.5.
+        if ps._FAULT_HINT_RE.search(text):
+            return 'fault-candidate discovery — see GET /faults/candidates'
+    except Exception:                                         # noqa: BLE001
+        pass
+    return ''
+
+
+def cmd_anomalies(base: str, corpus: list[dict]) -> int:
+    """Which frames does the parser not understand?
+
+    The ledger records every shape, but a shape the parser reads correctly is
+    not interesting. What matters is the residue:
+
+      NEEDS PARSER  matches a condition we claim to support, yet parses to
+                    nothing -- a parser bug. This is exactly the 0.8.6 Super
+                    Chlorinate countdown class: the frame was on screen and we
+                    silently read nothing from it.
+      UNKNOWN       parses to nothing and matches no known condition. Often
+                    benign (a menu header carries no data), sometimes a panel
+                    feature we don't support yet. Worth eyeballing.
+      understood    parser extracts fields -- nothing to do.
+    """
+    entries = fetch_entries(base)
+    if not entries:
+        print('shape ledger is empty — has the sidecar seen any frames yet?')
+        return 0
+
+    known = [(cid, re.compile(pat, re.I)) for cid, pat, _ in KNOWN_CONDITIONS]
+    in_corpus = {shape(e.get('text', '')) for e in corpus}
+
+    needs_parser, unknown, understood, elsewhere = [], [], [], []
+    for e in entries:
+        text = e.get('text', '')
+        parsed = try_parse(text)
+        hits = [cid for cid, rx in known if rx.search(plain(text))]
+        other = handled_elsewhere(text)
+        if parsed:
+            understood.append((e, hits))
+        elif other:
+            elsewhere.append((e, [other]))
+        elif hits:
+            needs_parser.append((e, hits))
+        else:
+            unknown.append((e, hits))
+
+    def show(rows, label):
+        if not rows:
+            return
+        print(f'{label} ({len(rows)})')
+        for e, hits in sorted(rows, key=lambda r: r[0].get('count', 0)):
+            age = ''
+            last = e.get('last_seen')
+            if last:
+                mins = max(0, int((time.time() - last) / 60))
+                age = f', last seen {mins}m ago' if mins < 1440 else \
+                      f', last seen {mins // 1440}d ago'
+            mark = '' if shape(e.get('text', '')) in in_corpus else '  [not in corpus]'
+            print(f"  {e.get('text','')!r}")
+            print(f"      seen x{e.get('count', 0)}{age}"
+                  f"{'  matches: ' + ','.join(hits) if hits else ''}{mark}")
+        print()
+
+    print(f'{len(entries)} distinct shapes in the ledger\n')
+    show(needs_parser, 'NEEDS PARSER — recognised condition, but nothing parsed')
+    show(unknown, 'UNKNOWN — nothing parsed, no known condition')
+    show(elsewhere, 'HANDLED ELSEWHERE — read by another path, not parse_ac_scroll')
+    if not needs_parser and not unknown:
+        print('every shape the panel has shown is understood by the parser.')
+    else:
+        print('Add anything worth pinning to the corpus with --append, then fix '
+              'the parser\nand correct the expect. See sidecar/tests/README.md.')
+    print(f'\nunderstood by parse_ac_scroll: {len(understood)}'
+          f'   handled by another reader: {len(elsewhere)}')
+    return 0
 
 
 def fetch(base: str) -> list[str]:
@@ -205,6 +318,9 @@ def main() -> int:
                     help='sidecar base URL (default: %(default)s)')
     ap.add_argument('--append', action='store_true',
                     help='append new frames to the corpus, marked reviewed:false')
+    ap.add_argument('--anomalies', action='store_true',
+                    help='shapes the parser does not understand — the ones '
+                         'that may need attention')
     ap.add_argument('--coverage', action='store_true',
                     help='report which known conditions are captured; no network')
     args = ap.parse_args()
@@ -212,6 +328,8 @@ def main() -> int:
     corpus = load_corpus()
     if args.coverage:
         return cmd_coverage(corpus)
+    if args.anomalies:
+        return cmd_anomalies(args.url, corpus)
 
     seen = {shape(e.get('text', '')) for e in corpus}
     new: dict[str, str] = {}
