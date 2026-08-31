@@ -91,3 +91,58 @@ def test_text_updated_still_records_frames_end_to_end():
     cap.text_updated('Salt Level  3200')
     with ps._frame_shapes_lock:
         assert 'Salt Level <N>' in ps._frame_shapes
+
+
+# ── transport artifacts (found on real hardware) ────────────────────────────
+
+def test_trailing_nul_does_not_split_a_frame_into_two_shapes():
+    """The real panel emitted 'Salt Level 3000 PPM' both with and without a
+    trailing NUL, and the ledger recorded them as two separate shapes -- 53
+    of one and 1734 of the other. \\s does not match \\x00, so the NUL survived
+    normalisation. Every frame type was being double-counted."""
+    assert (ps.frame_shape('     Salt Level    3000 PPM      ')
+            == ps.frame_shape('     Salt Level    3000 PPM      \x00'))
+    assert ps.frame_shape('Salt Level 3000 PPM\x00') == 'Salt Level <N> PPM'
+
+
+def test_newlines_survive_because_the_lcd_is_two_lines():
+    """Control chars are stripped, but \\n separates the LCD's two lines and is
+    collapsed to a space by the whitespace rule, not deleted outright."""
+    assert ps.frame_shape('Pool Temp 78\nAir Temp 91') == 'Pool Temp <N> Air Temp <N>'
+
+
+def test_stored_example_is_cleaned_so_fixtures_are_deterministic():
+    """Which raw variant arrives first is arbitrary; the corpus should not
+    depend on it."""
+    _reset()
+    ps._note_frame_shape('Salt Level  3000 PPM\x00')
+    with ps._frame_shapes_lock:
+        assert '\x00' not in ps._frame_shapes['Salt Level <N> PPM']['text']
+
+
+def test_a_ledger_written_before_the_fix_is_merged_on_load(tmp_path):
+    """Otherwise the NUL-split shapes linger forever as phantom entries."""
+    import json
+    old = {
+        'Salt Level <N> PPM': {'first_seen': 100.0, 'last_seen': 200.0,
+                               'count': 53, 'text': 'Salt Level 3000 PPM'},
+        'Salt Level <N> PPM \x00': {'first_seen': 90.0, 'last_seen': 300.0,
+                                    'count': 1734,
+                                    'text': 'Salt Level 3000 PPM\x00'},
+    }
+    path = tmp_path / 'frame_shapes.json'
+    path.write_text(json.dumps(old))
+    saved = ps._FRAME_SHAPES_PATH
+    try:
+        ps._FRAME_SHAPES_PATH = str(path)
+        _reset()
+        ps._load_frame_shapes()
+        with ps._frame_shapes_lock:
+            shapes = dict(ps._frame_shapes)
+    finally:
+        ps._FRAME_SHAPES_PATH = saved
+    assert list(shapes) == ['Salt Level <N> PPM']
+    entry = shapes['Salt Level <N> PPM']
+    assert entry['count'] == 53 + 1734        # counts combined, not lost
+    assert entry['first_seen'] == 90.0        # earliest sighting wins
+    assert entry['last_seen'] == 300.0        # latest sighting wins

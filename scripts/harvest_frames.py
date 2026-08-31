@@ -80,6 +80,11 @@ KNOWN_CONDITIONS = [
     ('freeze_protect',       r'Freeze',                       'wait for cold weather'),
 ]
 
+# Control characters that are transport artifacts, not panel content: the
+# serial path appends a trailing NUL to some frames and not others, which
+# would otherwise split one logical frame into two shapes. Tab/newline/CR
+# are excluded -- the LCD is two lines and \n separates them.
+_CTRL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _WBON = re.compile(r'<[^>]+>')
 _DIGITS = re.compile(r'\d+')
 _WS = re.compile(r'\s+')
@@ -92,7 +97,7 @@ def plain(text: str) -> str:
     numbers ('Heater1', '12:34'). Distinct from shape(), which tokenises
     digits away for dedupe.
     """
-    return _WS.sub(' ', _WBON.sub('', text or '')).strip()
+    return _WS.sub(' ', _WBON.sub('', _CTRL.sub('', text or ''))).strip()
 
 
 def shape(text: str) -> str:
@@ -101,7 +106,8 @@ def shape(text: str) -> str:
     This is the dedupe key. Two frames that differ only in their readings are
     the same shape and only the first is worth capturing.
     """
-    t = _WBON.sub('', text or '')
+    t = _CTRL.sub('', text or '')
+    t = _WBON.sub('', t)
     t = _DIGITS.sub('<N>', t)
     return _WS.sub(' ', t).strip()
 

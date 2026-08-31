@@ -601,6 +601,11 @@ _frame_shapes_lock = threading.Lock()
 _frame_shapes_dirty = False
 _frame_shapes_last_flush = 0.0
 
+# Control characters that are transport artifacts, not panel content: the
+# serial path appends a trailing NUL to some frames and not others, which
+# would otherwise split one logical frame into two shapes. Tab/newline/CR
+# are excluded -- the LCD is two lines and \n separates them.
+_SHAPE_CTRL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _SHAPE_TAGS = re.compile(r'<[^>]+>')
 _SHAPE_DIGITS = re.compile(r'\d+')
 _SHAPE_WS = re.compile(r'\s+')
@@ -612,7 +617,8 @@ def frame_shape(text: str) -> str:
     'Pool Temp 78' and 'Pool Temp 79' are the same shape, so only the first is
     novel. Mirrors shape() in scripts/harvest_frames.py.
     """
-    t = _SHAPE_TAGS.sub('', text or '')
+    t = _SHAPE_CTRL.sub('', text or '')
+    t = _SHAPE_TAGS.sub('', t)
     t = _SHAPE_DIGITS.sub('<N>', t)
     return _SHAPE_WS.sub(' ', t).strip()
 
@@ -642,10 +648,32 @@ def _load_frame_shapes() -> None:
         with open(_FRAME_SHAPES_PATH) as fh:
             data = json.load(fh)
         if isinstance(data, dict):
+            # Re-key through the current normaliser and merge. A ledger written
+            # before a normalisation fix holds shapes that no longer match what
+            # we would compute now (e.g. one split in two by a trailing NUL);
+            # without this they would linger as permanent phantom entries.
+            merged: dict = {}
+            for old_key, entry in data.items():
+                key = frame_shape(entry.get('text') or old_key)
+                if not key:
+                    continue
+                cur = merged.get(key)
+                if cur is None:
+                    merged[key] = dict(entry, text=_SHAPE_CTRL.sub(
+                        '', entry.get('text', '')))
+                else:
+                    cur['count'] = cur.get('count', 0) + entry.get('count', 0)
+                    cur['first_seen'] = min(cur.get('first_seen', 0),
+                                            entry.get('first_seen', 0))
+                    cur['last_seen'] = max(cur.get('last_seen', 0),
+                                           entry.get('last_seen', 0))
             with _frame_shapes_lock:
-                _frame_shapes.update(data)
+                _frame_shapes.update(merged)
+            if len(merged) != len(data):
+                log.info('Merged %d stored frame shapes into %d after '
+                         're-normalising', len(data), len(merged))
             log.info('Restored %d known LCD frame shapes from %s',
-                     len(data), _FRAME_SHAPES_PATH)
+                     len(merged), _FRAME_SHAPES_PATH)
     except FileNotFoundError:
         pass
     except Exception as e:                       # noqa: BLE001
@@ -673,7 +701,11 @@ def _note_frame_shape(text: str) -> None:
                 if len(_frame_shapes) >= _FRAME_SHAPES_MAX:
                     return          # capped; see _FRAME_SHAPES_MAX
                 _frame_shapes[shape] = {'first_seen': now, 'last_seen': now,
-                                        'count': 1, 'text': text}
+                                        'count': 1,
+                                        # Strip transport artifacts so corpus
+                                        # fixtures are deterministic -- which raw
+                                        # variant arrived first is arbitrary.
+                                        'text': _SHAPE_CTRL.sub('', text)}
                 _frame_shapes_dirty = True
                 novel = True
             else:
