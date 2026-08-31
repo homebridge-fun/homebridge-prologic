@@ -59,6 +59,10 @@
      pill bulging past the rest. */
   .card .condlist .pill.on, .card .swlist .pill.on, .card .lblock .pill.on { min-width: 128px; }
   .card .condlist .pill.off, .card .swlist .pill.off, .card .lblock .pill.off { min-width: 64px; }
+  /* Super Chlorinate sits below the pool/spa steppers in the Chlorinator
+     card. It carries .swlist so its pill matches every other switch row;
+     the top border echoes the .row + .row separators used elsewhere. */
+  #superchlor_row { margin-top: 6px; border-top: 1px solid rgba(159,182,207,.18); }
   /* Tighter rows in the pill lists (At a glance / Lights). */
   .condlist .row, .swlist .row { min-height: 0; padding: 6px 0; }
   .pill { font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
@@ -301,7 +305,7 @@
     </div>
     <!-- Super Chlorinate belongs with the chlorinator output it overrides, not
          among the generic aux switches. Hidden unless the circuit is enabled. -->
-    <div id="superchlor_row"></div>
+    <div class="swlist" id="superchlor_row"></div>
   </div>
 
   <div class="card">
