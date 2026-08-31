@@ -81,6 +81,15 @@ Recording these so they don't get re-proposed:
   mode (a tile looks wrong) is immediately visible and cheap to fix. The stuck
   "Active Heat" tile name is a real bug that no reasonable test would have
   caught, and that's an accepted boundary.
+- **Sweeping the idle scroll to refresh a reading after a write.** Tempting,
+  because a value read only from the scroll can take most of a minute to
+  appear — the Super Chlorinate countdown after a toggle, for instance. It was
+  built and reverted: on-demand sweeping is what used to **lock up the
+  AquaConnect box**, since the extra keypresses land while the panel is still
+  settling from the write and wedge it, costing a power-cycle to clear.
+  `sweep_scroll` stays safe where it is used today — startup and an explicit
+  Refresh, neither following a write. Waiting out the ~6s-per-item natural
+  cycle is the correct trade.
 - **Coverage targets**, and testing the cockpit HTML.
 - **Recommending `homebridge-aqua-connect-lite`** as a lighter alternative in
   the README. Last published April 2023, declares `homebridge-config-ui-x` as
