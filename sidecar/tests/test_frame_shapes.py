@@ -299,3 +299,27 @@ def test_a_different_screen_is_not_a_fragment_just_for_sharing_tokens():
     menu = hf.shape('  Set Day and Time    Monday     3:34P  ')
     assert idle != menu
     assert not hf.is_partial_of(idle, menu)
+
+
+def test_a_fragment_is_matched_against_every_shape_not_just_its_bucket():
+    """'Pool Chlorinator' with no value is a fragment of 'Pool Chlorinator
+    30%', which the parser reads perfectly and so lands in a different bucket.
+    Comparing only within a bucket left the header reported as a parser bug.
+    """
+    hf = _harvester()
+    ledger = ['  Pool Chlorinator                      ',
+              '  Pool Chlorinator          30%         ',
+              '  Super Chlorinate          Off         ',
+              '  Super Chlorinate        24 hours      ',
+              '   Display Light                        ',
+              '  Display Software     Revision         ']
+    shapes = [hf.shape(t) for t in ledger]
+
+    def is_frag(sh):
+        return any(sh != o and hf.is_partial_of(sh, o) for o in shapes)
+
+    assert is_frag(hf.shape(ledger[0])), 'header should be a fragment'
+    # Everything else is a screen in its own right, including pairs that share
+    # a label -- collapsing those would hide a state the parser must read.
+    for t in ledger[1:]:
+        assert not is_frag(hf.shape(t)), t

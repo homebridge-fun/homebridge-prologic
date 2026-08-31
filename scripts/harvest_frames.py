@@ -201,12 +201,19 @@ def is_partial_of(a: str, b: str) -> bool:
     return all(tok in it for tok in ta)
 
 
-def group_partials(rows):
-    """Split rows into (complete, partials-of-something-complete)."""
-    shapes = [(r, shape(r[0].get('text', ''))) for r in rows]
+def group_partials(rows, all_shapes):
+    """Split rows into (complete, partials-of-some-complete-screen).
+
+    Compared against EVERY shape in the ledger, not just the ones in the same
+    bucket. A header caught before its value arrived ('Pool Chlorinator') is a
+    fragment of a screen the parser reads perfectly ('Pool Chlorinator 30%'),
+    which lives in a different bucket -- so a within-bucket comparison left it
+    reported as a parser bug.
+    """
     complete, partial = [], []
-    for row, sh in shapes:
-        if any(sh != other and is_partial_of(sh, other) for _, other in shapes):
+    for row in rows:
+        sh = shape(row[0].get('text', ''))
+        if any(sh != other and is_partial_of(sh, other) for other in all_shapes):
             partial.append(row)
         else:
             complete.append(row)
@@ -298,9 +305,11 @@ def cmd_anomalies(base: str, corpus: list[dict], show_noise: bool = False) -> in
         print()
 
     print(f'{len(entries)} distinct shapes in the ledger\n')
-    # A header caught before its value arrived is not a parser bug.
-    needs_parser, np_partial = group_partials(needs_parser)
-    unknown, un_partial = group_partials(unknown)
+    # A header caught before its value arrived is not a parser bug. Compare
+    # against every shape seen, including the ones the parser handles.
+    all_shapes = [shape(e.get('text', '')) for e in entries]
+    needs_parser, np_partial = group_partials(needs_parser, all_shapes)
+    unknown, un_partial = group_partials(unknown, all_shapes)
     partials = np_partial + un_partial
 
     show(needs_parser, 'NEEDS PARSER — recognised condition, but nothing parsed')
