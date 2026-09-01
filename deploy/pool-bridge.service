@@ -1,9 +1,11 @@
 [Unit]
 Description=RS-485 smart-bridge daemon (AquaLogic pad Pi)
 Documentation=https://github.com/homebridge-fun/homebridge-prologic
-# The daemon binds the tailnet IP, so tailscaled must be up first. It also
-# needs the network online for the socket bind; if either isn't ready the bind
-# fails, the process exits, and Restart=on-failure retries.
+# The daemon binds the tailnet IP, so tailscaled must be up first. It resolves
+# that address itself at startup (RS485_BRIDGE_LISTEN=tailnet:8899) and waits
+# for the interface, so ordering here is an optimisation rather than a
+# correctness requirement. It also exits non-zero if the address later leaves
+# the interface -- a node renumber -- and Restart=on-failure rebinds it.
 After=network-online.target tailscaled.service
 Wants=network-online.target
 

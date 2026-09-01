@@ -34,6 +34,9 @@ import argparse
 import hmac
 import json
 import os
+import re
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -481,6 +484,7 @@ class Bridge:
 class Handler(BaseHTTPRequestHandler):
     bridge = None  # set on the class before serving
     token = None   # optional shared secret; None = auth disabled
+    bound = ''     # 'host:port' actually bound, reported by /health
 
     def _send_json(self, code, payload):
         body = json.dumps(payload).encode()
@@ -507,7 +511,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/health':
-            self._send_json(200, {'ok': True, 'connected': self.bridge._connected})
+            # `bound` lets the far end see WHICH address this process is
+            # serving on. A pad whose bind went stale answers nothing at all,
+            # so this is for the healthy-but-wrong case and for
+            # deploy/pad-healthlog.sh to record.
+            self._send_json(200, {'ok': True, 'connected': self.bridge._connected,
+                                  'bound': self.bound})
         elif self.path == '/keys':
             # Valid aqualogic Keys enum names, so the sidecar backend can send
             # exact names (getattr(Keys, name)) instead of guessing. Open like
@@ -653,14 +662,111 @@ class Handler(BaseHTTPRequestHandler):
         pass  # quiet — systemd journal would double-log otherwise
 
 
+# --- binding to the tailnet address, which is not stable ------------------
+#
+# The bridge binds the pad's Tailscale address so only authenticated tailnet
+# peers can reach the API (the LAN cannot). That address is NOT a constant: an
+# admin can renumber a node from the Tailscale console, and re-registering a
+# node gets a fresh one.
+#
+# install-pad.sh used to resolve it ONCE, at install time, and write the
+# literal into /etc/pool-bridge.env. A renumber then broke the pad in the worst
+# possible way: the daemon kept the socket it had already bound, the address
+# vanished from the interface, every connection to the new address was refused
+# -- and systemd still reported the service `active`. Nothing on the pad
+# noticed. The failure was only visible from the far end.
+#
+# So the address is resolved HERE, at startup, from the interface itself, and
+# re-checked while running.
+_TAILNET_ALIASES = ('tailnet', 'tailscale', 'tailscale0')
+
+
+def iface_ipv4(iface: str = 'tailscale0'):
+    """Current IPv4 on `iface`, or None. Reads the interface, not the
+    `tailscale` CLI -- no dependency on the CLI being present or on the
+    invoking user having permission to run it."""
+    try:
+        out = subprocess.run(['ip', '-4', '-o', 'addr', 'show', 'dev', iface],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:                                         # noqa: BLE001
+        return None
+    m = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', out)
+    return m.group(1) if m else None
+
+
+def resolve_listen(spec: str, wait_s: float = 90.0):
+    """Turn a --listen spec into (host, port).
+
+    'tailnet:8899' (or tailscale/tailscale0) means "whatever tailscale0's IPv4
+    is right now". An explicit address is passed through untouched, so anyone
+    who deliberately pinned one keeps it.
+
+    Waits for the interface to acquire an address rather than failing on the
+    first look. At boot the daemon can easily start before Tailscale has
+    finished coming up -- resolving once and giving up would trade a renumber
+    bug for a reboot bug, which is how the address came to be frozen at install
+    time in the first place.
+    """
+    host, _, port = spec.partition(':')
+    port = int(port or 8899)
+    if host.lower() not in _TAILNET_ALIASES:
+        return host, port
+
+    iface = 'tailscale0'
+    deadline = time.time() + wait_s
+    warned = False
+    while True:
+        ip = iface_ipv4(iface)
+        if ip:
+            return ip, port
+        if not warned:
+            print(f'Waiting for {iface} to acquire an IPv4 address '
+                  f'(up to {wait_s:.0f}s)...', flush=True)
+            warned = True
+        if time.time() >= deadline:
+            raise SystemExit(
+                f'{iface} has no IPv4 address after {wait_s:.0f}s. Is Tailscale '
+                f'up? Bind an explicit address with --listen <ip>:8899 to '
+                f'bypass this.')
+        time.sleep(2.0)
+
+
+def watch_bound_address(host: str, iface: str = 'tailscale0',
+                        interval_s: float = 30.0) -> None:
+    """Exit non-zero if the address we are bound to leaves the interface.
+
+    A listening socket whose address has been removed accepts nothing but still
+    looks alive: the process runs, systemd says `active`, and every client gets
+    ECONNREFUSED. Exiting is what makes that self-healing -- systemd restarts
+    us (Restart=on-failure) and startup resolves the new address.
+
+    Only meaningful for a tailnet bind; a wildcard or a deliberately pinned
+    address is not ours to second-guess.
+    """
+    while True:
+        time.sleep(interval_s)
+        cur = iface_ipv4(iface)
+        if cur is None or cur == host:
+            continue   # interface momentarily unreadable, or nothing changed
+        print(f'Bound address {host} is no longer on {iface} (now {cur}) -- '
+              f'exiting so systemd restarts and rebinds. This is the renumber '
+              f'path, not an error.', flush=True)
+        sys.stdout.flush()
+        os._exit(3)
+
+
 def main():
     ap = argparse.ArgumentParser(description='RS-485 smart-bridge daemon')
     ap.add_argument('--port', default='/dev/ttyUSB0', help='serial device')
-    ap.add_argument('--listen', default='0.0.0.0:8899',
-                    help='host:port to bind. Prefer the tailnet IP (e.g. '
-                         '100.x.y.z:8899) so only authenticated tailnet peers '
-                         'can reach the API; 0.0.0.0 also exposes it to the '
-                         'local Wi-Fi/LAN (mitigated by --token).')
+    ap.add_argument('--listen', default='tailnet:8899',
+                    help="host:port to bind. Default 'tailnet:8899' resolves "
+                         "tailscale0's current IPv4 AT STARTUP, so only "
+                         'authenticated tailnet peers can reach the API and a '
+                         'renumbered node self-heals on restart. An explicit '
+                         'address (100.x.y.z:8899) is honoured as given but '
+                         'goes stale if the node is renumbered. 0.0.0.0 also '
+                         'exposes the API to the local Wi-Fi/LAN (mitigated by '
+                         '--token).')
     ap.add_argument('--token', default=os.environ.get('RS485_BRIDGE_TOKEN'),
                     help='shared secret required on /state and /key as '
                          '"Authorization: Bearer <token>". Defaults to the '
@@ -677,7 +783,9 @@ def main():
     _install_write_timing(args.predelay_ms / 1000.0)
     print(f'Write timing: predelay={args.predelay_ms:.0f}ms', flush=True)
 
-    host, _, port = args.listen.partition(':')
+    dynamic = args.listen.partition(':')[0].lower() in _TAILNET_ALIASES
+    host, port = resolve_listen(args.listen)
+    Handler.bound = f'{host}:{port}'
     bridge = Bridge(args.port)
     threading.Thread(target=bridge.run_forever, daemon=True).start()
 
@@ -687,8 +795,15 @@ def main():
         print('Auth: bearer token REQUIRED on /state and /key.', flush=True)
     else:
         print('Auth: DISABLED (no --token / RS485_BRIDGE_TOKEN) — dev mode.', flush=True)
-    server = ThreadingHTTPServer((host, int(port)), Handler)
-    print(f'HTTP API listening on {args.listen}', flush=True)
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f'HTTP API listening on {host}:{port}'
+          + ('' if dynamic else '  (explicit bind — will NOT follow a renumber)'),
+          flush=True)
+    # Only watch when we resolved the address ourselves: an explicitly pinned
+    # address is the operator's choice, and a wildcard bind never goes stale.
+    if dynamic:
+        threading.Thread(target=watch_bound_address, args=(host,),
+                         daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

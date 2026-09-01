@@ -151,6 +151,39 @@ timer chatter — `pool-healthlog`, `pool-netwatch` and `pool-serialwatch` each
 log a start/finish line per firing, which can out-volume the daemon itself.
 Add `LogLevelMax=notice` to those units rather than giving up persistence.
 
+
+## Renumbering the pad's Tailscale address
+
+Safe to do from the Tailscale admin console; the pad needs no manual change.
+`RS485_BRIDGE_LISTEN=tailnet:8899` tells the daemon to resolve `tailscale0`'s
+address itself at startup, and it exits non-zero when the address it is bound
+to leaves the interface, so `Restart=on-failure` rebinds it within seconds.
+
+Verify afterwards, on the pad:
+
+```bash
+sudo journalctl -u pool-bridge -n 5 --no-pager | grep -i listening
+curl -s "http://$(tailscale ip -4 | head -1):8899/health"; echo
+```
+
+The address in both should match `tailscale ip -4`. On the hop, the sidecar
+should reconnect on its own — no restart needed — and the cockpit's bridge
+alert self-clears.
+
+> **This did not always work.** The address used to be resolved once, at
+> install time, and written into `/etc/pool-bridge.env` as a literal. A
+> renumber then left the daemon holding a socket on an address that no longer
+> existed: every connection refused, while systemd still reported the service
+> `active`. Nothing on the pad detected it. If you are running an installation
+> from before that fix, `grep RS485_BRIDGE_LISTEN /etc/pool-bridge.env` will
+> show a literal `100.x.y.z:8899` — re-run `deploy/install-pad.sh` to migrate
+> it, or edit it to `tailnet:8899` and restart the service.
+
+**Pinning an address deliberately** still works: set an explicit
+`<ip>:8899` and it is honoured as given. The daemon logs
+`(explicit bind — will NOT follow a renumber)` so the trade-off is visible in
+the journal rather than implied.
+
 ## Security posture
 
 - Daemon binds the **tailnet IP only** — nothing on the local Wi-Fi/LAN can open

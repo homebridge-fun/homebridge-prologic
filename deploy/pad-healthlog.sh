@@ -44,7 +44,7 @@ py_rss="${py_rss:-0}"
 wifi="$(iw dev wlan0 link 2>/dev/null | awk -F': ' '/signal/{gsub(/ ?dBm/,"",$2); gsub(/ /,"",$2); print $2}')"
 wifi="${wifi:-NA}"
 
-HEADER="iso,epoch,mem_total_mb,mem_avail_mb,swap_used_mb,load1,throttled,uv_now,uv_since_boot,soc_temp_c,py_rss_mb,wifi_dbm,journal,journal_mb"
+HEADER="iso,epoch,mem_total_mb,mem_avail_mb,swap_used_mb,load1,throttled,uv_now,uv_since_boot,soc_temp_c,py_rss_mb,wifi_dbm,journal,journal_mb,bind_ok"
 
 # Header on a fresh/truncated file (logrotate copytruncate empties it).
 #
@@ -77,4 +77,33 @@ fi
 journal_mb="$(du -sm /var/log/journal 2>/dev/null | awk '{print $1}')"
 journal_mb="${journal_mb:-NA}"
 
-echo "$now_iso,$now_epoch,$mem_total,$mem_avail,$swap_used,$load1,$thr,$uv_now,$uv_ever,$temp,$py_rss,$wifi,$journal,$journal_mb" >>"$LOG"
+# Is the daemon serving on the address the interface actually has?
+#
+# This exists because of a real outage that nothing on the pad detected. The
+# bind address was frozen at install time; renumbering the node left the daemon
+# holding a socket on an address that had been removed from the interface. It
+# refused every connection while systemd reported the service `active` -- the
+# only symptom was the far end failing to poll. The daemon now watches for this
+# itself and exits so systemd rebinds, but recording it here means a
+# regression in THAT mechanism is visible in the trend rather than during the
+# next incident.
+#
+# ok = serving on the current tailnet address. stale = the mismatch above.
+# down = not answering at all (already loud elsewhere). n/a = no tailnet.
+bind_ok="n/a"
+ts_ip="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
+if [ -n "$ts_ip" ]; then
+  # Query the tailnet address, NOT localhost: the daemon binds the tailnet IP
+  # only (that bind IS the access control), so localhost is refused by design.
+  bound="$(curl -s -m 5 "http://${ts_ip}:8899/health" 2>/dev/null \
+           | sed -n 's/.*"bound"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  if [ -z "$bound" ]; then
+    bind_ok="down"
+  elif [ "${bound%%:*}" = "$ts_ip" ]; then
+    bind_ok="ok"
+  else
+    bind_ok="stale"
+  fi
+fi
+
+echo "$now_iso,$now_epoch,$mem_total,$mem_avail,$swap_used,$load1,$thr,$uv_now,$uv_ever,$temp,$py_rss,$wifi,$journal,$journal_mb,$bind_ok" >>"$LOG"
