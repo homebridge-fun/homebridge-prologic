@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the hop can resolve and reach the pad bridge (repairs MagicDNS)
+Documentation=https://github.com/homebridge-fun/homebridge-prologic
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+# Root: it runs `tailscale set` and restarts pool-sidecar when it repairs.
+User=root
+ExecStart=/home/greg/development/homebridge-prologic/deploy/hop-dnswatch.sh

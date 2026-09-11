@@ -1740,6 +1740,30 @@ def _bridge_key_name(name: str) -> str:
     return _BRIDGE_KEY_ALIASES.get(n.replace('_', ''), n)
 
 
+def _classify_bridge_error(exc: Exception) -> str:
+    """A short, human phrase for why the bridge could not be reached.
+
+    The distinction matters because the fixes are unrelated:
+
+      DNS       the name does not resolve -- MagicDNS off on THIS host, or a
+                resolv.conf overwritten by something else. The pad is usually
+                fine. (Seen: --accept-dns silently reset, 45h outage.)
+      refused   resolved and reached, nothing listening -- the daemon is down,
+                or bound to an address it no longer has.
+      timeout   no answer at all -- pad offline, Tailscale down, or power.
+    """
+    s = str(exc)
+    if 'Name or service not known' in s or 'Temporary failure in name resolution' in s:
+        return 'DNS: the bridge host does not resolve from here'
+    if 'Connection refused' in s:
+        return 'refused: host reachable, nothing listening on the bridge port'
+    if 'timed out' in s or 'timeout' in s.lower():
+        return 'timeout: no response from the bridge host'
+    if 'No route to host' in s or 'Network is unreachable' in s:
+        return 'unreachable: no network path to the bridge host'
+    return s[:120]
+
+
 class RS485BridgeBackend:
     """Navigation backend that drives the panel through the pad-Pi RS-485 smart
     bridge (sidecar/rs485_bridge.py) over HTTP/Tailscale.
@@ -1761,6 +1785,7 @@ class RS485BridgeBackend:
         # panel LCD. Using 'rs485' here left the Panel Display blank in bridge mode.
         self.lcd = LcdCapture(hub=_get_hub('rs485bridge'))
         self._http_lock = threading.Lock()   # parity: nav-sweep/debug serialize here
+        self._last_error: Optional[str] = None   # why the last poll failed, if it did
         self._req_count = 0
         self._last_led: dict = {}
         self._last_raw = None
@@ -1784,8 +1809,16 @@ class RS485BridgeBackend:
         req = urllib.request.Request(self._base + '/state', headers=self._headers())
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
+                self._last_error = None
                 return json.loads(r.read())
         except Exception as e:
+            # Keep WHY, not just that it failed. A 45-hour outage was diagnosed
+            # by reading this at DEBUG in the journal: "Name or service not
+            # known" (DNS) and "Connection refused" (host up, nothing
+            # listening) are entirely different faults with entirely different
+            # fixes, and neither reached the cockpit. Surfaced in /status and in
+            # the offline alert so the banner says which.
+            self._last_error = _classify_bridge_error(e)
             log.debug('rs485bridge /state error: %s', e)
             return None
 
@@ -1944,12 +1977,20 @@ class RS485BridgeBackend:
                     # ~3 misses (poll interval + timeouts ≈ several seconds) before
                     # flagging, so a single dropped packet doesn't flap the banner.
                     if fails >= _BRIDGE_OFFLINE_MISSES and not state.bridge_wedged:
+                        why = self._last_error or 'no reason recorded'
                         with state_lock:
                             state.bridge_wedged = True
                             state.wedge_detected_at = None   # NO power-cycle cooldown
-                        log.warning('%s (%d consecutive polls) — marking offline; '
-                                    'self-clears on reconnect',
-                                    _BRIDGE_OFFLINE_ALERT, fails)
+                            # state.connected is only ever assigned on a
+                            # SUCCESSFUL poll (_apply), so without this it keeps
+                            # reporting the last good value forever. /status
+                            # claimed "connected": true through 45 hours of DNS
+                            # failures -- a health flag that cannot go false is
+                            # worse than no flag, because it gets believed.
+                            state.connected = False
+                        log.warning('%s (%d consecutive polls) — %s — marking '
+                                    'offline; self-clears on reconnect',
+                                    _BRIDGE_OFFLINE_ALERT, fails, why)
             except Exception as e:  # noqa: BLE001
                 # A malformed snapshot must NEVER kill this thread — a dead poll
                 # loop was what left the flag stuck with no way to self-heal.
@@ -3654,6 +3695,20 @@ def get_history() -> Response:
 
 
 @app.route('/status')
+
+def _bridge_error() -> Optional[str]:
+    """Last failure reason from the rs485bridge backend, if it is the active
+    one and currently flagged offline. Best-effort: a diagnostic must never be
+    able to break /status."""
+    try:
+        b = _ac_backend      # holds whichever backend is active
+        if b is not None and state.bridge_wedged:
+            return getattr(b, '_last_error', None)
+    except Exception:                                         # noqa: BLE001
+        pass
+    return None
+
+
 def get_status() -> Response:
     # Compute the cooldown remainder BEFORE taking state_lock: _wedge_cooling_down()
     # acquires state_lock itself, and state_lock is non-reentrant, so calling it
@@ -3689,6 +3744,10 @@ def get_status() -> Response:
             'connected':           state.connected,
             'last_update':         state.last_update,
             'bridge_wedged':       state.bridge_wedged,
+            # Why the bridge is unreachable, when it is. None when healthy.
+            # 'DNS: ...' vs 'refused: ...' are different faults with different
+            # fixes; without this the cockpit could only say "offline".
+            'bridge_error':        _bridge_error(),
             'wedge_cooldown_remaining_s': round(cooldown) if cooldown else 0,
             'backend':             _active_backend,
             'ui_circuits':         list(_ui_circuits),
