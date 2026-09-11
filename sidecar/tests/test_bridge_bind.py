@@ -127,3 +127,50 @@ def test_watchdog_tolerates_a_momentarily_unreadable_interface(monkeypatch):
         AssertionError(f'exited {c} on a transient read failure')))
     with pytest.raises(_Exited):
         rb.watch_bound_address('100.64.0.1', interval_s=0)
+
+
+# ── classifying WHY the bridge could not be reached ─────────────────────────
+#
+# Lives here rather than beside the sidecar's other tests because it is about
+# the same link: the hop reaching the pad. The 45-hour DNS outage was diagnosed
+# by reading urllib's message out of the journal at DEBUG level; these pin the
+# distinctions that made that diagnosis, so they reach /status instead.
+
+import pool_service as ps                                       # noqa: E402
+
+
+def test_dns_failure_is_named_as_dns():
+    """The one that cost 45 hours. 'the name does not resolve from HERE' points
+    at the hop; every other fault points at the pad, and chasing the pad is
+    exactly what happened."""
+    for msg in ('<urlopen error [Errno -2] Name or service not known>',
+                'Temporary failure in name resolution'):
+        assert ps._classify_bridge_error(OSError(msg)).startswith('DNS:'), msg
+
+
+def test_refused_is_distinguished_from_timeout():
+    """Refused means something answered and said no -- the daemon is down or
+    bound to an address it no longer holds. Timeout means nothing answered at
+    all. Different machine, different fix."""
+    assert ps._classify_bridge_error(
+        OSError('[Errno 111] Connection refused')).startswith('refused:')
+    assert ps._classify_bridge_error(
+        TimeoutError('timed out')).startswith('timeout:')
+
+
+def test_no_route_is_its_own_case():
+    assert ps._classify_bridge_error(
+        OSError('No route to host')).startswith('unreachable:')
+
+
+def test_an_unrecognised_error_is_passed_through_not_swallowed():
+    """A fault we have not seen before must still say something. Returning a
+    generic 'offline' would recreate the problem this exists to fix."""
+    got = ps._classify_bridge_error(ValueError('some novel failure'))
+    assert 'some novel failure' in got
+
+
+def test_classification_is_bounded():
+    """It ends up in /status and in an alert banner; an enormous exception
+    string must not run away with either."""
+    assert len(ps._classify_bridge_error(ValueError('x' * 5000))) <= 120

@@ -3,6 +3,45 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## Unreleased
+
+### Added
+
+- **A hop-side watchdog for DNS** (`deploy/hop-dnswatch.sh` +
+  `pool-dnswatch.timer`). The pad has `pad-netwatch` and `pad-serialwatch`; the
+  hop had nothing, and that cost a 45-hour outage. Tailscale stayed connected
+  and every peer was reachable, but `--accept-dns` had been switched off on the
+  hop — most likely something rewriting `/etc/resolv.conf`, which Tailscale
+  manages directly there rather than through `systemd-resolved`. MagicDNS
+  stopped resolving, the sidecar could not look up the bridge host at all, and
+  `tailscale status` looked perfect throughout. Every 5 minutes this checks
+  that the configured bridge host resolves **and** answers `/health`, and after
+  two consecutive misses re-applies `--accept-dns=true` — but only when the
+  evidence fits (name not resolving, Tailscale itself up), so a pad-side fault
+  is left to the pad-side watchdogs.
+  The host is read from the sidecar's `backend.json`, never hardcoded: that is
+  the value actually in use, and a literal would be one more install-time
+  setting that goes stale.
+  It also reports **config drift** — the Homebridge UI's `rs485bridgeHost`
+  differing from what the sidecar is really using, which can persist
+  indefinitely because the two only reconcile when Homebridge restarts. Logged,
+  never repaired; the plugin owns that value.
+
+### Fixed
+
+- **`/status` reported `"connected": true` through 45 hours of failed polls.**
+  `state.connected` is only ever assigned on a *successful* poll, so a failing
+  one left the last good value in place forever. A health flag that cannot go
+  false is worse than no flag, because it gets believed. It is now cleared when
+  the bridge is marked offline.
+- **The reason a poll failed never left the debug log.** `/status` now carries
+  `bridge_error` while the bridge is offline, classified into the faults that
+  have genuinely different fixes: `DNS` (the name does not resolve from this
+  host — the pad is usually fine), `refused` (reachable, nothing listening),
+  `timeout` and `unreachable`. The 45-hour outage was diagnosed by reading
+  `Name or service not known` out of the journal at DEBUG; that distinction now
+  reaches the cockpit.
+
 ## 0.10.1 — Pad bind self-heals; corpus reviewed; docs use placeholders
 
 ### Fixed

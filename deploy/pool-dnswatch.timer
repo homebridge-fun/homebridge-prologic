@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the hop DNS/reachability check every 5 min
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+# Catch up one missed run after downtime -- a gap here is exactly when the
+# thing it guards against tends to happen (a reboot or an upgrade rewriting
+# resolv.conf).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

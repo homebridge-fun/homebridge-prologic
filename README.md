@@ -124,6 +124,25 @@ Two things that trip people up:
   Homebridge host has to accept tailnet DNS: `tailscale set --accept-dns=true`,
   then check `getent hosts pool` resolves.
 
+**Keeping DNS working is worth a watchdog.** MagicDNS resolution can stop
+without Tailscale itself going down — `--accept-dns` gets reset, or something
+rewrites `/etc/resolv.conf`, which Tailscale manages directly on Debian-family
+hosts. The symptom is the sidecar unable to look up the pad at all while
+`tailscale status` looks perfect. `deploy/hop-dnswatch.sh` checks every 5
+minutes that the configured bridge host resolves and answers, and re-applies
+`--accept-dns=true` if it does not. Install it on the Homebridge host:
+
+```bash
+sudo cp deploy/pool-dnswatch.service deploy/pool-dnswatch.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pool-dnswatch.timer
+systemctl list-timers pool-dnswatch.timer --no-pager
+sudo journalctl -t hop-dnswatch -n 20 --no-pager
+```
+
+The service file's `ExecStart` points at this checkout — edit the path if
+yours differs.
+
 If you skip Tailscale entirely, `install-pad.sh` falls back to binding
 `0.0.0.0` and you would be exposing the bridge to your whole LAN with no
 authentication unless you set a bearer token. That path isn't tested or
