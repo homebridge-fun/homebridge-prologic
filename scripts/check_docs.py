@@ -13,6 +13,8 @@ safe:
   4. Every relative link and image path in the Markdown docs resolves.
   5. No literal host addresses are committed in the docs -- they should use
      the placeholders defined in README.md.
+  6. No literal host NAMES in examples either -- same defect, and check 5
+     cannot see them because a hostname is not an IP.
 
 Check 2 is the one that catches genuine staleness -- 1 only proves the SVG
 matches its generator, not that the generator matches reality.
@@ -183,6 +185,80 @@ def check_version_has_a_changelog_entry() -> None:
                  f'{lock_version} -- run npm install to resync')
 
 
+# Options whose value is one installation's host. A literal here is the same
+# defect as a literal IP: someone follows the docs and configures a machine
+# that does not exist on their network.
+_HOST_OPTS = re.compile(r'(--rs485bridge-host|--aquaconnect-host)\s+(\S+)')
+# A bare host inside an example URL, e.g. http://pool:8899. A dotted name is a
+# real domain (a link), so only single-label names are candidates.
+# The negative lookahead is what keeps 'https://github.com' out: a dot means
+# a real domain, i.e. a link, not somebody's machine.
+_HOST_URL = re.compile(r'https?://([A-Za-z][\w-]*)(?![\w.-])')
+# Only COMMANDS are examples someone will copy. Prose mentioning an option
+# ("--rs485bridge-host is required for ...") is not, and an earlier version of
+# this check flagged five such lines -- a guard that cries wolf gets deleted.
+_COMMANDY = re.compile(
+    r'(?:^|\s)(?:sudo|bash|python3|curl|SIDECAR_CONFIG=)\b|'
+    r'\b(?:install\.sh|pool_service\.py|rs485_bench\.py|rs485_bridge\.py)\b|'
+    r'https?://')
+
+
+def _example_lines(path: pathlib.Path):
+    """Yield (lineno, line) for lines that are examples, not prose.
+
+    In Markdown that means inside a fenced code block; elsewhere it means the
+    line looks like a command.
+    """
+    fenced = path.suffix == '.md'
+    in_fence = False
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        if fenced and line.lstrip().startswith('```'):
+            in_fence = not in_fence
+            continue
+        if fenced:
+            if in_fence:
+                yield n, line
+        elif _COMMANDY.search(line):
+            yield n, line
+
+
+def check_example_hosts_are_placeholders() -> None:
+    """6. Examples must not name a real host.
+
+    This exists because it already happened. A docs pass replaced the
+    `<pad-tailnet-ip>` placeholder with `pool` -- correct advice (prefer the
+    MagicDNS name over an address) expressed with one installation's actual
+    hostname, so the README told every reader to configure a host only this
+    tailnet has. check_no_real_ips_in_docs could not see it: a hostname is not
+    an IP.
+
+    The host belongs in the Homebridge UI (`rs485bridgeHost`), never in an
+    example. So examples carry a <placeholder>, and anything else fails here.
+    """
+    allowed_url_hosts = {'localhost'}
+    files = [ROOT / 'README.md']
+    files += sorted((ROOT / 'docs').glob('*.md'))
+    files += sorted((ROOT / 'deploy').glob('*.md'))
+    files += sorted((ROOT / 'sidecar').glob('*.py'))
+    files += sorted((ROOT / 'sidecar').glob('*.sh'))
+
+    for f in files:
+        if not f.exists():
+            continue
+        for n, line in _example_lines(f):
+            for opt, val in _HOST_OPTS.findall(line):
+                if val.startswith(('<', '$', '"', "'", '${')):
+                    continue
+                fail(f'{f.relative_to(ROOT)}:{n}: `{opt} {val}` names a real '
+                     f'host -- use a <placeholder>; the value is configured in '
+                     f'the Homebridge UI, not written into an example')
+            for host in _HOST_URL.findall(line):
+                if host in allowed_url_hosts:
+                    continue
+                fail(f'{f.relative_to(ROOT)}:{n}: example URL names the host '
+                     f'"{host}" -- use <pad-host> or another <placeholder>')
+
+
 def main() -> int:
     for svg in SVGS:
         if not svg.exists():
@@ -195,6 +271,7 @@ def main() -> int:
     check_markdown_links()
     check_no_real_ips_in_docs()
     check_version_has_a_changelog_entry()
+    check_example_hosts_are_placeholders()
 
     if failures:
         print('Documentation checks FAILED:\n', file=sys.stderr)

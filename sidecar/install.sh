@@ -8,7 +8,7 @@
 #
 #   RS-485 pad bridge (a Raspberry Pi at the pad running deploy/install-pad.sh,
 #   reached over Tailscale — set that up first, see deploy/README-PAD.md):
-#     sudo bash install.sh --backend rs485bridge --rs485bridge-host pool \
+#     sudo bash install.sh --backend rs485bridge --rs485bridge-host <pad-host> \
 #         [--rs485bridge-token <token>]
 #
 # Common options: [--api-port 5757] [--user homebridge] [--dry-run]
@@ -36,7 +36,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   sudo bash install.sh --backend aquaconnect  --aquaconnect-host <IP> [opts]
-  sudo bash install.sh --backend rs485bridge  --rs485bridge-host <IP> [--rs485bridge-port 8899]
+  sudo bash install.sh --backend rs485bridge  --rs485bridge-host <pad-host> [--rs485bridge-port 8899]
                                               [--rs485bridge-token <tok>] [opts]
   opts: [--api-port 5757] [--user <systemd-user>] [--dry-run]
 EOF

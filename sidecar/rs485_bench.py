@@ -23,7 +23,7 @@ Run it from BOTH vantage points to decompose the result:
     python3 rs485_bench.py --url http://localhost:8899 --laps 50
 
     # from the hop — real deployment path (serial + Tailscale/DERP)
-    python3 rs485_bench.py --url http://pool:8899 --laps 50
+    python3 rs485_bench.py --url http://<pad-host>:8899 --laps 50
 
 Compare against the documented TCP-bridge baseline in
 docs/plugin-spec.md (~40% drop rate, 15-27s per nav-sweep lap).
