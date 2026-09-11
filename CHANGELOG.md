@@ -7,6 +7,24 @@ sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
 ### Fixed
 
+- **Renumbering the pad's Tailscale address silently broke the bridge, and
+  nothing on the pad noticed.** `install-pad.sh` resolved the tailnet IP once,
+  at install time, and wrote it into `/etc/pool-bridge.env` as a literal. When
+  the node was renumbered — a supported operation, and the one the docs
+  recommend for retiring an address — the daemon kept the socket it had already
+  bound. The address was gone from the interface, so every connection was
+  refused, while systemd went on reporting the service `active`. The only
+  symptom was the sidecar failing to poll from the far end.
+  The daemon now resolves `tailscale0`'s address **at startup**
+  (`--listen tailnet:8899`, the new default), waiting for the interface rather
+  than failing on the first look — at boot it can easily start before Tailscale
+  is up, and resolving once would have traded a renumber bug for a reboot bug.
+  It also watches the address while running and exits non-zero if it
+  disappears, so `Restart=on-failure` rebinds it. An explicit
+  `<ip>:8899` is still honoured exactly as given.
+  `/health` now reports the address actually bound, and the pad health log
+  gained a `bind_ok` column, so a regression in any of this shows up in the
+  trend instead of during the next incident.
 - **A heater setpoint written with the panel's other degree glyph was read as
   no value at all.** The LCD's degree symbol reaches the sidecar as `°` on some
   frames and `_` on others — both encodings are in the captured corpus, one

@@ -61,10 +61,22 @@ if [ -e "/sys/bus/usb-serial/devices/$(basename "$PORT")/latency_timer" ]; then
 fi
 
 # 4. Environment file (bind address + optional token) ---------------------
-# Tailnet IP is stable across networks; discover it so a re-image picks up the
-# node's current address automatically.
+# The daemon resolves tailscale0's address ITSELF at startup, so what goes in
+# the env file is the symbolic form, not a literal.
+#
+# This used to write the literal from `tailscale ip -4` at install time. That
+# froze the bind address: renumbering the node in the Tailscale console (a
+# supported operation, and the one the docs recommend for retiring an address)
+# left the daemon holding a socket on an address that no longer existed. Every
+# connection was refused while systemd still reported the service `active` --
+# nothing on the pad noticed at all. See resolve_listen() in rs485_bridge.py.
+#
+# TAILNET_IP is still read, but only to warn and to print the health URL.
 TAILNET_IP="$(tailscale ip -4 2>/dev/null | head -n1 || true)"
-LISTEN="${TAILNET_IP:-0.0.0.0}:8899"
+LISTEN="tailnet:8899"
+if [ -z "$TAILNET_IP" ]; then
+  LISTEN="0.0.0.0:8899"   # no tailnet yet; see the warning below
+fi
 
 # Auth model, in order of preference:
 #   1. Tailscale ACL (recommended default): restrict src->pool:8899 in the
