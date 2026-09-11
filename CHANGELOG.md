@@ -25,6 +25,16 @@ sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
   `/health` now reports the address actually bound, and the pad health log
   gained a `bind_ok` column, so a regression in any of this shows up in the
   trend instead of during the next incident.
+- **Examples told you to configure a host that only exists on one tailnet.**
+  A docs pass replaced the `<pad-tailnet-ip>` placeholder with `pool` — the
+  right advice (prefer the MagicDNS name, which survives a renumber) written
+  with one installation's actual hostname. Anyone following the README,
+  `install.sh` or the spec would have pointed the sidecar at a machine on
+  someone else's network. Examples now use `<pad-host>`; the value is
+  configured in the Homebridge UI as `rs485bridgeHost` and belongs nowhere
+  else. `check_docs.py` gained a check for literal hostnames in examples —
+  the existing one only looked for IP addresses, which is why nothing caught
+  this.
 - **A heater setpoint written with the panel's other degree glyph was read as
   no value at all.** The LCD's degree symbol reaches the sidecar as `°` on some
   frames and `_` on others — both encodings are in the captured corpus, one

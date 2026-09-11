@@ -170,7 +170,7 @@ sudo bash sidecar/install.sh --backend aquaconnect --aquaconnect-host <aquaconne
 
 # OR the RS-485 pad bridge — set up the pad first (deploy/README-PAD.md), then
 # point at it by MagicDNS name (token via --rs485bridge-token if the bridge requires one):
-sudo bash sidecar/install.sh --backend rs485bridge --rs485bridge-host pool
+sudo bash sidecar/install.sh --backend rs485bridge --rs485bridge-host <pad-host>
 ```
 
 Add `--dry-run` to preview the systemd unit without changing anything.
