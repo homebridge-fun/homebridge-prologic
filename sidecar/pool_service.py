@@ -3694,12 +3694,16 @@ def get_history() -> Response:
     return jsonify({'samples': samples})
 
 
-@app.route('/status')
-
 def _bridge_error() -> Optional[str]:
     """Last failure reason from the rs485bridge backend, if it is the active
     one and currently flagged offline. Best-effort: a diagnostic must never be
-    able to break /status."""
+    able to break /status.
+
+    NOTE the placement: this must stay ABOVE @app.route, not between the
+    decorator and the view. Inserted there it became the view function for
+    /status itself, and every request 500'd -- see the test in
+    tests/test_status_route.py.
+    """
     try:
         b = _ac_backend      # holds whichever backend is active
         if b is not None and state.bridge_wedged:
@@ -3709,6 +3713,7 @@ def _bridge_error() -> Optional[str]:
     return None
 
 
+@app.route('/status')
 def get_status() -> Response:
     # Compute the cooldown remainder BEFORE taking state_lock: _wedge_cooling_down()
     # acquires state_lock itself, and state_lock is non-reentrant, so calling it
