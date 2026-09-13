@@ -3,7 +3,7 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
-## Unreleased
+## 0.10.3 — /status answers again
 
 ### Fixed
 
