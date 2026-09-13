@@ -3,6 +3,22 @@
 All notable releases of `homebridge-prologic` (Homebridge plugin + Python
 sidecar + web cockpit for a Hayward AquaPlus / ProLogic pool controller).
 
+## Unreleased
+
+### Fixed
+
+- **`/status` returned 500 for every request, taking the whole system down.**
+  Shipped in 0.10.2. The `_bridge_error()` helper added in that release was
+  placed between `@app.route('/status')` and its view function, so Flask
+  registered the *helper* as the view for `/status`. It returns a string or
+  `None`, which is not a response, so every request raised `TypeError`. The
+  plugin lost every accessory and the cockpit sat on "connecting".
+  Nothing caught it: all 154 tests exercised pure functions and not one made a
+  request, and the CI syntax check passes because the file is valid Python. The
+  suite now calls the route (`tests/test_status_route.py`) — asserting it
+  answers 200, that its view really is `get_status`, that the fields the plugin
+  reads are present, and that no two routes share a view function.
+
 ## 0.10.2 — Hop-side DNS watchdog; honest bridge health
 
 ### Added
